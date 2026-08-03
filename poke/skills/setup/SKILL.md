@@ -112,7 +112,7 @@ serviço precisa de uma cópia própria:
 
 ```bash
 POKE_HOME="$HOME/.poke-core"
-git clone --depth 1 https://github.com/OWNER/REPO.git "$POKE_HOME" \
+git clone --depth 1 https://github.com/eduardosilveiradev/poke-core.git "$POKE_HOME" \
   || (cd "$POKE_HOME" && git pull --ff-only)
 ```
 
