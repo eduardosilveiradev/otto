@@ -1,0 +1,25 @@
+[Unit]
+Description=Poke — assistente pessoal proativo no Telegram
+Documentation=https://github.com/eduardosilveiradev/poke-core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{POKE_HOME}}/runtime
+ExecStart=/bin/bash {{POKE_HOME}}/run.sh
+Environment=HOME={{HOME}}
+Environment=PATH={{HOME}}/.local/bin:{{HOME}}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TERM=xterm-256color
+
+# A sessão é longa e o Telegram deixa um poller só por token: reiniciar sempre,
+# mas devagar, pra dois processos não brigarem pelo mesmo token.
+Restart=always
+RestartSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=poke
+
+[Install]
+WantedBy=default.target

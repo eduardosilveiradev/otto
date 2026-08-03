@@ -1,0 +1,14 @@
+# Personalidade gerada na instalação — contém dados pessoais do usuário.
+/CLAUDE.md
+
+# Segredos e estado. Nunca versionar.
+*.env
+telegram.env
+.env
+
+# Runtime e logs
+/runtime/*
+!/runtime/.gitkeep
+/logs/
+node_modules/
+bun.lockb
