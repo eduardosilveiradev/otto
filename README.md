@@ -31,25 +31,29 @@ otto  →  chegou uma cobrança da Enel, vence sexta. R$ 214.
 
 ## Instalação
 
-### Pelo Cowork (recomendado — não precisa saber terminal)
+Você não instala nada. Você cola um texto no Cowork e ele se instala sozinho.
 
-1. **Customize → Plugins → Add marketplace**
-2. Cole: `eduardosilveiradev/otto`
-3. Instale o plugin **otto**
-4. Peça pro Claude: **"configura o otto"**
+Abra o Cowork e cole isto:
 
-A partir daí ele te entrevista — nome, fuso, o bot do Telegram, o que você quer
-ser avisado — e instala tudo sozinho. Você só responde perguntas e digita a
-senha do computador uma vez.
+```
+Instale o Otto pra mim, do zero.
 
-### Pelo terminal
+Clone https://github.com/eduardosilveiradev/otto.git em ~/.otto e siga o guia
+em ~/.otto/otto/skills/setup/SKILL.md à risca, do começo ao fim. Ele começa com
+uma entrevista — me pergunte uma coisa de cada vez, em português, e espere eu
+responder. Depois instala tudo sozinho.
 
-```bash
-git clone https://github.com/eduardosilveiradev/otto.git ~/.otto
-cd ~/.otto && bash scripts/install.sh
+No final, adicione ~/.otto/.claude-plugin como marketplace e instale o plugin
+otto, pra eu ficar com os comandos /otto:setup e /otto:access. E não diga que
+funcionou sem antes ver o serviço no ar e o bot respondendo.
 ```
 
-Depois abra o Claude Code e rode `/otto:setup` para a parte da entrevista.
+A partir daí é conversa: ele pergunta seu nome, seu fuso, o que você faz, te
+guia pra criar o bot do Telegram, e instala o resto sozinho. Você só responde
+perguntas e digita a senha do computador uma vez — é o que libera o Otto a
+falar sem ser perguntado.
+
+Leva uns cinco minutos, quase tudo esperando você responder.
 
 ## O que você precisa
 
