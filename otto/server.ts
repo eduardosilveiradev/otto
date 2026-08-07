@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Poke channel for Claude Code — proactive assistant over Telegram.
+ * Otto channel for Claude Code — proactive assistant over Telegram.
  *
  * Three subsystems in one process:
  *   1. Telegram I/O   — grammy long-poll -> access gate -> notifications/claude/channel
@@ -11,11 +11,11 @@
  *                       does the Gmail search + importance classification via
  *                       its own MCP connectors and records state back here
  *
- * State lives in ~/.claude/channels/poke/ — access.json, triggers.json,
+ * State lives in ~/.claude/channels/otto/ — access.json, triggers.json,
  * email-state.json, .env (bot token), inbox/.
  *
- * Config is per-user: everything personal lives in ~/.claude/channels/poke/
- * and in the CLAUDE.md written by the `poke:setup` skill. Nothing about any
+ * Config is per-user: everything personal lives in ~/.claude/channels/otto/
+ * and in the CLAUDE.md written by the `otto:setup` skill. Nothing about any
  * particular user belongs in this file.
  */
 
@@ -37,7 +37,7 @@ import {
 import { homedir } from 'os'
 import { join, extname, sep } from 'path'
 
-const STATE_DIR = process.env.POKE_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'poke')
+const STATE_DIR = process.env.OTTO_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'otto')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
 const TRIGGERS_FILE = join(STATE_DIR, 'triggers.json')
 const EMAIL_STATE_FILE = join(STATE_DIR, 'email-state.json')
@@ -57,11 +57,11 @@ try {
 } catch {}
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN
-const STATIC = process.env.POKE_ACCESS_MODE === 'static'
+const STATIC = process.env.OTTO_ACCESS_MODE === 'static'
 
 if (!TOKEN) {
   process.stderr.write(
-    `poke channel: TELEGRAM_BOT_TOKEN required\n  set in ${ENV_FILE}\n`,
+    `otto channel: TELEGRAM_BOT_TOKEN required\n  set in ${ENV_FILE}\n`,
   )
   process.exit(1)
 }
@@ -84,24 +84,24 @@ function reapStalePoller(): void {
   }
   if (!alive()) return
 
-  process.stderr.write(`poke channel: replacing stale poller pid=${stale}\n`)
+  process.stderr.write(`otto channel: replacing stale poller pid=${stale}\n`)
   try { process.kill(stale, 'SIGTERM') } catch {}
 
   const deadline = Date.now() + 3000
   while (alive() && Date.now() < deadline) Bun.sleepSync(100)
   if (!alive()) return
 
-  process.stderr.write(`poke channel: pid=${stale} ignored SIGTERM, sending SIGKILL\n`)
+  process.stderr.write(`otto channel: pid=${stale} ignored SIGTERM, sending SIGKILL\n`)
   try { process.kill(stale, 'SIGKILL') } catch {}
   const hardDeadline = Date.now() + 2000
   while (alive() && Date.now() < hardDeadline) Bun.sleepSync(100)
-  if (alive()) process.stderr.write(`poke channel: pid=${stale} survived SIGKILL — expect 409s\n`)
+  if (alive()) process.stderr.write(`otto channel: pid=${stale} survived SIGKILL — expect 409s\n`)
 }
 process.on('unhandledRejection', err => {
-  process.stderr.write(`poke channel: unhandled rejection: ${err}\n`)
+  process.stderr.write(`otto channel: unhandled rejection: ${err}\n`)
 })
 process.on('uncaughtException', err => {
-  process.stderr.write(`poke channel: uncaught exception: ${err}\n`)
+  process.stderr.write(`otto channel: uncaught exception: ${err}\n`)
 })
 
 const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
@@ -163,7 +163,7 @@ function readAccessFile(): Access {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return defaultAccess()
     try { renameSync(ACCESS_FILE, `${ACCESS_FILE}.corrupt-${Date.now()}`) } catch {}
-    process.stderr.write(`poke channel: access.json is corrupt, moved aside.\n`)
+    process.stderr.write(`otto channel: access.json is corrupt, moved aside.\n`)
     return defaultAccess()
   }
 }
@@ -184,7 +184,7 @@ function loadAccess(): Access {
 function assertAllowedChat(chat_id: string): void {
   const access = loadAccess()
   if (access.allowFrom.includes(chat_id)) return
-  throw new Error(`chat ${chat_id} is not allowlisted — add via /poke:access`)
+  throw new Error(`chat ${chat_id} is not allowlisted — add via /otto:access`)
 }
 
 function saveAccess(a: Access): void {
@@ -269,7 +269,7 @@ function loadTriggers(): Trigger[] {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
       try { renameSync(TRIGGERS_FILE, `${TRIGGERS_FILE}.corrupt-${Date.now()}`) } catch {}
-      process.stderr.write('poke channel: triggers.json corrupt, moved aside.\n')
+      process.stderr.write('otto channel: triggers.json corrupt, moved aside.\n')
     }
     return []
   }
@@ -354,13 +354,13 @@ async function newMailSince(sinceIso: string | undefined): Promise<number | null
     const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
     clearTimeout(timer)
     if (code !== 0) {
-      process.stderr.write(`poke channel: gog pre-check exit ${code} — scanning anyway\n`)
+      process.stderr.write(`otto channel: gog pre-check exit ${code} — scanning anyway\n`)
       return null
     }
     const threads = (JSON.parse(out) as { threads?: unknown[] }).threads
     return Array.isArray(threads) ? threads.length : null
   } catch (err) {
-    process.stderr.write(`poke channel: gog pre-check failed (${err}) — scanning anyway\n`)
+    process.stderr.write(`otto channel: gog pre-check failed (${err}) — scanning anyway\n`)
     return null
   }
 }
@@ -406,7 +406,7 @@ const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
 // ---------------------------------------------------------------------------
 
 const mcp = new Server(
-  { name: 'poke', version: '0.1.0' },
+  { name: 'otto', version: '0.1.0' },
   {
     capabilities: {
       tools: {},
@@ -416,9 +416,9 @@ const mcp = new Server(
       },
     },
     instructions: [
-      'You are Poke — a proactive personal assistant. The user reads Telegram only: anything they should see must go through the reply tool; transcript output never reaches them. Who the user is, what language to write in, their voice, proactivity and email-sending rules all live in the CLAUDE.md generated at setup — read it and follow it exactly.',
+      'You are Otto — a proactive personal assistant. The user reads Telegram only: anything they should see must go through the reply tool; transcript output never reaches them. Who the user is, what language to write in, their voice, proactivity and email-sending rules all live in the CLAUDE.md generated at setup — read it and follow it exactly.',
       '',
-      'EVENTS — the <channel source="poke"> tag has an event attribute:',
+      'EVENTS — the <channel source="otto"> tag has an event attribute:',
       '- none: Telegram message from the user; answer via reply.',
       '- event="trigger": a trigger fired; content is its action text — carry it out. If redundant or its premise no longer holds, do nothing; silence is a valid outcome. Never tell the user a trigger fired.',
       '- event="email-scan": search Gmail for mail since last_scan (in the tag). Urgent, needs reply, OTP/security, time-sensitive, or important sender → message the user briefly. Marketing/newsletters/notifications → stay silent. Evaluate any email-trigger conditions listed in content. ALWAYS finish by calling set_email_state with the current ISO time, even when silent.',
@@ -436,7 +436,7 @@ const mcp = new Server(
 // Channel-host gate
 // ---------------------------------------------------------------------------
 // This server is only useful inside a session launched with
-// `--channels plugin:poke@poke-core`. But any session that merely loads the
+// `--channels plugin:otto@otto`. But any session that merely loads the
 // plugin for its tools starts it too — and a non-channel host that polls is
 // strictly worse than one that doesn't. Telegram delivers each update exactly
 // once: a deaf poller consumes the user's message, acks it with a reaction, and
@@ -449,15 +449,15 @@ const mcp = new Server(
 // connections every few seconds while a session starts up, SIGINTing the server
 // each time; anything that defers taking the token past that window means the
 // process is killed before it ever polls, and the channel never comes up.
-// POKE_CHANNEL_HOST is exported by run.sh and inherited by the whole session, so
+// OTTO_CHANNEL_HOST is exported by run.sh and inherited by the whole session, so
 // it is known before the first line of I/O.
-let isChannelHost = process.env.POKE_CHANNEL_HOST === '1'
+let isChannelHost = process.env.OTTO_CHANNEL_HOST === '1'
 let pollerStarted = false
 
 function becomeChannelHost(reason: string): void {
   if (pollerStarted) return
   pollerStarted = true
-  process.stderr.write(`poke channel: channel host (${reason}) — taking the Telegram token\n`)
+  process.stderr.write(`otto channel: channel host (${reason}) — taking the Telegram token\n`)
   reapStalePoller()
   writeFileSync(PID_FILE, String(process.pid))
   setInterval(schedulerTick, SCHEDULER_MS).unref()
@@ -477,8 +477,8 @@ mcp.oninitialized = () => {
     becomeChannelHost('client advertises claude/channel')
   } else {
     process.stderr.write(
-      'poke channel: not a channel host — serving tools only, not polling Telegram. ' +
-        'Start the session with `--channels plugin:poke@poke-core` to receive messages.\n',
+      'otto channel: not a channel host — serving tools only, not polling Telegram. ' +
+        'Start the session with `--channels plugin:otto@otto` to receive messages.\n',
     )
   }
 }
@@ -505,7 +505,7 @@ mcp.setNotificationHandler(
       .text('❌ Deny', `perm:deny:${request_id}`)
     for (const chat_id of access.allowFrom) {
       void bot.api.sendMessage(chat_id, `🔐 Permission: ${tool_name}`, { reply_markup: keyboard }).catch(e => {
-        process.stderr.write(`poke channel: permission_request send to ${chat_id} failed: ${e}\n`)
+        process.stderr.write(`otto channel: permission_request send to ${chat_id} failed: ${e}\n`)
       })
     }
   },
@@ -828,7 +828,7 @@ function injectEvent(event: string, content: string, extraMeta: Record<string, s
       },
     },
   }).catch(err => {
-    process.stderr.write(`poke channel: failed to inject ${event}: ${err}\n`)
+    process.stderr.write(`otto channel: failed to inject ${event}: ${err}\n`)
   })
 }
 
@@ -849,7 +849,7 @@ async function runEmailScan(access: Access): Promise<void> {
       // about the right period, and leave the note untouched — it is the
       // session's carry-forward and nothing here has invalidated it.
       saveEmailState({ ...state, lastScan: new Date().toISOString() })
-      process.stderr.write('poke channel: no new mail since last scan — session not woken\n')
+      process.stderr.write('otto channel: no new mail since last scan — session not woken\n')
       return
     }
 
@@ -890,7 +890,7 @@ function schedulerTick(): void {
       t.nextRun = undefined
     }
     changed = true
-    process.stderr.write(`poke channel: firing trigger ${t.id}\n`)
+    process.stderr.write(`otto channel: firing trigger ${t.id}\n`)
     injectEvent('trigger', t.action, { trigger_id: t.id, repeating: String(t.repeating) })
   }
   if (changed) saveTriggers(ts)
@@ -955,11 +955,11 @@ let shuttingDown = false
 function shutdown(): void {
   // A second signal means the graceful path is wedged — leave immediately.
   if (shuttingDown) {
-    process.stderr.write('poke channel: second shutdown signal — exiting hard\n')
+    process.stderr.write('otto channel: second shutdown signal — exiting hard\n')
     process.exit(1)
   }
   shuttingDown = true
-  process.stderr.write('poke channel: shutting down\n')
+  process.stderr.write('otto channel: shutting down\n')
   try {
     if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) rmSync(PID_FILE)
   } catch {}
@@ -984,7 +984,7 @@ setInterval(() => {
     (process.ppid !== bootPpid || (process.ppid === 1 && bootPpid !== 1))
   const orphaned = reparented || process.stdin.destroyed || process.stdin.readableEnded
   if (orphaned) {
-    process.stderr.write(`poke channel: orphaned (ppid ${bootPpid} -> ${process.ppid}) — shutting down\n`)
+    process.stderr.write(`otto channel: orphaned (ppid ${bootPpid} -> ${process.ppid}) — shutting down\n`)
     shutdown()
   }
 }, 5000).unref()
@@ -994,7 +994,7 @@ bot.command('start', async ctx => {
   const access = loadAccess()
   if (access.dmPolicy === 'disabled') return
   if (access.dmPolicy === 'allowlist' && !access.allowFrom.includes(String(ctx.from?.id))) return
-  await ctx.reply('poke online.')
+  await ctx.reply('otto online.')
 })
 
 bot.on('callback_query:data', async ctx => {
@@ -1050,7 +1050,7 @@ async function handleInbound(
   if (result.action === 'drop') return
   if (result.action === 'pair') {
     await ctx.reply(
-      `${result.isResend ? 'Still pending' : 'Pairing required'} — run in Claude Code:\n\n/poke:access pair ${result.code}`,
+      `${result.isResend ? 'Still pending' : 'Pairing required'} — run in Claude Code:\n\n/otto:access pair ${result.code}`,
     )
     return
   }
@@ -1108,7 +1108,7 @@ async function handleInbound(
       },
     },
   }).catch(err => {
-    process.stderr.write(`poke channel: failed to deliver inbound: ${err}\n`)
+    process.stderr.write(`otto channel: failed to deliver inbound: ${err}\n`)
   })
 }
 
@@ -1129,7 +1129,7 @@ bot.on('message:photo', async ctx => {
       writeFileSync(path, Buffer.from(await res.arrayBuffer()))
       return path
     } catch (err) {
-      process.stderr.write(`poke channel: photo download failed: ${err}\n`)
+      process.stderr.write(`otto channel: photo download failed: ${err}\n`)
       return undefined
     }
   })
@@ -1157,7 +1157,7 @@ bot.on('message:video', async ctx => {
 })
 
 bot.catch(err => {
-  process.stderr.write(`poke channel: handler error (polling continues): ${err.error}\n`)
+  process.stderr.write(`otto channel: handler error (polling continues): ${err.error}\n`)
 })
 
 async function startPolling(): Promise<void> {
@@ -1167,7 +1167,7 @@ async function startPolling(): Promise<void> {
         onStart: info => {
           attempt = 0
           botUsername = info.username
-          process.stderr.write(`poke channel: polling as @${info.username}\n`)
+          process.stderr.write(`otto channel: polling as @${info.username}\n`)
         },
       })
       return
@@ -1184,18 +1184,18 @@ async function startPolling(): Promise<void> {
         try { holder = parseInt(readFileSync(PID_FILE, 'utf8'), 10) } catch {}
         if (holder !== process.pid) {
           process.stderr.write(
-            `poke channel: 409 Conflict and pid file holds ${holder || 'nothing'}, not us — exiting as duplicate poller\n`,
+            `otto channel: 409 Conflict and pid file holds ${holder || 'nothing'}, not us — exiting as duplicate poller\n`,
           )
           process.exit(0)
         }
         process.stderr.write(
-          `poke channel: 409 Conflict persists — another poller holds this token. Retrying every 60s; the channel is deaf until it lets go.\n`,
+          `otto channel: 409 Conflict persists — another poller holds this token. Retrying every 60s; the channel is deaf until it lets go.\n`,
         )
         await new Promise(r => setTimeout(r, 60_000))
         continue
       }
       const delay = Math.min(1000 * attempt, 15000)
-      process.stderr.write(`poke channel: ${is409 ? '409 Conflict' : `polling error: ${err}`}, retrying in ${delay / 1000}s\n`)
+      process.stderr.write(`otto channel: ${is409 ? '409 Conflict' : `polling error: ${err}`}, retrying in ${delay / 1000}s\n`)
       await new Promise(r => setTimeout(r, delay))
     }
   }
@@ -1203,4 +1203,4 @@ async function startPolling(): Promise<void> {
 
 // Take the token immediately when run.sh told us we are the channel session.
 // Anything else waits for the capability check in oninitialized.
-if (isChannelHost) becomeChannelHost('POKE_CHANNEL_HOST')
+if (isChannelHost) becomeChannelHost('OTTO_CHANNEL_HOST')

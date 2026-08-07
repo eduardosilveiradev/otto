@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Libera o plugin de canal do Poke na política do Claude Code.
+# Libera o plugin de canal do Otto na política do Claude Code.
 # Rode com sudo:  sudo bash scripts/allow-channel-plugin.sh
 #
-# Sem isto o Poke ainda responde quando você escreve, mas nunca começa uma
+# Sem isto o Otto ainda responde quando você escreve, mas nunca começa uma
 # conversa — nada de lembrete, nada de aviso de e-mail.
 #
 # Cuidado herdado do discord-channel: definir allowedChannelPlugins SUBSTITUI a
@@ -43,7 +43,7 @@ wanted = [
     {"marketplace": "claude-plugins-official", "plugin": "telegram"},
     {"marketplace": "claude-plugins-official", "plugin": "fakechat"},
     {"marketplace": "claude-plugins-official", "plugin": "imessage"},
-    {"marketplace": "poke-core", "plugin": "poke"},
+    {"marketplace": "otto", "plugin": "otto"},
 ]
 
 merged = list(settings.get("allowedChannelPlugins") or [])
@@ -62,4 +62,4 @@ print("escrito:", path)
 PY
 
 chmod 644 "$FILE"
-echo "pronto. o canal do Poke está autorizado."
+echo "pronto. o canal do Otto está autorizado."

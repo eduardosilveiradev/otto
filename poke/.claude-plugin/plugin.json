@@ -1,9 +1,0 @@
-{
-  "name": "poke",
-  "version": "1.0.0",
-  "description": "Assistente pessoal proativo no Telegram: gatilhos (lembretes + automações de e-mail), varredura de e-mail filtrada por importância, rascunho-e-confirmação. Rode /poke:setup para instalar.",
-  "author": { "name": "eduardosilveiradev" },
-  "homepage": "https://github.com/eduardosilveiradev/poke-core",
-  "license": "MIT",
-  "keywords": ["telegram", "poke", "assistente", "proativo", "channel", "mcp"]
-}

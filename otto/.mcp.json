@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "poke": {
+    "otto": {
       "command": "bun",
       "args": [
         "${CLAUDE_PLUGIN_ROOT}/server.ts"

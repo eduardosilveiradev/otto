@@ -1,10 +1,10 @@
 {
-  "name": "poke-core",
+  "name": "otto",
   "owner": { "name": "eduardosilveiradev" },
   "plugins": [
     {
-      "name": "poke",
-      "source": "./poke",
+      "name": "otto",
+      "source": "./otto",
       "description": "Assistente pessoal proativo no Telegram: lembretes em linguagem natural, varredura de e-mail filtrada por importância, rascunho-e-confirmação antes de enviar qualquer coisa."
     }
   ]

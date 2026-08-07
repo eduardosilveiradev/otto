@@ -1,4 +1,4 @@
-# poke
+# otto
 
 Um assistente pessoal proativo que vive no seu Telegram.
 
@@ -7,12 +7,12 @@ e-mail que importa, e fica calado no resto do tempo — que é a parte difícil.
 
 ```
 você  →  me lembra quinta 9h de pagar o aluguel
-poke  →  👍
+otto  →  👍
 
 (quinta, 9h)
-poke  →  aluguel hoje.
+otto  →  aluguel hoje.
 
-poke  →  chegou uma cobrança da Enel, vence sexta. R$ 214.
+otto  →  chegou uma cobrança da Enel, vence sexta. R$ 214.
 ```
 
 ## O que ele faz
@@ -34,9 +34,9 @@ poke  →  chegou uma cobrança da Enel, vence sexta. R$ 214.
 ### Pelo Cowork (recomendado — não precisa saber terminal)
 
 1. **Customize → Plugins → Add marketplace**
-2. Cole: `eduardosilveiradev/poke-core`
-3. Instale o plugin **poke**
-4. Peça pro Claude: **"configura o poke"**
+2. Cole: `eduardosilveiradev/otto`
+3. Instale o plugin **otto**
+4. Peça pro Claude: **"configura o otto"**
 
 A partir daí ele te entrevista — nome, fuso, o bot do Telegram, o que você quer
 ser avisado — e instala tudo sozinho. Você só responde perguntas e digita a
@@ -45,11 +45,11 @@ senha do computador uma vez.
 ### Pelo terminal
 
 ```bash
-git clone https://github.com/eduardosilveiradev/poke-core.git ~/.poke-core
-cd ~/.poke-core && bash scripts/install.sh
+git clone https://github.com/eduardosilveiradev/otto.git ~/.otto
+cd ~/.otto && bash scripts/install.sh
 ```
 
-Depois abra o Claude Code e rode `/poke:setup` para a parte da entrevista.
+Depois abra o Claude Code e rode `/otto:setup` para a parte da entrevista.
 
 ## O que você precisa
 
@@ -62,7 +62,7 @@ Depois abra o Claude Code e rode `/poke:setup` para a parte da entrevista.
 
 ## Como funciona
 
-Um processo só (`poke/server.ts`) rodando três coisas ao mesmo tempo:
+Um processo só (`otto/server.ts`) rodando três coisas ao mesmo tempo:
 
 1. **Telegram** — escuta suas mensagens, checa se você está na lista de
    autorizados e injeta na sessão viva do Claude. Grupos são descartados: isso é
@@ -83,16 +83,16 @@ mudar o jeito dele.
 
 | | |
 |---|---|
-| `/poke:setup` | instalar ou reconfigurar do zero |
-| `/poke:access` | mudar horário de silêncio, cadência, quem tem acesso |
-| `systemctl --user status poke.service` | está no ar? |
-| `journalctl --user -u poke.service -f` | ver o que ele está fazendo |
+| `/otto:setup` | instalar ou reconfigurar do zero |
+| `/otto:access` | mudar horário de silêncio, cadência, quem tem acesso |
+| `systemctl --user status otto.service` | está no ar? |
+| `journalctl --user -u otto.service -f` | ver o que ele está fazendo |
 | `bash scripts/install.sh --check` | diagnóstico, sem mudar nada |
 
 ## Privacidade e segurança
 
 - O token do bot e a lista de autorizados ficam em
-  `~/.claude/channels/poke/`, com permissão `600`, e estão no `.gitignore`.
+  `~/.claude/channels/otto/`, com permissão `600`, e estão no `.gitignore`.
   Nada pessoal sobe pro repositório.
 - Só os IDs do Telegram que você autorizou conseguem falar com ele. O resto é
   descartado sem resposta.
@@ -107,10 +107,10 @@ mudar o jeito dele.
 | Sintoma | Causa | Solução |
 |---|---|---|
 | responde, mas nunca puxa assunto | canal não autorizado | `sudo bash scripts/allow-channel-plugin.sh` |
-| não responde nada | serviço caído | `systemctl --user restart poke.service` |
-| `409 Conflict` no log | dois Pokes no mesmo bot | só um dispositivo por bot do Telegram |
+| não responde nada | serviço caído | `systemctl --user restart otto.service` |
+| `409 Conflict` no log | dois Ottos no mesmo bot | só um dispositivo por bot do Telegram |
 | cai quando você desloga | linger desligado | `sudo loginctl enable-linger $USER` |
-| ignora suas mensagens | ID errado | `/poke:access list` e confira com o @userinfobot |
+| ignora suas mensagens | ID errado | `/otto:access list` e confira com o @userinfobot |
 
 ## Licença
 

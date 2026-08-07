@@ -1,9 +1,9 @@
 ---
 name: setup
-description: Instala e configura o Poke do zero — entrevista o usuário, cria o bot do Telegram, escreve a configuração e sobe o serviço. Use quando a pessoa acabou de instalar o plugin, pediu para configurar o Poke, disse que o Poke não está respondendo, ou quer refazer a configuração.
+description: Instala e configura o Otto do zero — entrevista o usuário, cria o bot do Telegram, escreve a configuração e sobe o serviço. Use quando a pessoa acabou de instalar o plugin, pediu para configurar o Otto, disse que o Otto não está respondendo, ou quer refazer a configuração.
 ---
 
-# Configuração do Poke
+# Configuração do Otto
 
 Você vai transformar uma instalação vazia em um assistente proativo funcionando.
 Isso tem duas metades, **nesta ordem**:
@@ -13,7 +13,7 @@ Isso tem duas metades, **nesta ordem**:
 
 **Fale português do Brasil o tempo todo.** A pessoa do outro lado pode nunca ter
 aberto um terminal na vida. Nunca peça pra ela "rodar um comando" — você roda.
-Nada de jargão: não é "daemon", é "o Poke fica ligado sozinho". Não é "systemd
+Nada de jargão: não é "daemon", é "o Otto fica ligado sozinho". Não é "systemd
 unit", é "serviço que sobe junto com o computador".
 
 **Uma pergunta por vez.** Nunca despeje um formulário de dez perguntas. Espere a
@@ -46,9 +46,9 @@ saber quem você é, depois eu instalo tudo sozinho") e comece.
 
 - Como quer ser chamada.
 - Em que cidade/fuso mora. **Guarde o fuso IANA** (ex.: `America/Sao_Paulo`) —
-  todo horário que o Poke mostrar depende disso.
+  todo horário que o Otto mostrar depende disso.
 - O que ela faz — uma linha. Isso é o que separa "seu voo sai 14h" de
-  "chegou boleto da faculdade": o Poke precisa saber o que é importante *pra ela*.
+  "chegou boleto da faculdade": o Otto precisa saber o que é importante *pra ela*.
 
 ### 2. O bot do Telegram
 
@@ -57,7 +57,7 @@ Ela precisa criar um bot. Guie passo a passo, esperando cada confirmação:
 1. Abrir o Telegram e procurar **@BotFather**.
 2. Mandar `/newbot`.
 3. Escolher um nome (o que aparece na conversa) e um usuário (tem que terminar
-   em `bot`, ex.: `maria_poke_bot`).
+   em `bot`, ex.: `maria_otto_bot`).
 4. O BotFather devolve um token parecido com `8123456789:AAH...`.
 
 Peça o token. **Ele é uma senha** — diga isso, e diga que ele fica só na máquina
@@ -68,11 +68,11 @@ confirme só os últimos 4 caracteres.
 
 Ela manda `/start` pro **@userinfobot** e ele responde com um número (`Id:
 123456789`). Esse número é o que autoriza a conversa — só ele vai poder falar com
-o Poke. Peça o número.
+o Otto. Peça o número.
 
 ### 4. E-mail (opcional)
 
-O Poke pode vigiar a caixa de entrada e avisar do que importa.
+O Otto pode vigiar a caixa de entrada e avisar do que importa.
 
 - Quer isso? Se não, siga adiante — funciona bem só com lembretes.
 - Se sim: qual conta Gmail. Explique que ela vai precisar conectar o Gmail
@@ -87,7 +87,7 @@ por ela continuam tocando; só a varredura de e-mail cala a boca.
 
 ### 6. Tom
 
-Como o Poke deve falar. Ofereça três e deixe ela inventar a própria:
+Como o Otto deve falar. Ofereça três e deixe ela inventar a própria:
 
 - **Seco** — curto, direto, sem enrolação. (padrão)
 - **Amigável** — leve, algum emoji.
@@ -105,19 +105,19 @@ se está certo. **Só depois** do "sim" você instala.
 
 Narre em uma linha ("beleza, instalando — leva uns dois minutos") e execute.
 
-### Passo 1 — Onde o Poke mora
+### Passo 1 — Onde o Otto mora
 
 Se o plugin veio pelo Cowork, ele está em algum lugar de leitura-apenas. O
 serviço precisa de uma cópia própria:
 
 ```bash
-POKE_HOME="$HOME/.poke-core"
-git clone --depth 1 https://github.com/eduardosilveiradev/poke-core.git "$POKE_HOME" \
-  || (cd "$POKE_HOME" && git pull --ff-only)
+OTTO_HOME="$HOME/.otto"
+git clone --depth 1 https://github.com/eduardosilveiradev/otto.git "$OTTO_HOME" \
+  || (cd "$OTTO_HOME" && git pull --ff-only)
 ```
 
 Se `git clone` falhar (sem rede, sem git), copie a pasta do plugin —
-`${CLAUDE_PLUGIN_ROOT}/..` — pra `$POKE_HOME`.
+`${CLAUDE_PLUGIN_ROOT}/..` — pra `$OTTO_HOME`.
 
 ### Passo 2 — Dependências
 
@@ -134,9 +134,9 @@ a instalação dele é fora do seu alcance.
 ### Passo 3 — Os segredos e a configuração
 
 ```bash
-mkdir -p ~/.claude/channels/poke
-printf 'TELEGRAM_BOT_TOKEN=%s\n' "<token>" > ~/.claude/channels/poke/.env
-chmod 600 ~/.claude/channels/poke/.env
+mkdir -p ~/.claude/channels/otto
+printf 'TELEGRAM_BOT_TOKEN=%s\n' "<token>" > ~/.claude/channels/otto/.env
+chmod 600 ~/.claude/channels/otto/.env
 ```
 
 E o `access.json`, com o que ela respondeu:
@@ -157,39 +157,39 @@ E o `access.json`, com o que ela respondeu:
 
 ### Passo 4 — A personalidade
 
-Copie `templates/CLAUDE.md.template` para `$POKE_HOME/CLAUDE.md` e substitua
+Copie `templates/CLAUDE.md.template` para `$OTTO_HOME/CLAUDE.md` e substitua
 cada `{{PLACEHOLDER}}` pelas respostas da entrevista. Esse arquivo **é** a
-personalidade do Poke — nome, fuso, o que importa pra ela, tom, idioma. Escreva
+personalidade do Otto — nome, fuso, o que importa pra ela, tom, idioma. Escreva
 em português.
 
 Não deixe nenhum `{{...}}` pra trás. Confira com
-`grep -n '{{' "$POKE_HOME/CLAUDE.md"`.
+`grep -n '{{' "$OTTO_HOME/CLAUDE.md"`.
 
 ### Passo 5 — Autorizar o canal
 
-Canal é o mecanismo que deixa o Poke te mandar mensagem sem você perguntar
+Canal é o mecanismo que deixa o Otto te mandar mensagem sem você perguntar
 nada, e ele é bloqueado por padrão. Precisa de senha de administrador:
 
 ```bash
-sudo bash "$POKE_HOME/scripts/allow-channel-plugin.sh"
+sudo bash "$OTTO_HOME/scripts/allow-channel-plugin.sh"
 ```
 
-Avise **antes**: "vai pedir a senha do seu computador, é pra liberar o Poke a
-falar sozinho". Se ela recusar ou não tiver sudo, o Poke ainda responde quando
+Avise **antes**: "vai pedir a senha do seu computador, é pra liberar o Otto a
+falar sozinho". Se ela recusar ou não tiver sudo, o Otto ainda responde quando
 ela escrever, mas nunca começa conversa — diga isso claramente, não deixe
 parecer que funcionou inteiro.
 
 ### Passo 6 — Deixar ligado sozinho
 
 ```bash
-bash "$POKE_HOME/scripts/install.sh" --service-only
+bash "$OTTO_HOME/scripts/install.sh" --service-only
 ```
 
 Isso escreve o serviço do usuário, liga `loginctl enable-linger` (pra sobreviver
 ao logout) e sobe:
 
 ```bash
-systemctl --user enable --now poke.service
+systemctl --user enable --now otto.service
 ```
 
 ### Passo 7 — Provar que funciona
@@ -197,8 +197,8 @@ systemctl --user enable --now poke.service
 Não declare vitória sem ver:
 
 ```bash
-systemctl --user is-active poke.service          # esperado: active
-journalctl --user -u poke.service -n 20 --no-pager | grep -i "polling as @"
+systemctl --user is-active otto.service          # esperado: active
+journalctl --user -u otto.service -n 20 --no-pager | grep -i "polling as @"
 ```
 
 Aquele `polling as @nomedobot` é a prova de que o Telegram conectou. Peça pra ela
@@ -210,7 +210,7 @@ mandar **oi** pro bot. Se chegar resposta, acabou.
 
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
-| `409 Conflict` no log | dois Pokes no mesmo token | `systemctl --user restart poke.service`; se persistir, tem outra máquina usando o mesmo bot |
+| `409 Conflict` no log | dois Ottos no mesmo token | `systemctl --user restart otto.service`; se persistir, tem outra máquina usando o mesmo bot |
 | `TELEGRAM_BOT_TOKEN required` | `.env` vazio ou no lugar errado | reescreva o Passo 3 |
 | serviço sobe e cai em loop | `claude` não está no PATH do serviço | ponha o caminho absoluto no `run.sh` |
 | bot ignora as mensagens dela | ID errado no `allowFrom` | confira com o @userinfobot de novo |
@@ -230,7 +230,7 @@ Diga a ela, em uma mensagem curta:
   aluguel"*.
 - Se ligou e-mail: falta conectar o Gmail em **Customize → Connectors**, senão a
   vigilância não tem o que ler.
-- Pra mudar horário de silêncio ou cadência: `/poke:access`.
+- Pra mudar horário de silêncio ou cadência: `/otto:access`.
 
 ## Segurança
 

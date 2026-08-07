@@ -1,13 +1,13 @@
 [Unit]
-Description=Poke — assistente pessoal proativo no Telegram
-Documentation=https://github.com/eduardosilveiradev/poke-core
+Description=Otto — assistente pessoal proativo no Telegram
+Documentation=https://github.com/eduardosilveiradev/otto
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory={{POKE_HOME}}/runtime
-ExecStart=/bin/bash {{POKE_HOME}}/run.sh
+WorkingDirectory={{OTTO_HOME}}/runtime
+ExecStart=/bin/bash {{OTTO_HOME}}/run.sh
 Environment=HOME={{HOME}}
 Environment=PATH={{HOME}}/.local/bin:{{HOME}}/.bun/bin:/usr/local/bin:/usr/bin:/bin
 Environment=TERM=xterm-256color
@@ -19,7 +19,7 @@ RestartSec=30
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=poke
+SyslogIdentifier=otto
 
 [Install]
 WantedBy=default.target

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instalador do Poke para Ubuntu.
+# Instalador do Otto para Ubuntu.
 #
 #   bash scripts/install.sh                 # tudo: dependências + serviço
 #   bash scripts/install.sh --service-only  # só o serviço (o resto já foi feito)
@@ -9,10 +9,10 @@
 # em scripts/allow-channel-plugin.sh, de propósito separada.
 set -uo pipefail
 
-POKE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STATE_DIR="$HOME/.claude/channels/poke"
+OTTO_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE_DIR="$HOME/.claude/channels/otto"
 UNIT_DIR="$HOME/.config/systemd/user"
-UNIT="$UNIT_DIR/poke.service"
+UNIT="$UNIT_DIR/otto.service"
 
 MODE="full"
 case "${1:-}" in
@@ -26,7 +26,7 @@ ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; }
 
-echo "poke — instalação em $POKE_HOME"
+echo "otto — instalação em $OTTO_HOME"
 echo
 
 # ---------------------------------------------------------------------------
@@ -54,13 +54,13 @@ command -v gog >/dev/null \
   || warn "gog ausente — opcional, só otimiza a varredura de e-mail"
 
 if [ -s "$STATE_DIR/.env" ]; then ok "token do Telegram configurado"
-else warn "token do Telegram ausente — rode /poke:setup no Claude"; fi
+else warn "token do Telegram ausente — rode /otto:setup no Claude"; fi
 
 if [ -s "$STATE_DIR/access.json" ]; then ok "access.json presente"
-else warn "access.json ausente — rode /poke:setup no Claude"; fi
+else warn "access.json ausente — rode /otto:setup no Claude"; fi
 
-if [ -f "$POKE_HOME/CLAUDE.md" ]; then
-  if grep -q '{{' "$POKE_HOME/CLAUDE.md" 2>/dev/null; then
+if [ -f "$OTTO_HOME/CLAUDE.md" ]; then
+  if grep -q '{{' "$OTTO_HOME/CLAUDE.md" 2>/dev/null; then
     warn "CLAUDE.md ainda tem {{placeholders}} por preencher"
   else
     ok "CLAUDE.md personalizado"
@@ -70,11 +70,11 @@ else
 fi
 
 POLICY="/etc/claude-code/managed-settings.json"
-if [ -f "$POLICY" ] && grep -q '"poke"' "$POLICY" 2>/dev/null; then
+if [ -f "$POLICY" ] && grep -q '"otto"' "$POLICY" 2>/dev/null; then
   ok "canal autorizado na política do sistema"
 else
-  warn "canal não autorizado — sem isso o Poke responde mas nunca puxa assunto"
-  warn "  corrija com: sudo bash $POKE_HOME/scripts/allow-channel-plugin.sh"
+  warn "canal não autorizado — sem isso o Otto responde mas nunca puxa assunto"
+  warn "  corrija com: sudo bash $OTTO_HOME/scripts/allow-channel-plugin.sh"
 fi
 
 [ "$MODE" = "check" ] && { echo; echo "diagnóstico apenas — nada foi alterado."; exit 0; }
@@ -91,7 +91,7 @@ if [ "$MODE" = "full" ]; then
     export PATH="$HOME/.bun/bin:$PATH"
     command -v bun >/dev/null && ok "bun instalado" || { bad "falhou ao instalar o bun"; exit 1; }
   fi
-  ( cd "$POKE_HOME/poke" && bun install --no-summary >/dev/null 2>&1 ) \
+  ( cd "$OTTO_HOME/otto" && bun install --no-summary >/dev/null 2>&1 ) \
     && ok "dependências do plugin instaladas" \
     || warn "bun install falhou — o servidor tenta de novo ao subir"
 fi
@@ -105,9 +105,9 @@ echo
 echo "serviço:"
 mkdir -p "$UNIT_DIR"
 
-sed -e "s|{{POKE_HOME}}|$POKE_HOME|g" \
+sed -e "s|{{OTTO_HOME}}|$OTTO_HOME|g" \
     -e "s|{{HOME}}|$HOME|g" \
-    "$POKE_HOME/templates/poke.service.template" > "$UNIT"
+    "$OTTO_HOME/templates/otto.service.template" > "$UNIT"
 ok "unidade escrita em $UNIT"
 
 # Sem linger o serviço morre no logout — que é justamente quando um assistente
@@ -115,29 +115,29 @@ ok "unidade escrita em $UNIT"
 if loginctl enable-linger "$USER" 2>/dev/null; then
   ok "linger ligado (sobrevive ao logout)"
 else
-  warn "não consegui ligar o linger — o Poke vai cair quando você deslogar"
+  warn "não consegui ligar o linger — o Otto vai cair quando você deslogar"
   warn "  corrija com: sudo loginctl enable-linger $USER"
 fi
 
 systemctl --user daemon-reload 2>/dev/null
 
-if systemctl --user enable --now poke.service 2>/dev/null; then
+if systemctl --user enable --now otto.service 2>/dev/null; then
   sleep 3
-  if [ "$(systemctl --user is-active poke.service 2>/dev/null)" = "active" ]; then
-    ok "poke.service no ar"
+  if [ "$(systemctl --user is-active otto.service 2>/dev/null)" = "active" ]; then
+    ok "otto.service no ar"
   else
-    bad "o serviço subiu e caiu — veja: journalctl --user -u poke.service -n 30"
+    bad "o serviço subiu e caiu — veja: journalctl --user -u otto.service -n 30"
     exit 1
   fi
 else
-  bad "systemctl falhou — veja: journalctl --user -u poke.service -n 30"
+  bad "systemctl falhou — veja: journalctl --user -u otto.service -n 30"
   exit 1
 fi
 
 echo
 echo "pronto. comandos úteis:"
-echo "  systemctl --user status poke.service      # como está"
-echo "  journalctl --user -u poke.service -f      # acompanhar ao vivo"
-echo "  systemctl --user restart poke.service     # reiniciar"
+echo "  systemctl --user status otto.service      # como está"
+echo "  journalctl --user -u otto.service -f      # acompanhar ao vivo"
+echo "  systemctl --user restart otto.service     # reiniciar"
 echo
 echo "manda um 'oi' pro seu bot no Telegram pra confirmar."
