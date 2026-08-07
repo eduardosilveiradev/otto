@@ -36,16 +36,39 @@ Você não instala nada. Você cola um texto no Cowork e ele se instala sozinho.
 Abra o Cowork e cole isto:
 
 ```
-Instale o Otto pra mim, do zero.
+<tarefa>
+Instale o Otto pra mim, do zero. Eu não sei mexer em terminal — você faz tudo.
+</tarefa>
 
-Clone https://github.com/eduardosilveiradev/otto.git em ~/.otto e siga o guia
-em ~/.otto/otto/skills/setup/SKILL.md à risca, do começo ao fim. Ele começa com
-uma entrevista — me pergunte uma coisa de cada vez, em português, e espere eu
-responder. Depois instala tudo sozinho.
+<passo_1_baixar>
+git clone --depth 1 https://github.com/eduardosilveiradev/otto.git ~/.otto
+</passo_1_baixar>
 
-No final, adicione ~/.otto/.claude-plugin como marketplace e instale o plugin
-otto, pra eu ficar com os comandos /otto:setup e /otto:access. E não diga que
-funcionou sem antes ver o serviço no ar e o bot respondendo.
+<passo_2_seguir_o_guia>
+Leia ~/.otto/otto/skills/setup/SKILL.md inteiro antes de começar e siga à
+risca, do começo ao fim, sem pular passo. Ele é o instalador — este texto aqui
+só te aponta pra ele.
+</passo_2_seguir_o_guia>
+
+<como_falar_comigo>
+Português do Brasil. Uma pergunta por vez: espere minha resposta antes da
+próxima, e confirme o que entendeu. Nada de jargão e nada de me pedir pra
+rodar comando — o comando é você que roda.
+</como_falar_comigo>
+
+<passo_3_no_final>
+Adicione ~/.otto/.claude-plugin como marketplace e instale o plugin otto — é
+o que me dá os comandos /otto:setup e /otto:access.
+</passo_3_no_final>
+
+<como_saber_que_deu_certo>
+Não me diga que funcionou por dedução. Só depois de ver, com seus olhos:
+- o serviço ativo (systemctl --user is-active otto.service)
+- a linha "polling as @nomedobot" no log
+- o bot respondendo a uma mensagem de verdade que eu mandei
+
+Se algum passo falhar, diga qual falhou e o que isso me custa na prática.
+</como_saber_que_deu_certo>
 ```
 
 A partir daí é conversa: ele pergunta seu nome, seu fuso, o que você faz, te
