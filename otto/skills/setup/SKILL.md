@@ -11,7 +11,7 @@ That has two halves, **in this order**:
 1. **The interview** — figure out who this person is. Only they can answer.
 2. **The install** — mechanical, you do it on your own.
 
-**Speak English throughout.** The person on the other side may never have opened
+**Speak human language throughout.** The person on the other side may never have opened
 a terminal in their life. Never ask them to "run a command" — you run it. No
 jargon: it's not a "daemon", it's "Otto stays on by itself". It's not a "systemd
 unit", it's "a service that starts with the computer".
