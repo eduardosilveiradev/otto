@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Libera o plugin de canal do Otto na política do Claude Code.
-# Rode com sudo:  sudo bash scripts/allow-channel-plugin.sh
+# Authorizes Otto's channel plugin in the Claude Code policy.
+# Run it with sudo:  sudo bash scripts/allow-channel-plugin.sh
 #
-# Sem isto o Otto ainda responde quando você escreve, mas nunca começa uma
-# conversa — nada de lembrete, nada de aviso de e-mail.
+# Without this Otto still replies when you write to it, but it never starts a
+# conversation — no reminders, no email alerts.
 #
-# Cuidado herdado do discord-channel: definir allowedChannelPlugins SUBSTITUI a
-# lista embutida (por isso os plugins oficiais são repetidos abaixo), e um
-# arquivo de política não-nulo precisa de channelsEnabled true, senão todo canal
-# morre.
+# Caveat inherited from discord-channel: setting allowedChannelPlugins REPLACES
+# the built-in list (which is why the official plugins are repeated below), and a
+# non-empty policy file needs channelsEnabled true, or every channel dies.
 
 set -euo pipefail
 
@@ -16,7 +15,7 @@ DIR="/etc/claude-code"
 FILE="$DIR/managed-settings.json"
 
 if [ "$(id -u)" -ne 0 ]; then
-  echo "erro: rode com sudo — $FILE é do root." >&2
+  echo "error: run with sudo — $FILE is owned by root." >&2
   exit 1
 fi
 
@@ -25,7 +24,7 @@ mkdir -p "$DIR"
 if [ -f "$FILE" ]; then
   BACKUP="$FILE.bak-$(date +%Y%m%d-%H%M%S)"
   cp "$FILE" "$BACKUP"
-  echo "política anterior salva em: $BACKUP"
+  echo "previous policy saved to: $BACKUP"
 fi
 
 python3 - "$FILE" <<'PY'
@@ -58,8 +57,8 @@ with open(path, "w") as f:
     json.dump(settings, f, indent=2)
     f.write("\n")
 
-print("escrito:", path)
+print("wrote:", path)
 PY
 
 chmod 644 "$FILE"
-echo "pronto. o canal do Otto está autorizado."
+echo "done. Otto's channel is authorized."

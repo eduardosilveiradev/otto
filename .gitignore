@@ -1,12 +1,12 @@
-# Personalidade gerada na instalação — contém dados pessoais do usuário.
+# Personality generated at install time — contains the user's personal data.
 /CLAUDE.md
 
-# Segredos e estado. Nunca versionar.
+# Secrets and state. Never commit.
 *.env
 telegram.env
 .env
 
-# Runtime e logs
+# Runtime and logs
 /runtime/*
 !/runtime/.gitkeep
 /logs/

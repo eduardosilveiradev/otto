@@ -1,5 +1,5 @@
 [Unit]
-Description=Otto — assistente pessoal proativo no Telegram
+Description=Otto — proactive personal assistant on Telegram
 Documentation=https://github.com/eduardosilveiradev/otto
 After=network-online.target
 Wants=network-online.target
@@ -12,8 +12,8 @@ Environment=HOME={{HOME}}
 Environment=PATH={{HOME}}/.local/bin:{{HOME}}/.bun/bin:/usr/local/bin:/usr/bin:/bin
 Environment=TERM=xterm-256color
 
-# A sessão é longa e o Telegram deixa um poller só por token: reiniciar sempre,
-# mas devagar, pra dois processos não brigarem pelo mesmo token.
+# The session is long-lived and Telegram allows a single poller per token:
+# always restart, but slowly, so two processes don't fight over the same token.
 Restart=always
 RestartSec=30
 

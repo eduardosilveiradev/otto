@@ -1,9 +1,9 @@
 {
   "name": "otto",
   "version": "1.0.0",
-  "description": "Assistente pessoal proativo no Telegram: gatilhos (lembretes + automações de e-mail), varredura de e-mail filtrada por importância, rascunho-e-confirmação. Rode /otto:setup para instalar.",
+  "description": "Proactive personal assistant on Telegram: triggers (reminders + email automations), email scanning filtered by importance, draft-and-confirm. Run /otto:setup to install.",
   "author": { "name": "eduardosilveiradev" },
   "homepage": "https://github.com/eduardosilveiradev/otto",
   "license": "MIT",
-  "keywords": ["telegram", "otto", "assistente", "proativo", "channel", "mcp"]
+  "keywords": ["telegram", "otto", "assistant", "proactive", "channel", "mcp"]
 }

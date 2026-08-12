@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Instalador do Otto para Ubuntu.
+# Otto installer for Ubuntu.
 #
-#   bash scripts/install.sh                 # tudo: dependências + serviço
-#   bash scripts/install.sh --service-only  # só o serviço (o resto já foi feito)
-#   bash scripts/install.sh --check         # não muda nada, só diagnostica
+#   bash scripts/install.sh                 # everything: dependencies + service
+#   bash scripts/install.sh --service-only  # service only (the rest is done)
+#   bash scripts/install.sh --check         # changes nothing, just diagnoses
 #
-# Não pede sudo. A única etapa que precisa de root é liberar o canal, e ela mora
-# em scripts/allow-channel-plugin.sh, de propósito separada.
+# Does not ask for sudo. The one step that needs root is authorizing the channel,
+# and it lives in scripts/allow-channel-plugin.sh, deliberately kept separate.
 set -uo pipefail
 
 OTTO_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,104 +19,104 @@ case "${1:-}" in
   --service-only) MODE="service" ;;
   --check)        MODE="check" ;;
   "")             ;;
-  *) echo "uso: install.sh [--service-only|--check]" >&2; exit 2 ;;
+  *) echo "usage: install.sh [--service-only|--check]" >&2; exit 2 ;;
 esac
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; }
 
-echo "otto — instalação em $OTTO_HOME"
+echo "otto — installing in $OTTO_HOME"
 echo
 
 # ---------------------------------------------------------------------------
-# Diagnóstico
+# Diagnostics
 # ---------------------------------------------------------------------------
-echo "verificando o sistema:"
+echo "checking the system:"
 
 [ "$(uname -s)" = "Linux" ] \
   && ok "Linux" \
-  || { bad "este instalador é só pra Linux/Ubuntu (achei $(uname -s))"; exit 1; }
+  || { bad "this installer is Linux/Ubuntu only (found $(uname -s))"; exit 1; }
 
 CLAUDE_BIN="$(command -v claude || echo "$HOME/.local/bin/claude")"
 [ -x "$CLAUDE_BIN" ] \
-  && ok "claude em $CLAUDE_BIN" \
-  || { bad "claude não encontrado — instale o Claude Code antes"; exit 1; }
+  && ok "claude at $CLAUDE_BIN" \
+  || { bad "claude not found — install Claude Code first"; exit 1; }
 
 if command -v bun >/dev/null; then
-  ok "bun em $(command -v bun)"
+  ok "bun at $(command -v bun)"
 else
-  warn "bun não encontrado"
+  warn "bun not found"
 fi
 
 command -v gog >/dev/null \
-  && ok "gog disponível (economiza tokens na varredura de e-mail)" \
-  || warn "gog ausente — opcional, só otimiza a varredura de e-mail"
+  && ok "gog available (saves tokens on the email scan)" \
+  || warn "gog missing — optional, it only optimizes the email scan"
 
-if [ -s "$STATE_DIR/.env" ]; then ok "token do Telegram configurado"
-else warn "token do Telegram ausente — rode /otto:setup no Claude"; fi
+if [ -s "$STATE_DIR/.env" ]; then ok "Telegram token configured"
+else warn "Telegram token missing — run /otto:setup in Claude"; fi
 
-if [ -s "$STATE_DIR/access.json" ]; then ok "access.json presente"
-else warn "access.json ausente — rode /otto:setup no Claude"; fi
+if [ -s "$STATE_DIR/access.json" ]; then ok "access.json present"
+else warn "access.json missing — run /otto:setup in Claude"; fi
 
 if [ -f "$OTTO_HOME/CLAUDE.md" ]; then
   if grep -q '{{' "$OTTO_HOME/CLAUDE.md" 2>/dev/null; then
-    warn "CLAUDE.md ainda tem {{placeholders}} por preencher"
+    warn "CLAUDE.md still has {{placeholders}} to fill in"
   else
-    ok "CLAUDE.md personalizado"
+    ok "CLAUDE.md personalized"
   fi
 else
-  warn "CLAUDE.md ausente — a personalidade sai do template em templates/"
+  warn "CLAUDE.md missing — the personality comes from the template in templates/"
 fi
 
 POLICY="/etc/claude-code/managed-settings.json"
 if [ -f "$POLICY" ] && grep -q '"otto"' "$POLICY" 2>/dev/null; then
-  ok "canal autorizado na política do sistema"
+  ok "channel authorized in the system policy"
 else
-  warn "canal não autorizado — sem isso o Otto responde mas nunca puxa assunto"
-  warn "  corrija com: sudo bash $OTTO_HOME/scripts/allow-channel-plugin.sh"
+  warn "channel not authorized — without this Otto replies but never starts a conversation"
+  warn "  fix it with: sudo bash $OTTO_HOME/scripts/allow-channel-plugin.sh"
 fi
 
-[ "$MODE" = "check" ] && { echo; echo "diagnóstico apenas — nada foi alterado."; exit 0; }
+[ "$MODE" = "check" ] && { echo; echo "diagnostics only — nothing was changed."; exit 0; }
 
 # ---------------------------------------------------------------------------
-# Dependências
+# Dependencies
 # ---------------------------------------------------------------------------
 if [ "$MODE" = "full" ]; then
   echo
-  echo "dependências:"
+  echo "dependencies:"
   if ! command -v bun >/dev/null; then
-    echo "  instalando o bun…"
+    echo "  installing bun…"
     curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1
     export PATH="$HOME/.bun/bin:$PATH"
-    command -v bun >/dev/null && ok "bun instalado" || { bad "falhou ao instalar o bun"; exit 1; }
+    command -v bun >/dev/null && ok "bun installed" || { bad "failed to install bun"; exit 1; }
   fi
   ( cd "$OTTO_HOME/otto" && bun install --no-summary >/dev/null 2>&1 ) \
-    && ok "dependências do plugin instaladas" \
-    || warn "bun install falhou — o servidor tenta de novo ao subir"
+    && ok "plugin dependencies installed" \
+    || warn "bun install failed — the server retries on startup"
 fi
 
 mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR"
 
 # ---------------------------------------------------------------------------
-# Serviço
+# Service
 # ---------------------------------------------------------------------------
 echo
-echo "serviço:"
+echo "service:"
 mkdir -p "$UNIT_DIR"
 
 sed -e "s|{{OTTO_HOME}}|$OTTO_HOME|g" \
     -e "s|{{HOME}}|$HOME|g" \
     "$OTTO_HOME/templates/otto.service.template" > "$UNIT"
-ok "unidade escrita em $UNIT"
+ok "unit written to $UNIT"
 
-# Sem linger o serviço morre no logout — que é justamente quando um assistente
-# proativo precisa estar de pé.
+# Without linger the service dies at logout — which is exactly when a proactive
+# assistant needs to be up.
 if loginctl enable-linger "$USER" 2>/dev/null; then
-  ok "linger ligado (sobrevive ao logout)"
+  ok "linger enabled (survives logout)"
 else
-  warn "não consegui ligar o linger — o Otto vai cair quando você deslogar"
-  warn "  corrija com: sudo loginctl enable-linger $USER"
+  warn "could not enable linger — Otto will go down when you log out"
+  warn "  fix it with: sudo loginctl enable-linger $USER"
 fi
 
 systemctl --user daemon-reload 2>/dev/null
@@ -124,20 +124,20 @@ systemctl --user daemon-reload 2>/dev/null
 if systemctl --user enable --now otto.service 2>/dev/null; then
   sleep 3
   if [ "$(systemctl --user is-active otto.service 2>/dev/null)" = "active" ]; then
-    ok "otto.service no ar"
+    ok "otto.service is up"
   else
-    bad "o serviço subiu e caiu — veja: journalctl --user -u otto.service -n 30"
+    bad "the service started and died — see: journalctl --user -u otto.service -n 30"
     exit 1
   fi
 else
-  bad "systemctl falhou — veja: journalctl --user -u otto.service -n 30"
+  bad "systemctl failed — see: journalctl --user -u otto.service -n 30"
   exit 1
 fi
 
 echo
-echo "pronto. comandos úteis:"
-echo "  systemctl --user status otto.service      # como está"
-echo "  journalctl --user -u otto.service -f      # acompanhar ao vivo"
-echo "  systemctl --user restart otto.service     # reiniciar"
+echo "done. useful commands:"
+echo "  systemctl --user status otto.service      # how it's doing"
+echo "  journalctl --user -u otto.service -f      # follow live"
+echo "  systemctl --user restart otto.service     # restart"
 echo
-echo "manda um 'oi' pro seu bot no Telegram pra confirmar."
+echo "send a 'hi' to your bot on Telegram to confirm."
