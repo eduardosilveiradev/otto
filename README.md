@@ -66,7 +66,7 @@ what gives me the /otto:setup and /otto:access commands.
 
 <how_i_know_it_worked>
 Don't tell me it works by inference. Only after you've seen, with your own eyes:
-- the service active (systemctl --user is-active otto.service)
+- the service active (bash ~/.otto/scripts/otto-ctl.sh status)
 - the "polling as @yourbotname" line in the log
 - the bot answering a real message I sent
 
@@ -85,10 +85,23 @@ It takes about five minutes, most of it waiting on your answers.
 
 | | |
 |---|---|
-| **Ubuntu** | the automatic installer is Linux-only today |
+| **Linux or macOS** | Ubuntu, Fedora, Arch, Alpine, macOS 12+ — the installer picks the right way to keep it running |
 | **Claude Code** | installed and logged in |
 | **A Telegram bot** | free, takes 1 minute — setup walks you through it |
 | **Google account** | optional, only if you want the email watch |
+
+### How it stays up, per system
+
+| | Keeps it alive | Survives logout | Log |
+|---|---|---|---|
+| **Linux with systemd** | `otto.service`, a user service | yes (linger) | `journalctl --user -u otto.service` |
+| **macOS** | `com.otto.agent`, a LaunchAgent | no — comes back when you log in | `~/.claude/channels/otto/otto.log` |
+| **Linux without systemd** | background process + `@reboot` cron | no | `~/.claude/channels/otto/otto.log` |
+
+On macOS Otto lives inside your login session: it pauses while the Mac sleeps
+and stops if you log out, then picks itself back up. If you want it awake
+overnight, stop the Mac from sleeping (System Settings → Lock Screen / Energy,
+or leave `caffeinate -s` running).
 
 ## How it works
 
@@ -114,9 +127,15 @@ whenever you want to change how it behaves.
 |---|---|
 | `/otto:setup` | install or reconfigure from scratch |
 | `/otto:access` | change quiet hours, cadence, who has access |
-| `systemctl --user status otto.service` | is it up? |
-| `journalctl --user -u otto.service -f` | see what it's doing |
+| `bash scripts/otto-ctl.sh status` | is it up? |
+| `bash scripts/otto-ctl.sh logs` | see what it's doing |
+| `bash scripts/otto-ctl.sh restart` | restart it |
 | `bash scripts/install.sh --check` | diagnostics, changes nothing |
+
+`otto-ctl.sh` speaks systemd, launchd or plain process depending on where you
+are — so the same command works everywhere. Underneath it's
+`systemctl --user … otto.service` on Linux and
+`launchctl … gui/$(id -u)/com.otto.agent` on macOS.
 
 ## Privacy and security
 
@@ -135,9 +154,11 @@ whenever you want to change how it behaves.
 | Symptom | Cause | Fix |
 |---|---|---|
 | replies, but never starts a conversation | channel not authorized | `sudo bash scripts/allow-channel-plugin.sh` |
-| doesn't reply at all | service down | `systemctl --user restart otto.service` |
+| doesn't reply at all | service down | `bash scripts/otto-ctl.sh restart` |
 | `409 Conflict` in the log | two Ottos on the same bot | one device per Telegram bot only |
-| dies when you log out | linger off | `sudo loginctl enable-linger $USER` |
+| dies when you log out (Linux) | linger off | `sudo loginctl enable-linger $USER` |
+| quiet overnight (macOS) | the Mac went to sleep | keep it awake, or accept the gap |
+| gone after a reboot (no systemd) | `@reboot` entry missing | `crontab -l`, add it back |
 | ignores your messages | wrong ID | `/otto:access list` and check with @userinfobot |
 
 ## License

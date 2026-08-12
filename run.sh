@@ -1,21 +1,36 @@
 #!/usr/bin/env bash
-# Otto's long-running session. Called by systemd (otto.service) or by hand.
+# Otto's long-running session. Called by systemd (otto.service), by launchd
+# (com.otto.agent on macOS), or by hand.
 #
 # The channel plugin only survives in an INTERACTIVE session: in headless mode
 # (-p) channels are never loaded, so the CLI connects the MCP server and kills it
-# a few seconds later. Under systemd there is no terminal at all, so `script`
-# fabricates a pty for claude to run its interactive loop without a real tty.
+# a few seconds later. Under systemd or launchd there is no terminal at all, so
+# `script` fabricates a pty for claude to run its interactive loop without a real
+# tty.
 #
 # Do not add --dangerously-load-development-channels: the flag swallows the
 # following arguments as values and stalls startup on a consent screen. Otto is
 # already permitted via allowedChannelPlugins in the system policy
-# (/etc/claude-code/managed-settings.json) — see scripts/allow-channel-plugin.sh.
+# (/etc/claude-code/managed-settings.json on Linux, /Library/Application
+# Support/ClaudeCode/managed-settings.json on macOS) — see
+# scripts/allow-channel-plugin.sh.
 set -uo pipefail
 
 OTTO_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-export HOME="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
-export PATH="$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+# getent doesn't exist on macOS; dscl is the equivalent, and both are only a
+# fallback for the rare launcher that starts us without HOME.
+if [ -z "${HOME:-}" ]; then
+  if command -v getent >/dev/null; then
+    HOME="$(getent passwd "$(id -u)" | cut -d: -f6)"
+  else
+    HOME="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+  fi
+fi
+export HOME
+# /opt/homebrew/bin is where Homebrew puts things on Apple Silicon; harmless
+# elsewhere.
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 export TERM="${TERM:-xterm-256color}"
 
 # Tells server.ts that THIS session is the one that actually receives channel
@@ -47,9 +62,20 @@ if [ -t 0 ] && [ -t 1 ]; then
   exec "$CLAUDE" "${CLAUDE_ARGS[@]}"
 fi
 
-# util-linux (Ubuntu) uses -c "command"; the BSD/macOS script has a different
-# argument order.
+# Three incompatible `script` commands in the wild: util-linux (most Linux
+# distros) takes -c and the file last, busybox (Alpine and friends) takes -c but
+# not -e/-f, and BSD (macOS) has no -c at all and wants the file before the
+# command.
+if ! command -v script >/dev/null; then
+  echo "otto: 'script' not found — running without a pty, channels may not load" >&2
+  exec "$CLAUDE" "${CLAUDE_ARGS[@]}"
+fi
+
+CMDLINE="$CLAUDE $(printf '%q ' "${CLAUDE_ARGS[@]}")"
+
 if script --version 2>/dev/null | grep -qi util-linux; then
-  exec script -qefc "$CLAUDE $(printf '%q ' "${CLAUDE_ARGS[@]}")" /dev/null
+  exec script -qefc "$CMDLINE" /dev/null
+elif script --help 2>&1 | grep -qi busybox; then
+  exec script -qc "$CMDLINE" /dev/null
 fi
 exec script -q /dev/null "$CLAUDE" "${CLAUDE_ARGS[@]}"

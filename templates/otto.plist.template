@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- macOS counterpart of templates/otto.service.template. A LaunchAgent (not a
+     LaunchDaemon) on purpose: Otto has to run as you, with your login session,
+     because that is where Claude Code is authenticated. -->
+<plist version="1.0">
+<dict>
+  <!-- launchd identifies the job by this Label, not by the file name — it is
+       substituted from install.sh so the two can never drift apart. -->
+  <key>Label</key>
+  <string>{{LABEL}}</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>{{OTTO_HOME}}/run.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>{{OTTO_HOME}}/runtime</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>{{HOME}}</string>
+    <key>PATH</key>
+    <string>{{HOME}}/.local/bin:{{HOME}}/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>TERM</key>
+    <string>xterm-256color</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- The session is long-lived and Telegram allows a single poller per token:
+       always restart, but slowly, so two processes don't fight over the token.
+       ThrottleInterval is launchd's RestartSec. -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <!-- launchd has no journal: the log is a plain file. -->
+  <key>StandardOutPath</key>
+  <string>{{LOG}}</string>
+  <key>StandardErrorPath</key>
+  <string>{{LOG}}</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
