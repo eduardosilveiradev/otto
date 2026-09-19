@@ -53,7 +53,10 @@ RUN_DIR="$OTTO_HOME/runtime"
 mkdir -p "$RUN_DIR"
 cd "$RUN_DIR" || exit 1
 
-CLAUDE_ARGS=(--channels plugin:otto@otto --permission-mode auto)
+# --channels is variadic (`<servers...>`), so it greedily eats every following
+# token that doesn't start with a dash. Keep it last: a flag added after it
+# would be swallowed as a channel name rather than parsed.
+CLAUDE_ARGS=(--permission-mode auto --channels plugin:otto@otto)
 
 # `script` exists only to fabricate a pty when we have no terminal. Starting from
 # a real terminal it is a downgrade: it never forwards SIGWINCH, so the TUI is

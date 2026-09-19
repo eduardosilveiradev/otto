@@ -817,10 +817,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 // ---------------------------------------------------------------------------
 
 function injectEvent(event: string, content: string, extraMeta: Record<string, string> = {}): void {
+  // Every event the channel injects is machine-originated, never the user
+  // typing, so the transcript marks it as such. Inbound Telegram messages take
+  // a different path and stay untagged.
+  const tagged = `[SYSTEM] ${content}`
   mcp.notification({
     method: 'notifications/claude/channel',
     params: {
-      content,
+      content: tagged,
       meta: {
         event,
         ts: new Date().toISOString(),
