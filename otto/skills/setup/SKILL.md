@@ -70,7 +70,7 @@ confirmation:
 1. Open Telegram and search for **@BotFather**.
 2. Send `/newbot`.
 3. Pick a name (what shows up in the chat) and a username (it has to end in
-   `bot`, e.g. `maria_otto_bot`).
+   `bot`, e.g. `MariaOttoBot`).
 4. BotFather returns a token that looks like `8123456789:AAH...`.
 
 Ask for the token. **It is a password** — say so, and say that it stays on their

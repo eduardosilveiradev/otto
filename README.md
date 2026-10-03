@@ -118,7 +118,8 @@ A single process (`otto/server.ts`) running three things at once:
    wake up.
 
 The personality — who you are, your timezone, what matters to you, the tone —
-lives in a `CLAUDE.md` that setup writes. It's plain text: open it and edit it
+lives in a CLAUDE.md file that setup writes from
+`templates/CLAUDE.md.template`. It's plain text: open it and edit it
 whenever you want to change how it behaves.
 
 ## Commands
@@ -136,6 +137,24 @@ whenever you want to change how it behaves.
 are — so the same command works everywhere. Underneath it's
 `systemctl --user … otto.service` on Linux and
 `launchctl … gui/$(id -u)/com.otto.agent` on macOS.
+
+## Health and supervision
+
+The watchdog ([otto/watchdog.ts](otto/watchdog.ts)) probes Otto's moving parts
+every 15 minutes and, when one fails, may run only the repairs below. Each
+attempt is written to `capability-log.json` with what it did and what undoing it
+would take. It never edits config, secrets or `access.json`; anything else is
+reported, not fixed.
+
+### Watchdog repairs
+
+| part | repair |
+| --- | --- |
+| voice daemon | `pkill -f voiced.py` (only if you installed one; it respawns on the next spoken reply) |
+| webhook listener | `lsof -ti tcp:<port> -sTCP:LISTEN \| xargs -r kill` — frees the loopback port from a dead holder |
+| Telegram poller, the session itself | `bash ~/.otto/scripts/otto-ctl.sh restart` |
+| gog auth | none unattended — `gog auth login` needs a browser, so it is reported |
+| email scan | none — reported only |
 
 ## Privacy and security
 
