@@ -68,3 +68,27 @@ test('the plugin instructions block is scanned like any doc', () => {
   expect(f[0]).toMatchObject({ token: 'ghost_tool', doc: 'otto/server.ts (instructions)' })
 })
 
+
+// The real thing. This is the one CI cares about.
+const REAL = join(import.meta.dir, '..', '..')
+
+test('the real docs name nothing the code no longer has', () => {
+  const found = checkDocs(REAL)
+  expect(found.map(f => `${f.doc}:${f.line} ${f.message}`)).toEqual([])
+})
+
+test('the real plugin instructions stay under their cap', () => {
+  expect(instructionsText(REAL)!.length).toBeGreaterThan(500)
+  expect(instructionsOverBudget(REAL)).toBeNull()
+  expect(instructionsText(REAL)!.length).toBeLessThanOrEqual(INSTRUCTIONS_MAX)
+})
+
+test('the repo carries no personal identifiers in the files this feature added', () => {
+  const { readFileSync } = require('fs')
+  const files = ['heartbeat.ts', 'deadman.ts', 'status.ts', 'docdrift.ts', 'skills/status/SKILL.md']
+  for (const f of files) {
+    const text = readFileSync(join(import.meta.dir, '..', f), 'utf8')
+    expect(text).not.toMatch(/\/Users\/[A-Za-z]/)
+    expect(text).not.toMatch(/@(gmail|icloud|outlook)\.com/)
+  }
+})

@@ -1,0 +1,17 @@
+{
+  "description": "Each tool call becomes a live status line in the Otto app's typing bubble (server.ts handleStatus). Silent and instant when the channel isn't running.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "u=$(cat \"${OTTO_STATE_DIR:-$HOME/.otto/state}/status-url\" 2>/dev/null) && curl -s -m 0.3 -H \"X-Claude-Pid: $PPID\" -H 'Content-Type: application/json' --data-binary @- \"$u\" >/dev/null 2>&1; exit 0",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

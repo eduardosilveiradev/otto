@@ -17,6 +17,9 @@
 set -uo pipefail
 
 OTTO_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The server reads it: self-edits and the watchdog's restart act on the clone,
+# not on the plugin cache copy the server actually runs from.
+export OTTO_HOME
 
 # getent doesn't exist on macOS; dscl is the equivalent, and both are only a
 # fallback for the rare launcher that starts us without HOME.

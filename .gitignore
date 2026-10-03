@@ -16,3 +16,7 @@ bun.lockb
 # Otto's state (bot token, allowlist, memory, history) lives here when the repo
 # is cloned to ~/.otto. Never commit it — and never `git clean -fdx` this repo.
 /state/
+
+# Repro tests the crash triage writes on this machine; deliberately red, never
+# part of the repo.
+/otto/tests/regressions/
