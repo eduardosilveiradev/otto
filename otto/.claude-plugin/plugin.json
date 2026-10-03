@@ -1,7 +1,7 @@
 {
   "name": "otto",
-  "version": "1.0.0",
-  "description": "Proactive personal assistant on Telegram: triggers (reminders + email automations), email scanning filtered by importance, draft-and-confirm. Run /otto:setup to install.",
+  "version": "2.0.0",
+  "description": "Proactive personal assistant on Telegram: triggers (reminders + email automations), email scanning filtered by importance, draft-and-confirm, memory, open loops, trips and spending, and an optional iPhone app. Run /otto:setup to install.",
   "author": { "name": "eduardosilveiradev" },
   "homepage": "https://github.com/eduardosilveiradev/otto",
   "license": "MIT",

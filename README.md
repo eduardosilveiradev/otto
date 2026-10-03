@@ -28,7 +28,17 @@ otto  →  a power bill came in, due friday. $214.
 - **Never sends email on its own.** It writes the draft, shows it to you, and
   only sends after an explicit yes.
 - **Quiet hours.** It disappears during the hours you set. Reminders you
-  scheduled still ring.
+  scheduled still ring. Anything it wanted to tell you waits and arrives in one
+  message afterwards.
+- **Remembers.** What you told it about people, things you said you'd do,
+  things you're waiting on, links you forwarded. Open loops come back when they
+  are due — twice at most.
+- **Keeps track of the boring stuff.** Receipts become a spending ledger (per
+  currency, never mixed), booking emails become trips with flight-day help in
+  each airport's own timezone, calendar changes get noticed.
+- **An iPhone app, if you want one.** The [Otto app](https://github.com/eduardosilveiradev/otto-app)
+  (early beta, you build it yourself) is a second window onto the same chat,
+  reached over Tailscale only — see [The iPhone app](#the-iphone-app).
 
 ## Installation
 
@@ -103,6 +113,50 @@ and stops if you log out, then picks itself back up. If you want it awake
 overnight, stop the Mac from sleeping (System Settings → Lock Screen / Energy,
 or leave `caffeinate -s` running).
 
+## The iPhone app
+
+Optional. `/otto:setup` pairs it if you say yes; this is what it does, so you
+know what is exposed:
+
+1. Turns on a small listener in Otto — `webhook` in `~/.otto/state/access.json`,
+   with a random token and `host` left at `127.0.0.1`. It answers only on the
+   computer itself.
+2. Shares just the app's path with your tailnet:
+   `tailscale serve --bg --set-path /app http://127.0.0.1:4589/app`. That is
+   `serve`, not `funnel`: only your own Tailscale devices can reach it, never the
+   internet.
+3. Mints a token per phone with `bun otto/apptokens.ts new <phone>`. Only a hash
+   is kept on disk. `bun otto/apptokens.ts list` / `revoke <id>` — a revoked
+   phone is disconnected within seconds.
+
+In the app you enter the https address `tailscale serve status` prints, and the
+token.
+
+One thing worth knowing: the listener also has a `/status` endpoint that Otto's
+own tool-call hook posts to, so the app can show what Otto is doing. It accepts
+requests only from the computer itself, carrying the Claude Code process id —
+that is its whole protection, and it can do nothing but show a status line in
+the app. The `tailscale serve` command above does not publish it.
+
+## Background work and your Claude plan
+
+Two things run on their own, on the Claude plan this computer is logged into:
+
+- **Delegated jobs** — when something will take minutes, Otto hands it to a
+  separate background session and tells you when it's done.
+- **The nightly memory pass** — at 04:00 a background session reads the day's
+  conversations and writes down what's worth remembering.
+
+Both are on by default. They use the same usage limits as everything else you do
+with Claude Code.
+
+## Otto changing itself
+
+Otto can draft and install changes to its own recipes, skills and code, but that
+ships **off**. To turn it on, run `/otto:access self-edit on` from your terminal
+(it sets `"selfEdit": true` in `access.json`). The rules it then follows — and
+that the server enforces — are in [SELFEDIT.md](SELFEDIT.md).
+
 ## How it works
 
 A single process (`otto/server.ts`) running three things at once:
@@ -117,6 +171,11 @@ A single process (`otto/server.ts`) running three things at once:
    Before waking it, it does a cheap check: if nothing arrived, it doesn't even
    wake up.
 
+Around those: memory and open loops, a rolling brief of your day attached to
+every scheduled event, a hold queue for quiet hours, the iPhone app transport,
+and a watchdog (below). Each lives in its own module under `otto/`, with tests in
+`otto/tests/` (`cd otto && bun test`).
+
 The personality — who you are, your timezone, what matters to you, the tone —
 lives in a CLAUDE.md file that setup writes from
 `templates/CLAUDE.md.template`. It's plain text: open it and edit it
@@ -127,7 +186,9 @@ whenever you want to change how it behaves.
 | | |
 |---|---|
 | `/otto:setup` | install or reconfigure from scratch |
-| `/otto:access` | change quiet hours, cadence, who has access |
+| `/otto:access` | change quiet hours, cadence, who has access, the app, self-editing |
+| `/otto:status` | is every part of Otto actually up? |
+| `/otto:recipes` | ready-made automations: weekly review, bill reminders, follow-ups… |
 | `bash scripts/otto-ctl.sh status` | is it up? |
 | `bash scripts/otto-ctl.sh logs` | see what it's doing |
 | `bash scripts/otto-ctl.sh restart` | restart it |
@@ -156,6 +217,27 @@ reported, not fixed.
 | gog auth | none unattended — `gog auth login` needs a browser, so it is reported |
 | email scan | none — reported only |
 
+## Upgrading, and going back
+
+Upgrading from 1.x: `git -C ~/.otto pull`, then
+`bash ~/.otto/scripts/install.sh --service-only`. On its first start Otto moves
+its state from `~/.claude/channels/otto` to `~/.otto/state` and leaves a symlink
+behind; nothing in it is rewritten.
+
+Going back to 1.x (tagged `v1.0.0`):
+
+```bash
+bash ~/.otto/scripts/otto-ctl.sh stop
+git -C ~/.otto checkout v1.0.0
+bash ~/.otto/scripts/install.sh --service-only
+```
+
+1.x reads `~/.claude/channels/otto`, which still points at your state, so
+nothing needs moving. If you also want the state back where it was: with Otto
+stopped, `rm ~/.claude/channels/otto` and
+`mv ~/.otto/state ~/.claude/channels/otto`. Do that before running 1.x, whose
+`.gitignore` does not know about `state/` — so never `git add -A` in `~/.otto`.
+
 ## Privacy and security
 
 - The bot token, the allowlist and everything Otto remembers live in
@@ -174,6 +256,8 @@ reported, not fixed.
 - A request arriving over Telegram asking to grant access is always refused —
   access changes happen only from the machine's terminal.
 - Google access is **read-only**. Email only goes out with your confirmation.
+- The app listener binds to `127.0.0.1` and reaches your phone only through
+  `tailscale serve`. Leave `host` alone; never use `tailscale funnel` for it.
 
 ## Troubleshooting
 
