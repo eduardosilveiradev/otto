@@ -106,10 +106,19 @@ How Otto should talk. Offer three and let them invent their own:
 - **Friendly** — light, some emoji.
 - **Formal** — no slang, full sentences.
 
+### 7. The iPhone app (optional)
+
+There is an Otto app for iPhone — an early beta they build themselves with
+Xcode (github.com/eduardosilveiradev/otto-app). It is a second window onto the
+same conversation, and it reaches this computer over Tailscale, a private
+network between their own devices. Ask whether they want it. If they're not
+sure, skip it: it can be added later by running this skill again.
+
 ### Closing the interview
 
 Repeat everything back in a short list — name, timezone, what they do, last 4
-digits of the token, Telegram ID, email and cadence, quiet hours, tone — and ask
+digits of the token, Telegram ID, email and cadence, quiet hours, tone, app or
+no app — and ask
 whether it's right. **Only after** the "yes" do you install.
 
 ---
@@ -235,7 +244,49 @@ grep -i "polling as @" ~/.otto/state/otto.log | tail -n 3
 ```
 
 That `polling as @yourbotname` is the proof that Telegram connected. Ask them to
-send **hi** to the bot. If a reply comes back, you're done.
+send **hi** to the bot. If a reply comes back, Telegram is done.
+
+### Step 8 — The iPhone app (only if they asked for it)
+
+The app talks to a small listener on this computer that only accepts
+connections from the computer itself. Tailscale carries the phone's requests to
+it, inside their private network — nothing is opened to the internet.
+
+1. **Tailscale on both devices.** `command -v tailscale && tailscale status`.
+   If it's missing or logged out, they install Tailscale from
+   https://tailscale.com/download on this computer *and* the phone, and sign in
+   to the same account on both. That part is theirs to do; wait for it.
+2. **Turn the listener on.** Add this to `~/.otto/state/access.json`, with a
+   fresh random token (`openssl rand -hex 24`), keeping `host` at loopback:
+
+   ```json
+   "webhook": { "port": 4589, "token": "<random>", "host": "127.0.0.1" }
+   ```
+
+   Then `bash "$OTTO_HOME/scripts/otto-ctl.sh" restart`. Check it answers:
+   `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4589/app/brief`
+   prints `401` (up, and refusing a request with no token).
+3. **Share only the app's path with the tailnet** — `serve`, never `funnel`
+   (funnel would put it on the public internet):
+
+   ```bash
+   tailscale serve --bg --set-path /app http://127.0.0.1:4589/app
+   tailscale serve status        # prints the https address
+   ```
+
+   The server URL for the app is that https address, without `/app`.
+4. **A token for the phone.** `bun "$OTTO_HOME/otto/apptokens.ts" new "<phone name>"`
+   prints it once. It is a password: show it to them so they can paste it into
+   the app, and never repeat it afterwards. In the app they tap Otto's name and
+   enter the server URL and the token.
+5. **Prove it.** From this computer:
+   `curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer <token>" "<server URL>/app/brief"`
+   — `200`, or `503` for the first few minutes while Otto builds its first
+   brief. Then ask them to send a message from the app and wait for the reply
+   to show up there.
+
+A lost phone: `bun "$OTTO_HOME/otto/apptokens.ts" list`, then `revoke <id>` — its
+connection is closed within seconds.
 
 ---
 
@@ -267,6 +318,11 @@ Tell them, in one short message:
 - If email is on: Gmail still needs to be connected under **Customize →
   Connectors**, otherwise the watch has nothing to read.
 - To change quiet hours or cadence: `/otto:access`.
+- Otto does some work in the background on their own Claude plan: delegated
+  long jobs, and a nightly pass at 04:00 that tidies its memory. That uses the
+  same plan this computer is logged into.
+- Otto cannot change its own code unless they turn that on
+  (`/otto:access self-edit on`). Mention it once; don't recommend it.
 
 ## Security
 
