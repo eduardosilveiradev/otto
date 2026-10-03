@@ -31,7 +31,7 @@
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { homedir } from 'os'
 import { join, basename } from 'path'
-import { headlessMcpArgs } from './headless.ts'
+import { claudeBin, headlessMcpArgs } from './headless.ts'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 
@@ -252,7 +252,7 @@ const ALLOWED_TOOLS = [
  * the child loads them all, and the Discord one kills the live gateway on start.
  */
 export async function spawnConsolidation(plan: ConsolidationPlan, timeoutMs = 20 * 60_000): Promise<{ ok: boolean; output: string }> {
-  const claude = join(homedir(), '.local', 'bin', 'claude')
+  const claude = claudeBin()
   if (!existsSync(claude)) return { ok: false, output: 'claude CLI not found' }
 
   const env = { ...process.env }

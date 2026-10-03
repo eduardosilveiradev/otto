@@ -84,9 +84,11 @@ export async function recentMail(account: string): Promise<MailThread[] | null> 
 
 /**
  * Music only if the app is already running. Launching it would start playing
- * audio in the user’s house as a side effect of building a brief — see music/README.
+ * audio in the user’s house as a side effect of building a brief. Needs a
+ * `music` CLI on PATH; without one this is always null.
  */
 export async function nowPlaying(): Promise<string | null> {
+  if (process.platform !== 'darwin') return null
   const running = await run(['pgrep', '-x', 'Music'], 2_000)
   if (!running?.trim()) return null
   const out = await run(['music', 'status', '--json'], 5_000)

@@ -321,7 +321,7 @@ const SAFE_REPAIRS: { argv: RegExp[]; }[] = [
 ]
 
 /** Config, secrets and the allowlist. Nothing the watchdog runs may name them. */
-const PROTECTED = /access\.json|\.env\b|\.mcp\.json|settings(\.local)?\.json|telegram\.env|\.claude-plugin|\/launchd\/|LaunchAgents/i
+const PROTECTED = /access\.json|\.env\b|\.mcp\.json|settings(\.local)?\.json|telegram\.env|\.claude-plugin|\/launchd\/|LaunchAgents|\.plist\b|otto\.service|systemd/i
 
 export function isSafeRepair(r: Repair): { ok: boolean; why: string } {
   if (!r.unattended) return { ok: false, why: 'needs a human' }

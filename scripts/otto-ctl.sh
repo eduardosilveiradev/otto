@@ -96,7 +96,16 @@ case "$BACKEND:$CMD" in
 
   manual:start)    manual_start ;;
   manual:stop)     manual_stop ;;
-  manual:restart)  manual_stop; manual_start ;;
+  manual:restart)
+    # The watchdog runs this from inside Otto, i.e. inside the process group
+    # manual_stop kills. Re-run detached in a new session so the start half
+    # survives the stop half.
+    if [ -z "${OTTO_CTL_DETACHED:-}" ] && command -v setsid >/dev/null; then
+      OTTO_CTL_DETACHED=1 setsid nohup bash "$0" restart >>"$LOG" 2>&1 < /dev/null &
+      echo "otto restarting (detached)"
+      exit 0
+    fi
+    manual_stop; manual_start ;;
   manual:status)
     if PID="$(manual_pid)"; then echo "active (pid $PID)"
     else echo "not running — run: bash scripts/otto-ctl.sh start"; exit 3; fi ;;

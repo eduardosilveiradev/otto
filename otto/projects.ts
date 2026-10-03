@@ -29,6 +29,7 @@
 import { readFileSync, writeFileSync, renameSync, readdirSync, statSync, existsSync } from 'fs'
 import { homedir } from 'os'
 import { join, basename } from 'path'
+import { defaultProjectsRoot } from './workspace.ts'
 
 export type GitRemote = {
   /** "github.com", "gitlab.com". */
@@ -375,7 +376,7 @@ export const PROJECTS_FILE = join(
 )
 
 if (import.meta.main) {
-  const root = process.env.OTTO_PROJECTS_DIR ?? join(homedir(), 'Documents', 'Projects')
+  const root = process.env.OTTO_PROJECTS_DIR ?? defaultProjectsRoot()
   const records = await scanProjects(root)
   saveProjects(PROJECTS_FILE, records)
   console.log(

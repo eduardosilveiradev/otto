@@ -134,7 +134,8 @@ import {
 import { homedir } from 'os'
 import { join, extname, sep, isAbsolute, dirname, basename } from 'path'
 import { statusLabel } from './toolstatus.ts'
-import { headlessMcpArgs } from './headless.ts'
+import { claudeBin, headlessMcpArgs } from './headless.ts'
+import { defaultProjectsRoot } from './workspace.ts'
 
 const STATE_DIR = process.env.OTTO_STATE_DIR ?? join(homedir(), '.otto', 'state')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -303,7 +304,7 @@ type Access = {
   busySuppression?: boolean
   /** Opt in to forge/self_test and installing drafted code. Default false. */
   selfEdit?: boolean
-  /** Where the workspace probe looks for repos. Default ~/Documents/Projects. */
+  /** Where the workspace probe looks for repos. Default ~/Documents/Projects if it exists, else ~/projects. */
   projectsRoot?: string
   /** Thresholds for the nightly loop-hygiene and memory-audit passes. Every field
    * is optional; anything missing or unusable falls back to its default. */
@@ -1576,7 +1577,7 @@ function checkTimezone(): void {
 }
 
 function projectsRoot(): string {
-  return loadAccess().projectsRoot ?? join(homedir(), 'Documents', 'Projects')
+  return loadAccess().projectsRoot ?? defaultProjectsRoot()
 }
 
 // ---------------------------------------------------------------------------
@@ -1871,7 +1872,7 @@ function saveDraft(draft: Draft, request: { text: string; origin: string; at: st
  * reason consolidate.ts scrubs it.
  */
 async function triageDelegate(item: TriageItem, prompt: string): Promise<string | null> {
-  const claude = join(homedir(), '.local', 'bin', 'claude')
+  const claude = claudeBin()
   if (!existsSync(claude)) return null
   for (const route of escalationPlan(item)) {
     if (route.model === 'main-session') return null
@@ -5073,7 +5074,7 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   if (req.headers.get('x-claude-pid') !== String(process.ppid) || req.method !== 'POST') return new Response(null, { status: 204 })
   // Read the body before answering: once the response is out, Bun has dropped it.
   let h: { tool_name?: string; tool_input?: Record<string, unknown>; transcript_path?: string }
-  try { h = await req.json() } catch { return new Response(null, { status: 400 }) }
+  try { h = (await req.json()) as typeof h } catch { return new Response(null, { status: 400 }) }
   markRead(h.transcript_path)
   const waiting = (lastInbound.get(APP_CHAT) ?? 0) > lastAppOut
   if (!waiting || appSockets.size === 0) return new Response(null, { status: 204 })

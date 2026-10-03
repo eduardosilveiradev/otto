@@ -34,7 +34,7 @@
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, rmSync } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
-import { headlessMcpArgs } from './headless.ts'
+import { claudeBin, headlessMcpArgs } from './headless.ts'
 
 /** Copied into the twin. Everything else is either secret or reconstructible. */
 export const COPIED_STATE = ['triggers.json', 'notes.json', 'email-state.json', 'runtime.json', 'history.jsonl']
@@ -106,7 +106,7 @@ SELFTEST tools=<n> triggers=<n> notes=<n> errors=<n>
 If anything failed to load, print that line anyway with errors set, followed by the error text.`
 
 /** The one directory the twin must never be pointed at. */
-export const LIVE_STATE_DIR = join(homedir(), '.otto', 'state')
+export const LIVE_STATE_DIR = process.env.OTTO_STATE_DIR ?? join(homedir(), '.otto', 'state')
 
 /** Where state lived before the move to ~/.otto. Still rejected: a stale
  * OTTO_STATE_DIR in someone's environment must not silently pass the guard. */
@@ -131,7 +131,7 @@ export function selfTestPlan(opts: {
     stateDir,
     env,
     argv: [
-      opts.claude ?? join(homedir(), '.local', 'bin', 'claude'),
+      opts.claude ?? claudeBin(),
       '-p',
       SELFTEST_PROMPT,
       '--permission-mode',

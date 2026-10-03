@@ -43,7 +43,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from '
 import { randomBytes } from 'crypto'
 import { homedir } from 'os'
 import { join } from 'path'
-import { headlessMcpArgs } from './headless.ts'
+import { claudeBin, headlessMcpArgs } from './headless.ts'
 
 export type JobState = 'queued' | 'running' | 'parked' | 'done' | 'failed' | 'killed'
 
@@ -572,7 +572,7 @@ async function runJob(id: string): Promise<void> {
   const job = loadJobs(file).find(j => j.id === id)
   if (!job) { process.stderr.write(`otto jobs: no job ${id}\n`); return }
 
-  const claude = join(homedir(), '.local', 'bin', 'claude')
+  const claude = claudeBin()
   if (!existsSync(claude)) {
     updateJob(file, id, j => applyEvent(j, { type: 'fail', at: Date.now(), error: 'claude CLI not found' }))
     return

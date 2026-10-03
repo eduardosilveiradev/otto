@@ -39,6 +39,7 @@ async function run(cmd: string[], cwd?: string, timeoutMs = PROBE_TIMEOUT_MS): P
 
 /** Frontmost GUI app. Needs Accessibility permission; undefined without it. */
 export async function frontmostApp(): Promise<string | undefined> {
+  if (process.platform !== 'darwin') return undefined
   const out = await run([
     'osascript', '-e',
     'tell application "System Events" to name of first process whose frontmost is true',
@@ -88,8 +89,17 @@ export async function recentRepos(root: string, now = Date.now()): Promise<RepoS
     .slice(0, MAX_REPOS)
 }
 
+/**
+ * Where repos live when nobody said: ~/Documents/Projects if it exists (a common
+ * macOS habit), else ~/projects. `projectsRoot` in access.json overrides both.
+ */
+export function defaultProjectsRoot(): string {
+  const docs = join(homedir(), 'Documents', 'Projects')
+  return existsSync(docs) ? docs : join(homedir(), 'projects')
+}
+
 export async function probeWorkspace(root?: string): Promise<Workspace> {
-  const projects = root ?? process.env.OTTO_PROJECTS_DIR ?? join(homedir(), 'Documents', 'Projects')
+  const projects = root ?? process.env.OTTO_PROJECTS_DIR ?? defaultProjectsRoot()
   const [app, repos] = await Promise.all([frontmostApp(), recentRepos(projects)])
   return { ...(app ? { app } : {}), repos }
 }

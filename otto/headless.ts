@@ -13,7 +13,17 @@
  * this plugin's own server, named so the tool ids match the live session's
  * (`mcp__plugin_otto_otto__*`), or nothing at all.
  */
+import { homedir } from 'node:os'
 import { join } from 'node:path'
+
+/**
+ * The claude CLI for headless children: whatever PATH finds (Homebrew, npm,
+ * the native installer), else the native installer's default location. Callers
+ * still check it exists — a missing CLI is a failed job, not a crash.
+ */
+export function claudeBin(): string {
+  return Bun.which('claude') ?? join(homedir(), '.local', 'bin', 'claude')
+}
 
 /** Server name that yields the same `mcp__plugin_otto_otto__*` tool ids as the plugin does. */
 export const HEADLESS_SERVER_NAME = 'plugin_otto_otto'
