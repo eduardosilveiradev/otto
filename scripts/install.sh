@@ -16,7 +16,7 @@
 set -uo pipefail
 
 OTTO_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STATE_DIR="$HOME/.claude/channels/otto"
+STATE_DIR="${OTTO_STATE_DIR:-$HOME/.otto/state}"
 LOG="$STATE_DIR/otto.log"
 PID_FILE="$STATE_DIR/otto.pid"
 
@@ -96,10 +96,16 @@ command -v gog >/dev/null \
   && ok "gog available (saves tokens on the email scan)" \
   || warn "gog missing — optional, it only optimizes the email scan"
 
-if [ -s "$STATE_DIR/.env" ]; then ok "Telegram token configured"
+CHECK_DIR="$STATE_DIR"
+if [ ! -e "$STATE_DIR" ] && [ -d "$HOME/.claude/channels/otto" ] && [ ! -L "$HOME/.claude/channels/otto" ]; then
+  warn "state still in ~/.claude/channels/otto — it moves to $STATE_DIR on the next start"
+  CHECK_DIR="$HOME/.claude/channels/otto"
+fi
+
+if [ -s "$CHECK_DIR/.env" ]; then ok "Telegram token configured"
 else warn "Telegram token missing — run /otto:setup in Claude"; fi
 
-if [ -s "$STATE_DIR/access.json" ]; then ok "access.json present"
+if [ -s "$CHECK_DIR/access.json" ]; then ok "access.json present"
 else warn "access.json missing — run /otto:setup in Claude"; fi
 
 if [ -f "$OTTO_HOME/CLAUDE.md" ]; then
@@ -143,6 +149,9 @@ if [ "$MODE" = "full" ]; then
     || warn "bun install failed — the server retries on startup"
 fi
 
+# Older installs kept state in ~/.claude/channels/otto; move it before anything
+# creates the new directory.
+bash "$OTTO_HOME/scripts/migrate-state.sh"
 mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR"
 
 # ---------------------------------------------------------------------------

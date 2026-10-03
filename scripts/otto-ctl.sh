@@ -9,7 +9,7 @@
 set -uo pipefail
 
 OTTO_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STATE_DIR="$HOME/.claude/channels/otto"
+STATE_DIR="${OTTO_STATE_DIR:-$HOME/.otto/state}"
 LOG="$STATE_DIR/otto.log"
 PID_FILE="$STATE_DIR/otto.pid"
 
@@ -52,6 +52,7 @@ manual_start() {
     echo "otto is already up (pid $(manual_pid))"
     return 0
   fi
+  bash "$OTTO_HOME/scripts/migrate-state.sh"
   mkdir -p "$STATE_DIR"
   if command -v setsid >/dev/null; then
     setsid nohup bash "$OTTO_HOME/run.sh" >>"$LOG" 2>&1 &

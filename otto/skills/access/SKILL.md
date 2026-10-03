@@ -5,7 +5,7 @@ description: Manages access to Otto's channel — approve pairings, edit the all
 
 # Otto channel access
 
-State: `~/.claude/channels/otto/access.json` (mode 0600). The server re-reads the
+State: `~/.otto/state/access.json` (mode 0600). The server re-reads the
 file on every incoming message — editing it doesn't require restarting anything.
 
 ```json
@@ -37,7 +37,7 @@ terminal.
 
 After changing anything, confirm in one sentence what changed.
 
-Triggers live in `~/.claude/channels/otto/triggers.json` — inspect them with the
+Triggers live in `~/.otto/state/triggers.json` — inspect them with the
 `list_triggers` tool, not by editing the file by hand.
 
 ## Security

@@ -67,6 +67,6 @@ event.
 
 ## Operation
 
-- State: `~/.claude/channels/otto/` (`access.json`, `triggers.json`,
+- State: `~/.otto/state/` (`access.json`, `triggers.json`,
   `email-state.json`, `.env`).
 - Email scan every {{SCAN_MINUTES}} minutes, suspended during quiet hours.

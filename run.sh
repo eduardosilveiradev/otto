@@ -46,6 +46,10 @@ if [ ! -x "$CLAUDE" ]; then
   exit 1
 fi
 
+# State moved from ~/.claude/channels/otto to ~/.otto/state; this is a no-op
+# once done, and must run before the server creates the new directory.
+bash "$OTTO_HOME/scripts/migrate-state.sh"
+
 # The cwd cannot be the marketplace root; a subdirectory still inherits the
 # CLAUDE.md files from the cwd and its ancestors — which is how the personality
 # gets in.

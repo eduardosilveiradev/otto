@@ -12,3 +12,7 @@ telegram.env
 /logs/
 node_modules/
 bun.lockb
+
+# Otto's state (bot token, allowlist, memory, history) lives here when the repo
+# is cloned to ~/.otto. Never commit it — and never `git clean -fdx` this repo.
+/state/

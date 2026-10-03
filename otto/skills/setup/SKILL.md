@@ -38,7 +38,7 @@ itself. What changes between them:
 |---|---|---|---|
 | stays up via | `otto.service` (systemd user unit) | `com.otto.agent` (launchd LaunchAgent) | background process + `@reboot` cron |
 | survives logout | yes, with linger | **no** — comes back at login | no |
-| logs | `journalctl --user -u otto.service` | `~/.claude/channels/otto/otto.log` | same log file |
+| logs | `journalctl --user -u otto.service` | `~/.otto/state/otto.log` | same log file |
 | policy file | `/etc/claude-code/managed-settings.json` | `/Library/Application Support/ClaudeCode/managed-settings.json` | `/etc/claude-code/…` |
 
 If `uname -s` is anything other than `Linux` or `Darwin` (Windows without WSL,
@@ -58,7 +58,7 @@ questions to learn who you are, then I'll install everything myself") and begin.
 
 - What they want to be called.
 - What city/timezone they live in. **Keep the IANA timezone** (e.g.
-  `America/Sao_Paulo`) — every time Otto shows depends on it.
+  `America/New_York`) — every time Otto shows depends on it.
 - What they do — one line. This is what separates "your flight leaves at 2pm"
   from "a tuition bill arrived": Otto needs to know what is important *to them*.
 
@@ -147,9 +147,10 @@ installing it is outside your reach.
 ### Step 3 — Secrets and configuration
 
 ```bash
-mkdir -p ~/.claude/channels/otto
-printf 'TELEGRAM_BOT_TOKEN=%s\n' "<token>" > ~/.claude/channels/otto/.env
-chmod 600 ~/.claude/channels/otto/.env
+# moves an older install's state from ~/.claude/channels/otto, if there is one
+bash "$OTTO_HOME/scripts/migrate-state.sh"
+printf 'TELEGRAM_BOT_TOKEN=%s\n' "<token>" > ~/.otto/state/.env
+chmod 600 ~/.otto/state/.env
 ```
 
 And `access.json`, with what they answered:
@@ -230,7 +231,7 @@ platform:
 # systemd
 journalctl --user -u otto.service -n 20 --no-pager | grep -i "polling as @"
 # macOS and the no-systemd fallback
-grep -i "polling as @" ~/.claude/channels/otto/otto.log | tail -n 3
+grep -i "polling as @" ~/.otto/state/otto.log | tail -n 3
 ```
 
 That `polling as @yourbotname` is the proof that Telegram connected. Ask them to

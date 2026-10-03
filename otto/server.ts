@@ -11,10 +11,10 @@
  *                       does the Gmail search + importance classification via
  *                       its own MCP connectors and records state back here
  *
- * State lives in ~/.claude/channels/otto/ — access.json, triggers.json,
+ * State lives in ~/.otto/state/ — access.json, triggers.json,
  * email-state.json, .env (bot token), inbox/.
  *
- * Config is per-user: everything personal lives in ~/.claude/channels/otto/
+ * Config is per-user: everything personal lives in ~/.otto/state/
  * and in the CLAUDE.md written by the `otto:setup` skill. Nothing about any
  * particular user belongs in this file.
  */
@@ -37,7 +37,7 @@ import {
 import { homedir } from 'os'
 import { join, extname, sep } from 'path'
 
-const STATE_DIR = process.env.OTTO_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'otto')
+const STATE_DIR = process.env.OTTO_STATE_DIR ?? join(homedir(), '.otto', 'state')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
 const TRIGGERS_FILE = join(STATE_DIR, 'triggers.json')
 const EMAIL_STATE_FILE = join(STATE_DIR, 'email-state.json')

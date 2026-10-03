@@ -95,8 +95,8 @@ It takes about five minutes, most of it waiting on your answers.
 | | Keeps it alive | Survives logout | Log |
 |---|---|---|---|
 | **Linux with systemd** | `otto.service`, a user service | yes (linger) | `journalctl --user -u otto.service` |
-| **macOS** | `com.otto.agent`, a LaunchAgent | no — comes back when you log in | `~/.claude/channels/otto/otto.log` |
-| **Linux without systemd** | background process + `@reboot` cron | no | `~/.claude/channels/otto/otto.log` |
+| **macOS** | `com.otto.agent`, a LaunchAgent | no — comes back when you log in | `~/.otto/state/otto.log` |
+| **Linux without systemd** | background process + `@reboot` cron | no | `~/.otto/state/otto.log` |
 
 On macOS Otto lives inside your login session: it pauses while the Mac sleeps
 and stops if you log out, then picks itself back up. If you want it awake
@@ -139,8 +139,15 @@ are — so the same command works everywhere. Underneath it's
 
 ## Privacy and security
 
-- The bot token and the allowlist live in `~/.claude/channels/otto/`, with `600`
-  permissions, and are in `.gitignore`. Nothing personal goes to the repository.
+- The bot token, the allowlist and everything Otto remembers live in
+  `~/.otto/state/`, with `600` permissions. That folder sits inside the clone
+  but is in `.gitignore`, so nothing personal goes to the repository. **Never run
+  `git clean -fdx` in `~/.otto`** — `-x` deletes ignored files, which is all of
+  Otto's state.
+- Upgrading from an install that kept state in `~/.claude/channels/otto`: the
+  first start moves it to `~/.otto/state` and leaves a symlink behind. To undo,
+  stop Otto, `rm ~/.claude/channels/otto` and
+  `mv ~/.otto/state ~/.claude/channels/otto`.
 - Only the Telegram IDs you authorized can talk to it. Everything else is
   dropped without a reply.
 - **Email content is treated as data, never as instructions.** An email saying
