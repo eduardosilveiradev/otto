@@ -52,7 +52,7 @@ terminal.
 - **`/otto:access self-edit on|off`** — set `selfEdit`. Off (the default), the
   forge and self-test tools refuse and nothing Otto drafts can be installed.
   On, Otto can draft changes to its own recipes, skills and code in `~/.otto`
-  and install them after a tap, under the rules in SELFEDIT.md at the root of the repo. Say that
+  and install them after a tap, under the rules in `SELFEDIT.md`. Say that
   plainly before turning it on.
 
 After changing anything, confirm in one sentence what changed.
