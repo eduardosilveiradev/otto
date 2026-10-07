@@ -5420,6 +5420,7 @@ function appReplyMeta(id: unknown): Record<string, string> {
 //   GET /app/update                     (token) { version, build, ipa, source }; 404 when none
 //   GET /app/release/<key>/Otto.ipa     the build
 //   GET /app/release/<key>/source.json  a SideStore source listing it
+//   GET /app/release/<key>/icon.png     its icon (SideStore requires one)
 const RELEASE_DIR = join(STATE_DIR, 'app-release')
 
 function appRelease(): { version: string; build: string; date: string; size: number; key: string } | null {
@@ -5439,19 +5440,20 @@ function releaseLinks(req: Request, key: string): { ipa: string; source: string 
 }
 
 function handleRelease(req: Request, path: string): Response | undefined {
-  const m = path.match(/^\/app\/release\/([^/]+)\/(Otto\.ipa|source\.json)$/)
+  const m = path.match(/^\/app\/release\/([^/]+)\/(Otto\.ipa|icon\.png|source\.json)$/)
   if (!m) return undefined
   const r = appRelease()
   if (req.method !== 'GET' || !r || !tokenMatches(m[1], r.key)) return new Response(null, { status: 404 })
   if (m[2] === 'Otto.ipa') {
     return new Response(Bun.file(join(RELEASE_DIR, 'Otto.ipa')), { headers: { 'content-type': 'application/octet-stream' } })
   }
-  const { ipa } = releaseLinks(req, r.key)
+  if (m[2] === 'icon.png') return new Response(Bun.file(join(RELEASE_DIR, 'icon.png')))
+  const { ipa, source } = releaseLinks(req, r.key)
   const version = { version: r.version, buildVersion: r.build, date: r.date, downloadURL: ipa, size: r.size }
   return Response.json({
     name: 'Otto', identifier: 'dev.otto.source', news: [],
     apps: [{ name: 'Otto', bundleIdentifier: 'dev.otto.app', developerName: 'Otto',
-      localizedDescription: 'Your assistant, in one chat.', versions: [version], ...version, versionDate: r.date }],
+      localizedDescription: 'Your assistant, in one chat.', iconURL: source.replace(/source\.json$/, 'icon.png'), versions: [version], ...version, versionDate: r.date }],
   })
 }
 

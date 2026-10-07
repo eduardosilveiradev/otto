@@ -140,8 +140,8 @@ the app. The `tailscale serve` command above does not publish it.
 
 If you build the app yourself, its release script writes the build to
 `~/.otto/state/app-release/`. The app then asks `/app/update` (with its token)
-whether a newer build exists, and SideStore fetches the build and its source
-listing from `/app/release/<key>/…`. SideStore can't send a token, so those two
+whether a newer build exists, and SideStore fetches the build, its icon and its
+source listing from `/app/release/<key>/…`. SideStore can't send a token, so those
 paths are guarded by the random key in `app-release/key` instead. With no
 `app-release/` directory they answer 404.
 
