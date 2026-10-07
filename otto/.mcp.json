@@ -3,7 +3,7 @@
     "otto": {
       "command": "bun",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/server.ts"
+        "${CLAUDE_PLUGIN_ROOT}/supervisor.ts"
       ]
     }
   }

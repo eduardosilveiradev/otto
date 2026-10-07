@@ -209,7 +209,9 @@ A single process (`otto/server.ts`) running three things at once:
 Around those: memory and open loops, a rolling brief of your day attached to
 every scheduled event, a hold queue for quiet hours, the iPhone app transport,
 and a watchdog (below). Each lives in its own module under `otto/`, with tests in
-`otto/tests/` (`cd otto && bun test`).
+`otto/tests/` (`cd otto && bun test`). Claude Code starts the server through
+`otto/supervisor.ts`, which holds the connection so the `reload` tool can restart
+it on new code without a reconnect.
 
 The personality — who you are, your timezone, what matters to you, the tone —
 lives in a CLAUDE.md file that setup writes from

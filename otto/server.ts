@@ -2420,7 +2420,8 @@ const mcp = new Server(
   { name: 'otto', version: '0.1.0' },
   {
     capabilities: {
-      tools: {},
+      // listChanged: after a reload the supervisor tells the client to re-read the tools.
+      tools: { listChanged: true },
       experimental: {
         'claude/channel': {},
         'claude/channel/permission': {},
@@ -3199,6 +3200,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       annotations: { title: 'Health status', readOnlyHint: true, openWorldHint: true },
       description:
         'One read-only report of whether each moving part is up — this server, trigger engine, email scan, webhook, voice daemon, gog auth, connectors — each with the time of its last evidence and a plain verdict. Use it when they ask if you are working. Repairs nothing.',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'reload',
+      title: 'Restart on the code on disk',
+      annotations: { title: 'Reload server', readOnlyHint: false, openWorldHint: false },
+      description:
+        'Restart this server on the code now on disk without the session reconnecting (supervisor.ts keeps the connection). Use after a committed change to otto/ instead of asking them to run /mcp. Refuses if the new code does not compile. Telegram, the webhook and app sockets drop for a few seconds; anything in flight is retried by the sender.',
       inputSchema: { type: 'object', properties: {} },
     },
   ],
@@ -4137,6 +4146,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (chat_id === APP_CHAT) throw new Error('the settings page is Telegram-only')
         const sent = await sendSettings(chat_id)
         return { content: [{ type: 'text', text: `settings page sent (id: ${sent})` }] }
+      }
+
+      case 'reload': {
+        if (process.env.OTTO_SUPERVISED !== '1') {
+          return { content: [{ type: 'text', text: 'not running under the supervisor — this once it takes /mcp → otto → Reconnect' }], isError: true }
+        }
+        const build = await Bun.build({ entrypoints: [import.meta.path], target: 'bun', packages: 'external' })
+        if (!build.success) {
+          const why = build.logs.map(l => String(l.message ?? l)).slice(0, 5).join('\n')
+          return { content: [{ type: 'text', text: `not reloading — the code on disk does not compile:\n${why}` }], isError: true }
+        }
+        setTimeout(shutdown, 300) // after this reply is out
+        return { content: [{ type: 'text', text: 'reloading — back in a few seconds' }] }
       }
 
       case 'otto_status': {

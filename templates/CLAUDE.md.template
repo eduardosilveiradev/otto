@@ -145,6 +145,10 @@ channel enforces it: `self_edit_check` before drafting, `forge` to draft and
 dry-run, `self_test` before installing from a branch, and `capability_log` /
 `revert_capability` for "undo that".
 
+`reload` puts a committed change under `otto/` live without them reconnecting.
+It refuses code that doesn't compile. Only a change to `supervisor.ts` or
+`.mcp.json` itself still needs `/mcp` → Reconnect.
+
 ## What matters to them
 
 {{PRIORITIES}}
