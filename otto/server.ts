@@ -5414,7 +5414,50 @@ function appReplyMeta(id: unknown): Record<string, string> {
   return { reply_to_text: snippet.length > 300 ? `${snippet.slice(0, 300)}…` : snippet, reply_to_from: e.dir === 'out' ? 'otto' : 'you' }
 }
 
+// App releases (otto-app's Scripts/release.sh writes app-release/). SideStore
+// fetches the IPA and its source without a login, so those two ride an
+// unguessable key from app-release/key instead of a device token.
+//   GET /app/update                     (token) { version, build, ipa, source }; 404 when none
+//   GET /app/release/<key>/Otto.ipa     the build
+//   GET /app/release/<key>/source.json  a SideStore source listing it
+const RELEASE_DIR = join(STATE_DIR, 'app-release')
+
+function appRelease(): { version: string; build: string; date: string; size: number; key: string } | null {
+  try {
+    const r = JSON.parse(readFileSync(join(RELEASE_DIR, 'release.json'), 'utf8'))
+    const key = readFileSync(join(RELEASE_DIR, 'key'), 'utf8').trim()
+    return key ? { ...r, key } : null
+  } catch { return null }
+}
+
+/** Links as the caller reached us: through tailscale serve that is the https .ts.net host. */
+function releaseLinks(req: Request, key: string): { ipa: string; source: string } {
+  const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? ''
+  const proto = req.headers.get('x-forwarded-proto') ?? (host.includes('.ts.net') ? 'https' : 'http')
+  const base = `${proto}://${host}/app/release/${key}`
+  return { ipa: `${base}/Otto.ipa`, source: `${base}/source.json` }
+}
+
+function handleRelease(req: Request, path: string): Response | undefined {
+  const m = path.match(/^\/app\/release\/([^/]+)\/(Otto\.ipa|source\.json)$/)
+  if (!m) return undefined
+  const r = appRelease()
+  if (req.method !== 'GET' || !r || !tokenMatches(m[1], r.key)) return new Response(null, { status: 404 })
+  if (m[2] === 'Otto.ipa') {
+    return new Response(Bun.file(join(RELEASE_DIR, 'Otto.ipa')), { headers: { 'content-type': 'application/octet-stream' } })
+  }
+  const { ipa } = releaseLinks(req, r.key)
+  const version = { version: r.version, buildVersion: r.build, date: r.date, downloadURL: ipa, size: r.size }
+  return Response.json({
+    name: 'Otto', identifier: 'dev.otto.source', news: [],
+    apps: [{ name: 'Otto', bundleIdentifier: 'dev.otto.app', developerName: 'Otto',
+      localizedDescription: 'Your assistant, in one chat.', versions: [version], ...version, versionDate: r.date }],
+  })
+}
+
 function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Response | Promise<Response> | undefined {
+  const release = handleRelease(req, new URL(req.url).pathname)
+  if (release) return release
   const tokenId = checkAppToken(req.headers.get('authorization') ?? '')
   if (!tokenId) return new Response(null, { status: 401 })
   touchAppToken(tokenId)
@@ -5428,6 +5471,10 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
   switch (url.pathname) {
     case '/app':
       return server.upgrade(req, { data: { tokenId } }) ? undefined : new Response('websocket upgrade expected', { status: 426 })
+    case '/app/update': {
+      const r = appRelease()
+      return r ? Response.json({ version: r.version, build: r.build, ...releaseLinks(req, r.key) }) : new Response(null, { status: 404 })
+    }
     case '/app/brief':
       return briefCache ? Response.json(briefCache.data) : new Response(null, { status: 503 })
     case '/app/history':

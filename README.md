@@ -138,6 +138,13 @@ requests only from the computer itself, carrying the Claude Code process id —
 that is its whole protection, and it can do nothing but show a status line in
 the app. The `tailscale serve` command above does not publish it.
 
+If you build the app yourself, its release script writes the build to
+`~/.otto/state/app-release/`. The app then asks `/app/update` (with its token)
+whether a newer build exists, and SideStore fetches the build and its source
+listing from `/app/release/<key>/…`. SideStore can't send a token, so those two
+paths are guarded by the random key in `app-release/key` instead. With no
+`app-release/` directory they answer 404.
+
 ## Background work and your Claude plan
 
 Two things run on their own, on the Claude plan this computer is logged into:
