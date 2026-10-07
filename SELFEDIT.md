@@ -128,6 +128,11 @@ argued for on its own merits. Not silently, and not by loosening the taint.
 - every other module under `otto/` that is not named in `guarded` below
 - `scripts/**` that is not named in `guarded` below
 - durable memory under `~/.claude/memory/**`
+- a switch on the `/settings` page (`setting:<key>`, `connector:<name>`): one
+  named access.json field, a recurring trigger's `enabled`, or one name in the
+  project's `disabledMcpServers`. The server renders the page and handles the
+  tap itself, so the model can neither mint the button nor report the tap;
+  the allowlist, pairing and secrets are never on it
 
 One tap. Show the diff, or a faithful summary of it, first. A tap on a draft the user
 was shown satisfies this tier the same way a tapped send satisfies the

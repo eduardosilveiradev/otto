@@ -157,6 +157,34 @@ ships **off**. To turn it on, run `/otto:access self-edit on` from your terminal
 (it sets `"selfEdit": true` in `access.json`). The rules it then follows — and
 that the server enforces — are in [SELFEDIT.md](SELFEDIT.md).
 
+## Settings from Telegram
+
+`/settings` (or asking Otto for its settings) sends one message of on/off
+buttons: email scans, quiet hours, voice replies, holding nudges during
+meetings, every recurring trigger, and the MCP servers Claude Code knows for
+Otto's project. Otto handles the tap itself and edits the message in place.
+Each switch writes one named field. The allowlist, pairing and secrets are never
+on the page. A connector switch edits that project's `disabledMcpServers` in
+`~/.claude.json` (the same list `/mcp` uses) and takes effect from the next
+session or an `/mcp` reconnect. Otto's own server is never listed.
+
+## Messages a restart would have lost
+
+Every message you send is written to `~/.otto/state/inbound-journal.json`
+before Otto sees it, and crossed off once Otto replies or reacts in that chat.
+If Otto restarts before answering, it is handed the message again on the next
+start, at most once. Only messages younger than `redeliverHours` in
+`access.json` are replayed (default 6; `0` turns it off).
+
+## Always-on front door (optional)
+
+Off by default. Normally a message sent while Otto's machine is asleep waits at
+Telegram, and you hear nothing. The relay is a Cloudflare Worker that takes
+Telegram's webhook instead, queues what Otto can't take, tells you once per
+outage, and hands the queue over when Otto is back (`"telegramMode": "relay"` in
+`access.json`). Deploy, enable and disable steps are in
+[relay/README.md](relay/README.md). Its tests run with `cd relay && bun test`.
+
 ## How it works
 
 A single process (`otto/server.ts`) running three things at once:
@@ -258,6 +286,8 @@ stopped, `rm ~/.claude/channels/otto` and
 - Google access is **read-only**. Email only goes out with your confirmation.
 - The app listener binds to `127.0.0.1` and reaches your phone only through
   `tailscale serve`. Leave `host` alone; never use `tailscale funnel` for it.
+  The one exception is the optional relay, which funnels the `/telegram` path
+  alone, and that path refuses anything without the relay's secret.
 
 ## Troubleshooting
 

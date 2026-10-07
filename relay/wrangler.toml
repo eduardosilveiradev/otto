@@ -1,0 +1,13 @@
+# Otto's Telegram relay. Every value that identifies you — the bot token, chat
+# ids, Otto's URL — is a secret set with `wrangler secret put`, never here.
+name = "otto-relay"
+main = "worker.ts"
+compatibility_date = "2026-10-01"
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayQueue"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayQueue"]

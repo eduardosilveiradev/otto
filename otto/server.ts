@@ -27,7 +27,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from 'grammy'
-import type { ReactionTypeEmoji } from 'grammy/types'
+import type { ReactionTypeEmoji, Update } from 'grammy/types'
 import { Cron } from 'croner'
 import { randomBytes, createHash, timingSafeEqual } from 'crypto'
 import { speakable } from './speech-text.ts'
@@ -54,6 +54,10 @@ import {
   formatEscalation,
 } from './escalation.ts'
 import { gatherBrief, sectionLabels, type TriggerGist, type BriefData } from './brief.ts'
+import {
+  loadJournal, saveJournal, recordInbound, markAnswered, takeRedeliveries, pruneJournal,
+  DEFAULT_REDELIVER_HOURS, type JournalEntry,
+} from './redeliver.ts'
 import { checkAppToken, isLiveAppToken, loadAppTokens, touchAppToken } from './apptokens.ts'
 import {
   loadMemories, searchMemories, writeMemory, deleteMemory, formatHit,
@@ -134,7 +138,13 @@ import {
 import { homedir } from 'os'
 import { join, extname, sep, isAbsolute, dirname, basename } from 'path'
 import { statusLabel } from './toolstatus.ts'
+import { LiveSteps, findImage, shrinkScreenshot } from './livesteps.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
+import { drainRelay, isUpdateBatch, makeDedupe, type RelayUpdate } from './tgrelay.ts'
+import {
+  accessToggles, flipAccess, triggerToggles, triggerIdOf, connectorToggles, flipConnector,
+  readConnectorSources, findToggle, renderSettings, type Toggle,
+} from './settings.ts'
 import { defaultProjectsRoot } from './workspace.ts'
 
 const STATE_DIR = process.env.OTTO_STATE_DIR ?? join(homedir(), '.otto', 'state')
@@ -153,6 +163,8 @@ const APP_CHAT = 'app'
 const appSockets = new Set<Bun.ServerWebSocket<{ tokenId: string }>>()
 /** Frames for the app sent while no socket was open; flushed on the next connect. */
 const appPending: string[] = []
+/** The step list behind the typing bubble (livesteps.ts); live only, like the status line. */
+const liveSteps = new LiveSteps(frame => { for (const ws of appSockets) ws.send(frame) })
 /** Otto's own durable memory — facts, open loops, saved items, write audit. */
 const NOTES_FILE = join(STATE_DIR, 'notes.json')
 /** Recall misses and per-memory hit counts — what was asked for, what gets used. */
@@ -161,6 +173,8 @@ const RECALL_STATS_FILE = join(STATE_DIR, 'recall-stats.json')
 const HYGIENE_FILE = join(STATE_DIR, 'hygiene.json')
 /** Proactive messages held by snooze / busy / quiet hours, awaiting a flush. */
 const QUEUE_FILE = join(STATE_DIR, 'queue.json')
+/** Inbound messages until answered, so a restart cannot swallow one. See redeliver.ts. */
+const JOURNAL_FILE = join(STATE_DIR, 'inbound-journal.json')
 const TOPICS_FILE = join(STATE_DIR, 'topics.json')
 /** How loudly each due-dated loop has already spoken. Two interruptions, ever. */
 const ESCALATION_FILE = join(STATE_DIR, 'escalation.json')
@@ -286,6 +300,8 @@ type Access = {
   /** Quiet hours "HH:MM-HH:MM" local time — email-scan ticks are suppressed
    * (triggers still fire; explicit reminders should ring). */
   quietHours?: string
+  /** A quiet window switched off from /settings, kept so switching it on restores it. */
+  quietHoursOff?: string
   /** Speech in and out. Absent means "on if the voice venv is installed". */
   voice?: VoiceConfig
   /** Token cap for one usage window, in the unit the local logs count in. With
@@ -306,6 +322,14 @@ type Access = {
   selfEdit?: boolean
   /** Where the workspace probe looks for repos. Default ~/Documents/Projects if it exists, else ~/projects. */
   projectsRoot?: string
+  /** Telegram ingress. "polling" (default) long-polls getUpdates; "relay" takes
+   * updates from the cloud relay on POST /telegram of the webhook listener and
+   * drains its queue. Read at boot. Switching is manual: relay/README.md. */
+  telegramMode?: 'polling' | 'relay'
+  /** Base URL of the relay Worker, relay mode only. Its secret is OTTO_RELAY_SECRET in .env. */
+  relayUrl?: string
+  /** On start, replay unanswered messages up to this old. Default 6; 0 disables. */
+  redeliverHours?: number
   /** Thresholds for the nightly loop-hygiene and memory-audit passes. Every field
    * is optional; anything missing or unusable falls back to its default. */
   hygiene?: {
@@ -896,6 +920,22 @@ function recordHistory(e: Omit<HistoryEntry, 'ts'>): void {
   } catch (err) {
     process.stderr.write(`otto channel: history append failed: ${err}\n`)
   }
+}
+
+/** Same policy as the history: a broken journal must never break messaging. */
+function updateJournal(fn: (j: JournalEntry[]) => JournalEntry[]): boolean {
+  try {
+    saveJournal(JOURNAL_FILE, fn(loadJournal(JOURNAL_FILE)))
+    return true
+  } catch (err) {
+    process.stderr.write(`otto channel: inbound journal write failed: ${err}\n`)
+    return false
+  }
+}
+
+/** Something went back to these chats just now; see markAnswered. */
+function journalAnswered(chat_ids: string[], reply_to?: unknown): void {
+  updateJournal(j => markAnswered(j, chat_ids, Date.now(), reply_to != null ? String(reply_to) : undefined))
 }
 
 function readHistory(chat_id: string | undefined, limit: number): HistoryEntry[] {
@@ -1810,7 +1850,7 @@ async function handleCapabilityButton(instruction: string, chat_id: string): Pro
     writeFilesCapturingBefores(draft.files.map(f => ({ path: f.path, content: f.content })))
     appendEntry(CAPABILITY_LOG, entry)
     try { rmSync(join(FORGE_DIR, `${id}.json`)) } catch {}
-    return `installed: ${draft.title}. undo with capability id ${entry.id}`
+    return `installed: ${draft.title}. undo with capability id ${entry.id}. live after /reload-plugins`
   }
 
   if (kind === 'repetition') {
@@ -2443,7 +2483,8 @@ function becomeChannelHost(reason: string): void {
   // Independent liveness signal for deadman.ts; see heartbeat.ts.
   beat()
   setInterval(beat, BEAT_MS).unref()
-  void startPolling()
+  if (loadAccess().telegramMode === 'relay') void startRelay()
+  else void startPolling()
   startWebhook()
   // Build the first brief immediately — the first trigger of the day should not
   // be the one that goes without context.
@@ -2457,6 +2498,41 @@ function becomeChannelHost(reason: string): void {
   })
   try { reportCanaryOutcomes() } catch (err) {
     process.stderr.write(`otto channel: canary report failed: ${err}\n`)
+  }
+  setTimeout(redeliverUnanswered, REDELIVER_SETTLE_MS).unref()
+}
+
+// Messages the last session took and never answered. Deferred, unlike the token
+// claim above, and for the mirror-image reason: a notification pushed down a
+// connection the client is about to SIGINT is lost after it has been flagged as
+// delivered, which is the one way to lose a message for good. A copy killed
+// during the churn simply never gets here, and the copy that survives does.
+// Only messages from before this process started qualify — anything newer came
+// through this process and is being answered now.
+const BOOT_AT = Date.now()
+const REDELIVER_SETTLE_MS = 30_000
+
+function redeliverUnanswered(): void {
+  const hours = loadAccess().redeliverHours ?? DEFAULT_REDELIVER_HOURS
+  let picked: JournalEntry[] = []
+  const saved = updateJournal(j => {
+    const kept = pruneJournal(j, Date.now())
+    if (hours > 0) picked = takeRedeliveries(kept, { now: Date.now(), windowMs: hours * 3_600_000, bootAt: BOOT_AT })
+    return kept
+  })
+  // Flag first, send second: unsaved, a crash loop would replay them every lap.
+  if (!saved || !picked.length) return
+  process.stderr.write(`otto channel: redelivering ${picked.length} unanswered message(s)\n`)
+  currentSrc = null
+  stampOrigin({ kind: 'inbound' })
+  for (const e of picked) {
+    lastInbound.set(e.chat_id, Date.now())
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: { content: e.text, meta: { ...e.meta, redelivered: '1' } },
+    }).catch(err => {
+      process.stderr.write(`otto channel: failed to redeliver ${e.message_id}: ${err}\n`)
+    })
   }
 }
 
@@ -3110,6 +3186,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: { type: 'object', properties: {} },
     },
     {
+      name: 'settings',
+      title: 'Show the settings page',
+      annotations: { title: 'Settings page', readOnlyHint: false, openWorldHint: false },
+      description:
+        'Send the /settings page to Telegram: your own switches, recurring triggers and MCP servers, each an on/off button. Use when they ask to see or change settings. You cannot flip anything with it — only their tap can.',
+      inputSchema: { type: 'object', properties: { chat_id: { type: 'string' } } },
+    },
+    {
       name: 'otto_status',
       title: 'Is every part of you up?',
       annotations: { title: 'Health status', readOnlyHint: true, openWorldHint: true },
@@ -3296,6 +3380,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           })
           recordSend(topics, topicDecision.key, text)
           saveTopics(TOPICS_FILE, topics)
+          journalAnswered([String(args.chat_id), chat_id], args.reply_to)
           return { content: [{ type: 'text', text: `sent to the app (id: ${id})` }] }
         }
 
@@ -3384,6 +3469,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           ...(sentIds.length ? { messageId: sentIds[0] } : {}),
         })
         saveTopics(TOPICS_FILE, topics)
+        journalAnswered([String(args.chat_id), chat_id], reply_to)
         const how = spoken ? 'sent as voice note' : 'sent'
         // Warnings ride along after the fact: the message was worth sending,
         // and the note is for the next one.
@@ -3395,12 +3481,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       case 'react': {
         if (String(args.chat_id) === APP_CHAT) {
           appBroadcast(JSON.stringify({ type: 'react', id: String(args.message_id), emoji: String(args.emoji) }))
+          journalAnswered([APP_CHAT])
           return { content: [{ type: 'text', text: 'reacted' }] }
         }
         assertAllowedChat(String(args.chat_id))
         await bot.api.setMessageReaction(String(args.chat_id), Number(args.message_id), [
           { type: 'emoji', emoji: args.emoji as ReactionTypeEmoji['emoji'] },
         ])
+        journalAnswered([String(args.chat_id)])
         return { content: [{ type: 'text', text: 'reacted' }] }
       }
 
@@ -4043,6 +4131,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         return { content: [{ type: 'text', text: lines.join('\n') }] }
       }
 
+      case 'settings': {
+        const chat_id = String(args.chat_id ?? loadAccess().allowFrom[0] ?? '')
+        assertAllowedChat(chat_id)
+        if (chat_id === APP_CHAT) throw new Error('the settings page is Telegram-only')
+        const sent = await sendSettings(chat_id)
+        return { content: [{ type: 'text', text: `settings page sent (id: ${sent})` }] }
+      }
+
       case 'otto_status': {
         const deps = statusDeps()
         const rows = await collectStatus(deps)
@@ -4439,8 +4535,109 @@ bot.command('start', async ctx => {
   await ctx.reply('otto online.')
 })
 
+// ---------------------------------------------------------------------------
+// /settings — what is on the page lives in settings.ts; this is the IO and the tap
+// ---------------------------------------------------------------------------
+
+/** The key /mcp toggles live under in ~/.claude.json: the session's git root,
+ * or its directory outside a repo. ponytail: a linked worktree keys on the main
+ * checkout in Claude Code; this would key on the worktree. */
+const CLAUDE_PROJECT = (() => {
+  const dir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd()
+  try {
+    const p = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { cwd: dir })
+    const top = new TextDecoder().decode(p.stdout).trim()
+    return p.exitCode === 0 && top ? top : dir
+  } catch { return dir }
+})()
+const CLAUDE_JSON = join(homedir(), '.claude.json')
+
+function settingsPage(): Toggle[] {
+  const src = readConnectorSources(homedir(), CLAUDE_PROJECT)
+  return [...accessToggles(loadAccess()), ...triggerToggles(loadTriggers()), ...(src ? connectorToggles(src) : [])]
+}
+
+function settingsKeyboard(buttons: { label: string; data: string }[]): InlineKeyboard {
+  const kb = new InlineKeyboard()
+  buttons.forEach((b, i) => {
+    if (i > 0 && i % 2 === 0) kb.row()
+    kb.text(b.label, b.data)
+  })
+  return kb
+}
+
+async function sendSettings(chat_id: string): Promise<number> {
+  const r = renderSettings(settingsPage())
+  return (await bot.api.sendMessage(chat_id, r.text, { reply_markup: settingsKeyboard(r.buttons) })).message_id
+}
+
+/** Carry out one tapped switch; the line under the re-rendered page. */
+function applySetting(t: Toggle): string {
+  const now = t.on ? 'off' : 'on'
+  const tid = triggerIdOf(t.id)
+  if (tid) {
+    const ts = loadTriggers()
+    const tr = ts.find(x => x.id === tid)
+    if (!tr) throw new Error('that trigger is gone')
+    tr.enabled = !tr.enabled
+    if (tr.enabled && tr.schedule) tr.nextRun = computeNextRun(tr.schedule, Date.now(), tr.tz)
+    saveTriggers(ts)
+  } else if (t.section === 'otto') {
+    if (STATIC) throw new Error('access is in static mode — edit access.json by hand')
+    saveAccess(flipAccess(loadAccess(), t.id))
+  } else {
+    const src = readConnectorSources(homedir(), CLAUDE_PROJECT)
+    if (!src) throw new Error('cannot read the Claude Code config')
+    // ponytail: read-modify-rename races a Claude Code write in the same instant;
+    // the page is re-rendered from disk, so a lost flip shows as not flipped.
+    const tmp = `${CLAUDE_JSON}.otto-tmp`
+    writeFileSync(tmp, JSON.stringify(flipConnector(src, t.id), null, 2), { mode: statSync(CLAUDE_JSON).mode & 0o777 })
+    renameSync(tmp, CLAUDE_JSON)
+    return `→ ${t.label} ${now} — applies from the next session (or /mcp)`
+  }
+  return `→ ${t.label} ${now}`
+}
+
+bot.command('settings', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  if (!loadAccess().allowFrom.includes(String(ctx.from?.id))) return
+  await sendSettings(String(ctx.chat.id)).catch(err => {
+    process.stderr.write(`otto channel: /settings failed — ${err instanceof Error ? err.message : String(err)}\n`)
+  })
+})
+
 bot.on('callback_query:data', async ctx => {
   const cbData = ctx.callbackQuery.data
+  if (cbData.startsWith('set:')) {
+    const allow = loadAccess().allowFrom
+    if (!allow.includes(String(ctx.from.id)) || !allow.includes(String(ctx.chat?.id))) {
+      await ctx.answerCallbackQuery({ text: 'Not authorized.' }).catch(() => {})
+      return
+    }
+    // Resolved against the page as it is now, so a stale button for something
+    // that has since gone finds nothing rather than something else.
+    const t = findToggle(settingsPage(), cbData)
+    if (!t) {
+      await ctx.answerCallbackQuery({ text: 'Gone — send /settings again.' }).catch(() => {})
+      return
+    }
+    // `set:` data is minted only by renderSettings (the reply tool's buttons are
+    // all `btn:`), and this handler is the one that saw the tap — so the write's
+    // origin is the user, first-hand. Deliberately no stampOrigin: the session is
+    // not woken, and restamping would clear the taint of whatever turn it is in.
+    const d = classify([t.id], 'user-typed', { kind: 'tapped', buttonData: cbData })
+    let note: string
+    try {
+      if (!d.allowed) throw new Error(d.reason)
+      note = applySetting(t)
+    } catch (err) {
+      note = `couldn't — ${err instanceof Error ? err.message : String(err)}`
+    }
+    await ctx.answerCallbackQuery().catch(() => {})
+    const r = renderSettings(settingsPage(), note)
+    await ctx.editMessageText(r.text, { reply_markup: settingsKeyboard(r.buttons) }).catch(() => {})
+    return
+  }
   if (cbData.startsWith('btn:')) {
     const access = loadAccess()
     if (!access.allowFrom.includes(String(ctx.from.id))) {
@@ -4670,6 +4867,26 @@ async function handleInbound(ctx: Context, inbound: Inbound): Promise<void> {
     ...(safeName(from.first_name) ? { from: safeName(from.first_name)! } : {}),
   })
 
+  const meta: Record<string, string> = {
+    chat_id,
+    ...extraMeta,
+    ...(msgId != null ? { message_id: String(msgId) } : {}),
+    ...replyMeta,
+    user: safeName(from.username) ?? String(from.id),
+    user_id: String(from.id),
+    ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
+    ...(imagePath ? { image_path: imagePath } : {}),
+    ...(attachment ? {
+      attachment_kind: attachment.kind,
+      attachment_file_id: attachment.file_id,
+      ...(attachment.size != null ? { attachment_size: String(attachment.size) } : {}),
+      ...(attachment.mime ? { attachment_mime: attachment.mime } : {}),
+      ...(attachment.name ? { attachment_name: attachment.name } : {}),
+    } : {}),
+  }
+  // Written before the session sees it, so a restart cannot be the only copy.
+  if (msgId != null) updateJournal(j => recordInbound(j, { chat_id, message_id: String(msgId), text, meta }, Date.now()))
+
   mcp.notification({
     method: 'notifications/claude/channel',
     params: {
@@ -4680,23 +4897,7 @@ async function handleInbound(ctx: Context, inbound: Inbound): Promise<void> {
       content: capabilityHint
         ? `${text}\n\n(one line you may append to the reply you were already writing, or drop entirely — never send it alone, never expand on it, and skip it if you are answering by voice: ${capabilityHint})`
         : text,
-      meta: {
-        chat_id,
-        ...extraMeta,
-        ...(msgId != null ? { message_id: String(msgId) } : {}),
-        ...replyMeta,
-        user: safeName(from.username) ?? String(from.id),
-        user_id: String(from.id),
-        ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
-        ...(imagePath ? { image_path: imagePath } : {}),
-        ...(attachment ? {
-          attachment_kind: attachment.kind,
-          attachment_file_id: attachment.file_id,
-          ...(attachment.size != null ? { attachment_size: String(attachment.size) } : {}),
-          ...(attachment.mime ? { attachment_mime: attachment.mime } : {}),
-          ...(attachment.name ? { attachment_name: attachment.name } : {}),
-        } : {}),
-      },
+      meta,
     },
   }).catch(err => {
     process.stderr.write(`otto channel: failed to deliver inbound: ${err}\n`)
@@ -4860,6 +5061,77 @@ async function startPolling(): Promise<void> {
   }
 }
 
+// Relay mode: the cloud relay (relay/ at the repo root) holds the webhook, so
+// getUpdates is never called — grammY's bot.start() would delete that webhook.
+// Pushed and drained updates go through bot.handleUpdate, the same middleware a
+// polled update runs, one at a time and each update_id once.
+const RELAY_SECRET = process.env.OTTO_RELAY_SECRET ?? ''
+const relayFresh = makeDedupe()
+let relayChain: Promise<void> = Promise.resolve()
+
+function relayIngest(updates: RelayUpdate[]): Promise<void> {
+  for (const u of updates) {
+    if (!relayFresh(u.update_id)) continue
+    relayChain = relayChain
+      .then(() => bot.handleUpdate(u as Update))
+      .catch(err => { process.stderr.write(`otto channel: relay update ${u.update_id} failed: ${err}\n`) })
+  }
+  return relayChain
+}
+
+async function handleRelayPush(req: Request): Promise<Response> {
+  if (req.method !== 'POST') return new Response(null, { status: 405 })
+  if (loadAccess().telegramMode !== 'relay' || !RELAY_SECRET ||
+    !tokenMatches(req.headers.get('authorization') ?? '', `Bearer ${RELAY_SECRET}`)) {
+    return new Response(null, { status: 401 })
+  }
+  // Not ready to handle yet: refuse, and the relay keeps it queued.
+  if (!bot.isInited()) return new Response(null, { status: 503 })
+  let updates: unknown
+  try { updates = await req.json() } catch { return new Response(null, { status: 400 }) }
+  if (!isUpdateBatch(updates)) return new Response(null, { status: 400 })
+  lastPollAt = Date.now()
+  void relayIngest(updates)
+  return new Response(null, { status: 204 })
+}
+
+async function startRelay(): Promise<void> {
+  const url = loadAccess().relayUrl
+  if (!url || !RELAY_SECRET) {
+    process.stderr.write('otto channel: telegramMode "relay" needs relayUrl in access.json and OTTO_RELAY_SECRET in .env — no Telegram ingress\n')
+    return
+  }
+  for (let attempt = 1; !bot.isInited(); attempt++) {
+    try {
+      await bot.init()
+    } catch (err) {
+      if (shuttingDown) return
+      process.stderr.write(`otto channel: getMe failed (${err}), retrying\n`)
+      await new Promise(r => setTimeout(r, Math.min(1000 * attempt, 15000)))
+    }
+  }
+  botUsername = bot.botInfo.username
+  process.stderr.write(`otto channel: relay mode as @${botUsername}\n`)
+  // On boot, and every minute after: a machine that slept wakes without restarting.
+  // ponytail: a fixed 60s pull, a wake hook if the minute of lag ever matters
+  let draining = false
+  const drain = async (): Promise<void> => {
+    if (draining) return
+    draining = true
+    try {
+      const n = await drainRelay(url, RELAY_SECRET, relayIngest)
+      lastPollAt = Date.now()
+      if (n) process.stderr.write(`otto channel: drained ${n} queued update(s) from the relay\n`)
+    } catch (err) {
+      process.stderr.write(`otto channel: relay drain failed: ${err}\n`)
+    } finally {
+      draining = false
+    }
+  }
+  await drain()
+  setInterval(drain, 60_000).unref()
+}
+
 // ---------------------------------------------------------------------------
 // Webhook ingress — loopback-only event injection for external systems
 // (GitHub Actions, Sentry, RSS watchers, scripts). Channel host only.
@@ -4882,6 +5154,8 @@ function startWebhook(retry = true): void {
       fetch: (req, server) => {
         const path = new URL(req.url).pathname
         if (path === '/status') return handleStatus(req, server)
+        // Funnel may hand this over as /telegram/ — it joins its mount path onto the target's.
+        if (path.startsWith('/telegram')) return handleRelayPush(req)
         return path.startsWith('/app') ? handleApp(req, server) : handleWebhook(req)
       },
       websocket: {
@@ -4889,6 +5163,8 @@ function startWebhook(retry = true): void {
         open: ws => {
           appSockets.add(ws)
           for (const frame of appPending.splice(0)) ws.send(frame)
+          const steps = liveSteps.snapshot()
+          if (steps) ws.send(steps)
         },
         close: ws => { appSockets.delete(ws) },
         message: (ws, raw) => {
@@ -4998,6 +5274,8 @@ async function handleWebhook(req: Request): Promise<Response> {
 //                  { "type": "tap", "data": "<button data>", "label": "send ✓" }
 //     otto -> app  { "type": "message", "id": "...", "text": "...", "ts": "<ISO>",
 //                    "buttons": [{ "label": "...", "data": "..." }] }
+//                  { "type": "steps", "taskId", "steps": [{ "label", "ts" }], "screenshot"?, "done" }
+//                    the reply in the works, step by step (livesteps.ts); live only
 //
 // Routing: reply(chat_id:"app") goes to every open socket; with none open it
 // waits and is delivered on the next connect. A reply addressed to the owner's Telegram
@@ -5058,6 +5336,7 @@ function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: App
   lastAppOut = Date.now()
   const id = randomBytes(4).toString('hex')
   appBroadcast(JSON.stringify({ type: 'message', id, text, ts: new Date().toISOString(), buttons, ...extra }))
+  liveSteps.finish()
   return id
 }
 
@@ -5067,18 +5346,28 @@ function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: App
  * while the app is waiting on a reply, a one-line label goes to the open sockets.
  * Loopback only, and only from the session that owns this server: every other
  * session with the plugin installed posts too, and their work isn't this chat's.
+ * The same hook file also posts screenshot tools' PostToolUse (the image, for the
+ * step list) and Stop (the turn is over, so the step list is done).
  */
 async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }>): Promise<Response> {
   const ip = server.requestIP(req)?.address ?? ''
   if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip)) return new Response(null, { status: 403 })
   if (req.headers.get('x-claude-pid') !== String(process.ppid) || req.method !== 'POST') return new Response(null, { status: 204 })
   // Read the body before answering: once the response is out, Bun has dropped it.
-  let h: { tool_name?: string; tool_input?: Record<string, unknown>; transcript_path?: string }
+  let h: { hook_event_name?: string; tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown; transcript_path?: string }
   try { h = (await req.json()) as typeof h } catch { return new Response(null, { status: 400 }) }
   markRead(h.transcript_path)
+  if (h.hook_event_name === 'Stop') { liveSteps.finish(); return new Response(null, { status: 204 }) }
   const waiting = (lastInbound.get(APP_CHAT) ?? 0) > lastAppOut
-  if (!waiting || appSockets.size === 0) return new Response(null, { status: 204 })
+  if (!waiting) return new Response(null, { status: 204 })
+  if (h.hook_event_name === 'PostToolUse') {
+    const img = findImage(h.tool_response)
+    if (img) void shrinkScreenshot(img).then(jpeg => { if (jpeg) liveSteps.screenshot(jpeg) })
+    return new Response(null, { status: 204 })
+  }
   const text = statusLabel(String(h.tool_name ?? ''), h.tool_input ?? {})
+  liveSteps.step(text) // kept with no socket open too: a reconnect mid-task gets the whole list
+  if (appSockets.size === 0) return new Response(null, { status: 204 })
   if (text) {
     const frame = JSON.stringify({ type: 'status', text })
     for (const ws of appSockets) ws.send(frame) // live only: never queued, it's stale by the next connect
@@ -5199,12 +5488,11 @@ function appInbound(text: string, extraMeta: Record<string, string> = {}, kind =
   origin = recordTyped(origin, text)
   recordHistory({ dir: 'in', chat_id: APP_CHAT, kind, text, ...(message_id ? { message_id } : {}) })
   if (message_id) unreadApp.add(message_id)
+  const meta = { chat_id: APP_CHAT, user: APP_CHAT, user_id: APP_CHAT, ts: new Date().toISOString(), ...(message_id ? { message_id } : {}), ...extraMeta }
+  if (message_id && kind !== 'reaction') updateJournal(j => recordInbound(j, { chat_id: APP_CHAT, message_id, text, meta }, Date.now()))
   mcp.notification({
     method: 'notifications/claude/channel',
-    params: {
-      content: text,
-      meta: { chat_id: APP_CHAT, user: APP_CHAT, user_id: APP_CHAT, ts: new Date().toISOString(), ...(message_id ? { message_id } : {}), ...extraMeta },
-    },
+    params: { content: text, meta },
   }).catch(err => {
     process.stderr.write(`otto channel: failed to deliver app inbound: ${err}\n`)
   })

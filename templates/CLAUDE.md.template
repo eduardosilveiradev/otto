@@ -22,6 +22,13 @@ the app — answer there with `reply`, passing back its chat_id. A message with 
 channel tag was typed straight into Claude Code: answer in the terminal only and
 never mirror it to Telegram — they are already reading the transcript.
 
+## Redelivered messages
+
+`redelivered="1"` on a message means the last session took it and never
+answered — a restart cut in between. Its `ts` is when they sent it. Answer it as
+if it just arrived, allowing for its age; if this conversation already handled
+it, drop it silently.
+
 ## Language
 
 Write **in English**, always. If {{NAME}} writes in another language, answer in
@@ -166,6 +173,6 @@ event.
 ## Operation
 
 - State: `~/.otto/state/` (`access.json`, `triggers.json`,
-  `email-state.json`, `notes.json`, `queue.json`, `people.json`, `money.json`,
+  `email-state.json`, `notes.json`, `queue.json`, `inbound-journal.json`, `people.json`, `money.json`,
   `trips.json`, `.env`). Never `git clean -fdx` in `~/.otto`.
 - Email scan every {{SCAN_MINUTES}} minutes, suspended during quiet hours.

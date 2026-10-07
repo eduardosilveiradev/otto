@@ -137,6 +137,10 @@ const RULES: Rule[] = [
   { re: /(^|\/)scripts\//, tier: 'confirmed', why: 'a repo script' },
   { re: /(^|\/)(music|voice|frontdesk|power)\//, tier: 'confirmed', why: 'a sidecar tool' },
   { re: /(^|\/)WIRING-[^/]+\.md$/, tier: 'confirmed', why: 'wiring notes' },
+  // The /settings page. Pseudo-paths minted only by otto/settings.ts, each
+  // naming one field; an id the page does not mint falls through to guarded.
+  { re: /^setting:(scan|quiet|voice|busy|trigger-[a-z0-9-]+)$/i, tier: 'confirmed', why: 'a switch on the settings page' },
+  { re: /^connector:[^/]+$/, tier: 'confirmed', why: 'an MCP server on/off switch' },
 
   // --- unattended: the parameter surface -----------------------------------
   // Not files. server.ts passes these pseudo-paths so that a price-watch
