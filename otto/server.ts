@@ -2591,8 +2591,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'reply',
-      title: 'Send Telegram message',
-      annotations: { title: 'Send Telegram message', readOnlyHint: false, openWorldHint: true },
+      title: 'Send message',
+      annotations: { title: 'Send message', readOnlyHint: false, openWorldHint: true },
       description:
         'Send a Telegram message to the user. Pass chat_id from the inbound <channel> block (or the allowlisted chat for proactive messages). Long text splits at 4096 chars. files (absolute paths) attach as photos/documents. voice sends the text as a spoken voice note with the text as its caption — omit it and the channel decides (default: speak when the user last sent a voice note). buttons adds one-tap choices; a tap comes back as event="button" carrying the button data as its content — prefer buttons over asking the user to type when the answer is one of a few known actions.',
       inputSchema: {
