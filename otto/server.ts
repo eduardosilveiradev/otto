@@ -315,6 +315,8 @@ type Access = {
   /** ISO time until which non-urgent proactive messages are held. Set by the
    * snooze tool, cleared by flushing. */
   snoozeUntil?: string
+  /** When the current snooze began, for the app's progress bar. Kept when it's extended. */
+  snoozeSince?: string
   /** Hold non-urgent messages while the calendar says the user is in something.
    * Default true — turn it off if the calendar is noisy with fake busy blocks. */
   busySuppression?: boolean
@@ -1358,6 +1360,27 @@ async function deliverQueued(m: QueuedMessage): Promise<void> {
     dir: 'out', chat_id: m.chat_id, kind: 'text', text: m.text,
     message_id: String(sentIds[0]), src: 'queue-flush',
   })
+}
+
+function snoozeLive(a: Access): boolean {
+  return !!a.snoozeUntil && Date.parse(a.snoozeUntil) > Date.now()
+}
+
+/** Hold normal messages until `until`. Shared by the snooze tool and the app. */
+function setSnooze(until: Date): void {
+  const access = loadAccess()
+  if (!snoozeLive(access) || !access.snoozeSince) access.snoozeSince = new Date().toISOString()
+  access.snoozeUntil = until.toISOString()
+  saveAccess(access)
+}
+
+/** End the snooze and deliver what it held. Returns how many went out. */
+async function clearSnooze(): Promise<number> {
+  const access = loadAccess()
+  delete access.snoozeUntil
+  delete access.snoozeSince
+  saveAccess(access)
+  return flushQueue(true)
 }
 
 /**
@@ -3765,24 +3788,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       }
 
       case 'snooze': {
-        const access = loadAccess()
         if (args.clear) {
-          delete access.snoozeUntil
-          saveAccess(access)
-          const n = await flushQueue(true)
+          const n = await clearSnooze()
           return { content: [{ type: 'text', text: `snooze cleared${n ? `, delivered ${n} held message(s)` : ', nothing was queued'}` }] }
         }
         const until = args.until
           ? new Date(String(args.until))
           : new Date(Date.now() + Math.max(1, Number(args.minutes) || 60) * 60_000)
         if (Number.isNaN(until.getTime())) throw new Error('until must be an ISO datetime')
-        access.snoozeUntil = until.toISOString()
-        saveAccess(access)
+        setSnooze(until)
         const queued = loadQueue(QUEUE_FILE).length
         return {
           content: [{
             type: 'text',
-            text: `quiet until ${access.snoozeUntil}${queued ? ` (${queued} already waiting)` : ''} — urgent sends and replies to the user still go through`,
+            text: `quiet until ${until.toISOString()}${queued ? ` (${queued} already waiting)` : ''} — urgent sends and replies to the user still go through`,
           }],
         }
       }
@@ -5292,6 +5311,11 @@ async function handleWebhook(req: Request): Promise<Response> {
 //                     like a Telegram photo (image_path meta)
 //   POST /app/voice   raw audio bytes (m4a) -> { text } transcript; arrives
 //                     like a Telegram voice note (voice="1", Whisper text)
+//   GET /app/snooze   { until, since, held: [{ text, at }] }; until/since null
+//                     when not snoozed
+//   POST /app/snooze  { minutes } snoozes, or extends a live snooze by that much
+//                     (1..1440); { clear: true } ends it and delivers the held
+//                     messages. Answers like GET.
 //   GET /app          websocket upgrade; JSON text frames:
 //     app -> otto  { "type": "message", "text": "..." }
 //                  { "type": "tap", "data": "<button data>", "label": "send ✓" }
@@ -5513,6 +5537,7 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
   touchAppToken(tokenId)
   const url = new URL(req.url)
   if (req.method === 'POST' && (url.pathname === '/app/photo' || url.pathname === '/app/voice')) return appUpload(req, url)
+  if (url.pathname === '/app/snooze') return appSnooze(req)
   if (req.method !== 'GET') return new Response(null, { status: 405 })
   if (url.pathname.startsWith('/app/file/')) {
     const path = appFiles.get(url.pathname.slice('/app/file/'.length))
@@ -5532,6 +5557,29 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
         .map(e => ({ dir: e.dir, text: e.text, ts: e.ts, ...(e.message_id ? { id: e.message_id } : {}), ...(e.extra ?? {}) })))
   }
   return new Response(null, { status: 404 })
+}
+
+/** GET: the snooze and what it holds. POST {minutes}: snooze, or extend a live one by that much.
+ * POST {clear:true}: end it and hand everything over now. */
+async function appSnooze(req: Request): Promise<Response> {
+  if (req.method === 'POST') {
+    const body = (await req.json().catch(() => ({}))) as { minutes?: unknown; clear?: unknown }
+    if (body.clear === true) await clearSnooze()
+    else {
+      const minutes = Number(body.minutes)
+      if (!(minutes > 0 && minutes <= 24 * 60)) return new Response(null, { status: 400 })
+      const a = loadAccess()
+      const from = snoozeLive(a) ? Date.parse(a.snoozeUntil!) : Date.now()
+      setSnooze(new Date(from + minutes * 60_000))
+    }
+  } else if (req.method !== 'GET') return new Response(null, { status: 405 })
+  const a = loadAccess()
+  const live = snoozeLive(a)
+  return Response.json({
+    until: live ? a.snoozeUntil : null,
+    since: live ? (a.snoozeSince ?? null) : null,
+    held: loadQueue(QUEUE_FILE).map(m => ({ text: m.text, at: m.queuedAt })),
+  })
 }
 
 const APP_UPLOAD_MAX = 25 * 1024 * 1024
