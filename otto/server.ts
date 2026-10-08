@@ -317,6 +317,9 @@ type Access = {
   snoozeUntil?: string
   /** When the current snooze began, for the app's progress bar. Kept when it's extended. */
   snoozeSince?: string
+  /** The app's "speak replies when I speak". false keeps app replies as text unless a
+   * reply asks for voice outright; Telegram follows voice.autoReply as before. Default true. */
+  appSpeakReplies?: boolean
   /** Hold non-urgent messages while the calendar says the user is in something.
    * Default true — turn it off if the calendar is noisy with fake busy blocks. */
   busySuppression?: boolean
@@ -3396,8 +3399,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (chat_id === APP_CHAT) {
           // Spoken like Telegram, but as WAV: the phone can't play Opus. The text
           // still shows in the bubble, so a failed synthesis just loses the audio.
-          const vcfg = loadAccess().voice ?? {}
-          const line = (args.voice != null ? Boolean(args.voice) : shouldSpeak(APP_CHAT, vcfg)) && voiceEnabled(vcfg)
+          const appAccess = loadAccess()
+          const vcfg = appAccess.voice ?? {}
+          const auto = appAccess.appSpeakReplies !== false && shouldSpeak(APP_CHAT, vcfg)
+          const line = (args.voice != null ? Boolean(args.voice) : auto) && voiceEnabled(vcfg)
             ? speakable(text, vcfg.maxSpeakChars ?? 900) : ''
           const wav = line ? await synthesize(line, 'wav') : null
           const extra = {
@@ -5316,7 +5321,11 @@ async function handleWebhook(req: Request): Promise<Response> {
 //   POST /app/snooze  { minutes } snoozes, or extends a live snooze by that much
 //                     (1..1440); { clear: true } ends it and delivers the held
 //                     messages. Answers like GET.
-//   GET /app          websocket upgrade; JSON text frames:
+//   GET /app/settings { speakReplies }; POST a subset to change it. false keeps
+//                     app replies as text (appSpeakReplies in access.json)
+//   POST /app/loop    { id, done } closes or reopens an open loop from the brief
+//                     -> { id, done }; 404 for an id that isn't a loop
+//   GET /app         websocket upgrade; JSON text frames:
 //     app -> otto  { "type": "message", "text": "..." }
 //                  { "type": "tap", "data": "<button data>", "label": "send ✓" }
 //     otto -> app  { "type": "message", "id": "...", "text": "...", "ts": "<ISO>",
@@ -5538,6 +5547,8 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
   const url = new URL(req.url)
   if (req.method === 'POST' && (url.pathname === '/app/photo' || url.pathname === '/app/voice')) return appUpload(req, url)
   if (url.pathname === '/app/snooze') return appSnooze(req)
+  if (url.pathname === '/app/settings') return appSettings(req)
+  if (req.method === 'POST' && url.pathname === '/app/loop') return appLoop(req)
   if (req.method !== 'GET') return new Response(null, { status: 405 })
   if (url.pathname.startsWith('/app/file/')) {
     const path = appFiles.get(url.pathname.slice('/app/file/'.length))
@@ -5580,6 +5591,31 @@ async function appSnooze(req: Request): Promise<Response> {
     since: live ? (a.snoozeSince ?? null) : null,
     held: loadQueue(QUEUE_FILE).map(m => ({ text: m.text, at: m.queuedAt })),
   })
+}
+
+/** GET the app's settings that live on the Mac; POST a subset to change them. */
+async function appSettings(req: Request): Promise<Response> {
+  if (req.method === 'POST') {
+    const body = (await req.json().catch(() => ({}))) as { speakReplies?: unknown }
+    if (typeof body.speakReplies !== 'boolean') return new Response(null, { status: 400 })
+    const a = loadAccess()
+    a.appSpeakReplies = body.speakReplies
+    saveAccess(a)
+  } else if (req.method !== 'GET') return new Response(null, { status: 405 })
+  return Response.json({ speakReplies: loadAccess().appSpeakReplies !== false })
+}
+
+/** POST {id, done}: close an open loop from the contact card, or reopen one closed by mistake. */
+async function appLoop(req: Request): Promise<Response> {
+  const body = (await req.json().catch(() => ({}))) as { id?: unknown; done?: unknown }
+  if (typeof body.id !== 'string' || typeof body.done !== 'boolean') return new Response(null, { status: 400 })
+  const notes = readNotes()
+  if (!notes.some(n => n.id === body.id && n.kind === 'loop')) return new Response(null, { status: 404 })
+  upsertNote(notes, { id: body.id, status: body.done ? 'done' : 'open' })
+  writeNotes(notes)
+  // So the card and the brief stop listing it.
+  void refreshBrief().catch(() => {})
+  return Response.json({ id: body.id, done: body.done })
 }
 
 const APP_UPLOAD_MAX = 25 * 1024 * 1024

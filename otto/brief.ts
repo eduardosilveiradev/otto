@@ -353,7 +353,7 @@ export type BriefData = {
   events: { title: string; start: string; minutes: number }[] | null
   inbox: { from: string; subject: string }[] | null
   bulk: number
-  loops: { title: string; due?: string }[]
+  loops: { id: string; title: string; due?: string }[]
   triggers: { title: string; next: string }[]
 }
 
@@ -373,7 +373,7 @@ export function briefData(p: BriefParts): BriefData {
       .map(({ e, at }) => ({ title: e.summary ?? 'untitled', start: new Date(at).toISOString(), minutes: minutes(e) })) ?? null,
     inbox: p.mail ? named.slice(0, 5).map(t => ({ from: (t.from ?? '').replace(/<.*>/, '').trim(), subject: t.subject ?? '' })) : null,
     bulk: p.mail ? p.mail.length - named.length : 0,
-    loops: p.loops.slice(0, 5).map(n => ({ title: n.text, ...(n.due ? { due: n.due } : {}) })),
+    loops: p.loops.slice(0, 5).map(n => ({ id: n.id, title: n.text, ...(n.due ? { due: n.due } : {}) })),
     triggers: p.triggers
       .filter(t => t.nextRun)
       .slice(0, 6)
