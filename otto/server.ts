@@ -5187,6 +5187,7 @@ function startWebhook(retry = true): void {
           for (const frame of appPending.splice(0)) ws.send(frame)
           const steps = liveSteps.snapshot()
           if (steps) ws.send(steps)
+          if (appTyping) ws.send(JSON.stringify({ type: 'typing', on: true }))
         },
         close: ws => { appSockets.delete(ws) },
         message: (ws, raw) => {
@@ -5298,6 +5299,8 @@ async function handleWebhook(req: Request): Promise<Response> {
 //                    "buttons": [{ "label": "...", "data": "..." }] }
 //                  { "type": "steps", "taskId", "steps": [{ "label", "ts" }], "screenshot"?, "done" }
 //                    the reply in the works, step by step (livesteps.ts); live only
+//                  { "type": "typing", "on": true | false }
+//                    on when an app message arrives, off when its turn ends; resent on connect
 //
 // Routing: reply(chat_id:"app") goes to every open socket; with none open it
 // waits and is delivered on the next connect. A reply addressed to the owner's Telegram
@@ -5354,6 +5357,19 @@ function appBroadcast(frame: string): void {
 /** When Otto last sent the app anything; a status line only goes out while a reply is owed. */
 let lastAppOut = 0
 
+/**
+ * The app's typing dots, decided here rather than guessed on the phone: on when an app
+ * message comes in, off when the turn that took it ends (the Stop hook) with nothing from
+ * the app still queued behind it. A reply doesn't end them — Otto often answers and keeps going.
+ */
+let appTyping = false
+function setAppTyping(on: boolean): void {
+  if (on === appTyping) return
+  appTyping = on
+  const frame = JSON.stringify({ type: 'typing', on })
+  for (const ws of appSockets) ws.send(frame) // live only, like status; a new socket is told on open
+}
+
 function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; reply_to?: string } = {}): string {
   lastAppOut = Date.now()
   const id = randomBytes(4).toString('hex')
@@ -5379,8 +5395,12 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   let h: { hook_event_name?: string; tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown; transcript_path?: string }
   try { h = (await req.json()) as typeof h } catch { return new Response(null, { status: 400 }) }
   markRead(h.transcript_path)
-  if (h.hook_event_name === 'Stop') { liveSteps.finish(); return new Response(null, { status: 204 }) }
-  const waiting = (lastInbound.get(APP_CHAT) ?? 0) > lastAppOut
+  if (h.hook_event_name === 'Stop') {
+    liveSteps.finish()
+    if (!unreadApp.size) setAppTyping(false)
+    return new Response(null, { status: 204 })
+  }
+  const waiting = appTyping || (lastInbound.get(APP_CHAT) ?? 0) > lastAppOut
   if (!waiting) return new Response(null, { status: 204 })
   if (h.hook_event_name === 'PostToolUse') {
     const img = findImage(h.tool_response)
@@ -5559,6 +5579,7 @@ function appInbound(text: string, extraMeta: Record<string, string> = {}, kind =
   origin = recordTyped(origin, text)
   recordHistory({ dir: 'in', chat_id: APP_CHAT, kind, text, ...(message_id ? { message_id } : {}) })
   if (message_id) unreadApp.add(message_id)
+  setAppTyping(true)
   const meta = { chat_id: APP_CHAT, user: APP_CHAT, user_id: APP_CHAT, ts: new Date().toISOString(), ...(message_id ? { message_id } : {}), ...extraMeta }
   if (message_id && kind !== 'reaction') updateJournal(j => recordInbound(j, { chat_id: APP_CHAT, message_id, text, meta }, Date.now()))
   mcp.notification({
