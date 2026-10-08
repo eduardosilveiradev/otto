@@ -5378,6 +5378,12 @@ function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: App
   return id
 }
 
+/** The Claude Code session that owns this server, as the hooks name it in X-Claude-Pid. */
+const sessionPid = process.env.OTTO_SUPERVISED === '1'
+  // Under supervisor.ts our parent is the supervisor; the session the hooks name is its parent.
+  ? Bun.spawnSync(['ps', '-o', 'ppid=', '-p', String(process.ppid)]).stdout.toString().trim() || String(process.ppid)
+  : String(process.ppid)
+
 /**
  * Live status for the app's typing bubble. The plugin's PreToolUse hook posts each
  * tool call here (Claude Code's hook JSON on the body, its own pid in X-Claude-Pid);
@@ -5390,7 +5396,7 @@ function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: App
 async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }>): Promise<Response> {
   const ip = server.requestIP(req)?.address ?? ''
   if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip)) return new Response(null, { status: 403 })
-  if (req.headers.get('x-claude-pid') !== String(process.ppid) || req.method !== 'POST') return new Response(null, { status: 204 })
+  if (req.headers.get('x-claude-pid') !== sessionPid || req.method !== 'POST') return new Response(null, { status: 204 })
   // Read the body before answering: once the response is out, Bun has dropped it.
   let h: { hook_event_name?: string; tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown; transcript_path?: string }
   try { h = (await req.json()) as typeof h } catch { return new Response(null, { status: 400 }) }
