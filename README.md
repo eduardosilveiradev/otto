@@ -145,6 +145,14 @@ source listing from `/app/release/<key>/…`. SideStore can't send a token, so t
 paths are guarded by the random key in `app-release/key` instead. With no
 `app-release/` directory they answer 404.
 
+A sideloaded app on a free Apple ID gets no push notifications, and while it is
+closed it has no connection to post its own. If you install
+[Bark](https://github.com/Finb/Bark) and put its device key in
+`~/.otto/state/.env` as `BARK_KEY=…`, a message for the app that finds it closed
+also goes to Bark's server (`api.day.app`), which pushes it to your phone. That
+sends the message text, cut to 1000 characters, to Bark. Leave the key out and
+nothing leaves the computer.
+
 ## Background work and your Claude plan
 
 Two things run on their own, on the Claude plan this computer is logged into:

@@ -5403,7 +5403,24 @@ function setAppTyping(on: boolean): void {
   for (const ws of appSockets) ws.send(frame) // live only, like status; a new socket is told on open
 }
 
+/**
+ * With no socket open the app is closed or suspended and can't post its own
+ * notification, and a free Apple ID gets no push. Bark (an App Store app with
+ * real push) stands in: one request to its server with the device key from .env.
+ */
+function barkPush(text: string): void {
+  const key = process.env.BARK_KEY
+  if (!key || appSockets.size > 0) return
+  void fetch(`https://api.day.app/${encodeURIComponent(key)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'Otto', body: text.trim().slice(0, 1000) || 'sent you something', group: 'otto' }),
+    signal: AbortSignal.timeout(10_000),
+  }).catch(err => process.stderr.write(`otto channel: bark push failed: ${err}\n`))
+}
+
 function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; reply_to?: string } = {}): string {
+  barkPush(text)
   lastAppOut = Date.now()
   const id = randomBytes(4).toString('hex')
   appBroadcast(JSON.stringify({ type: 'message', id, text, ts: new Date().toISOString(), buttons, ...extra }))
