@@ -22,6 +22,6 @@ test('connectors read as what they check', () => {
   expect(statusLabel('mcp__thing__do_stuff', {})).toBe('Do stuff')
 })
 
-test('long labels are cut', () => {
-  expect(statusLabel('Grep', { pattern: 'x'.repeat(100) }).length).toBe(60)
+test('long labels arrive whole', () => {
+  expect(statusLabel('Grep', { pattern: 'x'.repeat(100) })).toBe(`Searching for ${'x'.repeat(100)}`)
 })
