@@ -2658,6 +2658,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'urgent (default) sends immediately. normal lets the channel hold it while they have snoozed you, while the calendar says they are in something, or during quiet hours — held messages are coalesced and delivered when the hold lifts, never dropped. Use normal for anything the user did not ask for by name: digests, observations, nudges, FYIs. Keep urgent for replies to them, explicit reminders they set, OTPs and security alerts, and anything time-critical enough to be useless late. Answering something the user just said is always sent immediately regardless.',
           },
+          bark: {
+            type: 'boolean',
+            description:
+              'Also push it through Bark, even while the app is open. Only for what must not be missed: reminders they set, OTPs, security alerts. A closed app already gets Bark without this.',
+          },
         },
         required: ['chat_id', 'text'],
       },
@@ -3395,6 +3400,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             }],
           }
         }
+
+        if (args.bark === true) barkPush(text, true)
 
         if (chat_id === APP_CHAT) {
           // Spoken like Telegram, but as WAV: the phone can't play Opus. The text
@@ -5403,14 +5410,19 @@ function setAppTyping(on: boolean): void {
   for (const ws of appSockets) ws.send(frame) // live only, like status; a new socket is told on open
 }
 
+let lastBark = { text: '', at: 0 }
+
 /**
  * With no socket open the app is closed or suspended and can't post its own
  * notification, and a free Apple ID gets no push. Bark (an App Store app with
  * real push) stands in: one request to its server with the device key from .env.
  */
-function barkPush(text: string): void {
+function barkPush(text: string, force = false): void {
   const key = process.env.BARK_KEY
-  if (!key || appSockets.size > 0) return
+  if (!key || (!force && appSockets.size > 0)) return
+  // A forced push for a closed app would otherwise go twice: once from reply, once from appSend.
+  if (text === lastBark.text && Date.now() - lastBark.at < 10_000) return
+  lastBark = { text, at: Date.now() }
   void fetch(`https://api.day.app/${encodeURIComponent(key)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
