@@ -5414,7 +5414,8 @@ function barkPush(text: string): void {
   void fetch(`https://api.day.app/${encodeURIComponent(key)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ title: 'Otto', body: text.trim().slice(0, 1000) || 'sent you something', group: 'otto' }),
+    // url: tapping the banner opens the app rather than Bark.
+    body: JSON.stringify({ title: 'Otto', body: text.trim().slice(0, 1000) || 'sent you something', group: 'otto', url: 'otto://' }),
     signal: AbortSignal.timeout(10_000),
   }).catch(err => process.stderr.write(`otto channel: bark push failed: ${err}\n`))
 }
