@@ -150,7 +150,8 @@ closed it has no connection to post its own. If you install
 [Bark](https://github.com/Finb/Bark) and put its device key in
 `~/.otto/state/.env` as `BARK_KEY=…`, a message for the app that finds it closed
 also goes to Bark's server (`api.day.app`), which pushes it to your phone;
-tapping the banner opens the Otto app. That sends the message text, cut to 1000
+tapping the banner opens the Otto app. Add `BARK_ICON=` with an image URL to
+show your own icon on the banner. That sends the message text, cut to 1000
 characters, to Bark. Leave the key out and nothing leaves the computer.
 
 ## Background work and your Claude plan
