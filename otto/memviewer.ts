@@ -1,7 +1,7 @@
 /**
  * Memory viewer — one local HTML page of everything Otto remembers.
  *
- *   bun otto/memviewer.ts [--refresh] [--open] [--serve [--port N]] [--recluster] [--no-labels]
+ *   bun otto/memviewer.ts [--refresh] [--open | --serve [--port N]] [--recluster] [--no-labels]
  *
  * Reads both stores the way `recall` does (memory.ts for the markdown, the
  * notes.json array for operational notes) plus recall-stats.json for the
@@ -659,6 +659,6 @@ if (import.meta.main) {
   writeFileSync(VIEWER_FILE, html, { mode: 0o600 })
   const count = (store: string) => items.filter(i => i.store === store).length
   console.log(`${count('durable')} durable memories, ${count('notes')} notes → ${VIEWER_FILE}`)
-  if (argv.includes('--serve')) serve(html, unit, mean, Number(argv[argv.indexOf('--port') + 1]) || 0, argv.includes('--open'))
-  else if (argv.includes('--open')) Bun.spawn([OPENER, VIEWER_FILE])
+  // --open serves too: opened as a file, the page can only search by keyword.
+  if (argv.includes('--serve') || argv.includes('--open')) serve(html, unit, mean, Number(argv[argv.indexOf('--port') + 1]) || 0, argv.includes('--open'))
 }

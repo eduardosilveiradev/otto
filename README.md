@@ -241,10 +241,14 @@ so the text never leaves your machine; vectors are cached in
 what changed. They are clustered with k-means, and each cluster is named once by
 Sonnet and cached in `memory-clusters.json` (`--no-labels` uses keyword terms
 instead, `--recluster` picks the number of clusters again). The graph draws
-`[[links]]`, similar memories, and close neighbours across clusters. Its graph
+`[[links]]`, similar memories, and close neighbours across clusters. A search
+clears the stage down to its matches, set around the query in the middle, each
+one closer the better it matches and tied to it by a faint spoke; emptying the
+box or pressing Escape puts the full graph back exactly where it was. Its graph
 libraries load from jsDelivr at pinned versions; offline, the list still works.
-`bun otto/memviewer.ts --serve --open` serves the page on 127.0.0.1 instead and
-adds search by meaning; opened as a file, search falls back to keywords.
+`--open` serves the page on 127.0.0.1 and opens it there, which adds search by
+meaning; `--serve` does the same without opening a browser. Opened straight from
+the state folder as a file, search falls back to keywords.
 
 Embedding needs a Python with torch and transformers, taken from
 `$OTTO_EMBED_PYTHON` or `~/.otto/state/embed/.venv`. One-time setup:

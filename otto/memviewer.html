@@ -131,7 +131,15 @@ a.wl.dead{color:var(--muted);border-color:var(--muted);cursor:default}
 .selcard .name{font-size:16px}
 .selcard .acts{display:flex;gap:6px;margin-top:10px}
 .selcard .acts button:first-child{background:var(--fg);color:var(--bg)}
-.float-tooltip-kap{background:var(--raise-2)!important;color:var(--fg)!important;border-radius:var(--radius-sm)!important;padding:8px 10px!important;font:13px/18px var(--font-sans)!important;max-width:320px;box-shadow:0 8px 24px #0006}
+/* Search view: the query in the middle, the matches' names beside their dots. */
+#sov{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+#sov>*{position:absolute;left:0;top:0;white-space:nowrap;will-change:transform}
+#sov .qp{display:flex;align-items:center;gap:8px;height:36px;padding:0 16px;max-width:min(360px,60%);border-radius:var(--radius-pill);background:var(--raise-2);box-shadow:0 0 0 1px var(--otto-2),0 8px 28px #0005;color:var(--fg);font-size:15px;font-weight:500}
+#sov .qp svg{flex:none;width:14px;height:14px;color:var(--otto-text)}
+#sov .qp span{overflow:hidden;text-overflow:ellipsis}
+#sov .ml{max-width:var(--lw,220px);overflow:hidden;text-overflow:ellipsis;font-size:12px;line-height:16px;color:var(--fg-soft);text-shadow:0 0 3px var(--card),0 0 3px var(--card),0 0 6px var(--card)}
+#sov .ml.on{color:var(--otto-text);font-weight:500}
+.float-tooltip-kap{z-index:2;background:var(--raise-2)!important;color:var(--fg)!important;border-radius:var(--radius-sm)!important;padding:8px 10px!important;font:13px/18px var(--font-sans)!important;max-width:320px;box-shadow:0 8px 24px #0006}
 .tip b{display:block;font-weight:500}
 .tip span{color:var(--muted)}
 .legend{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:var(--muted)}
@@ -356,17 +364,19 @@ const mix = (c, t) => c.map((x, i) => Math.round(x + (C.bg[i] - x) * t))
 const baseColour = n => byCluster ? (n.c >= 0 ? C.cl[n.c] : C.muted) : C.kind[n.it.kind]
 // Only a click dims the rest of the graph. Hover just draws the node's edges on top: dimming
 // on hover repainted everything each time the pointer crossed a node, and read as flashing.
-const inHood = n => !SEL || SEL === n || NB[SEL.id].some(([j]) => j === n.id)
+const inHood = n => !SEL || SEL.id === n.id || NB[SEL.id].some(([j]) => j === n.id)
 function nodeColour(n) {
+  if (n.q) return 'rgba(0,0,0,0)'
   let t = n.noise ? 0.55 : 0
   if (HC !== null) t = n.c === HC ? 0 : 0.86
-  else if (Q) t = Q.has(n.id) ? 0 : 0.86
+  else if (Q) t = 0
   else if (!inHood(n)) t = 0.8
   return css(mix(baseColour(n), t))
 }
 function linkColour(l) {
+  if (l.spoke) return css(C.accent, is3d ? 0.8 : 0.2)
   if (HC !== null) return l.source.c === HC && l.target.c === HC ? css(l.ex ? C.soft : C.muted, 0.5) : css(C.muted, 0.03)
-  if (Q && !(Q.has(l.source.id) && Q.has(l.target.id))) return css(C.muted, 0.03)
+  if (Q) return css(l.ex ? C.soft : C.muted, is3d ? 1 : 0.3)
   if (SEL) return css(C.muted, 0.04)
   if (is3d) return css(l.ex ? C.soft : C.muted)
   return l.ex ? css(C.soft, l.same ? 0.3 : 0.06) : css(C.muted, l.same ? 0.12 + 0.5 * (l.s - 0.3) : 0.12)
@@ -389,6 +399,71 @@ function gdata() {
   return { nodes, links }
 }
 
+const nodeVal = n => n.q ? 1 : (1 + 1.6 * Math.sqrt(n.it.hits)) * (n.noise ? 0.6 : 1) * (Q ? 2.5 : 1)
+
+// Search view: only the matches (within the filters), fanned out left and right of the query,
+// which sits fixed in the middle. A better match sits closer: by cosine when searching by
+// meaning, by rank for keywords. On each side the best sits on the middle row and the rest
+// alternate above and below it, each farther out than the last, so no two names share a row.
+// The matches are copies, so the full graph keeps its layout untouched for when the search clears.
+let SN = new Map(), QSEM = false
+function sdata() {
+  const g = gdata(), [w, h] = size(), el = $('gstage'), qt = $('gq').value.trim()
+  const shown = new Set(g.nodes), hits = [...Q].filter(([id]) => shown.has(NODES[id]))
+  el.insertAdjacentHTML('beforeend', '<div id="sov"><div class="qp"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="m11 11 3.5 3.5"/></svg><span>' + esc(qt) + '</span></div>' +
+    hits.map(([id]) => '<div class="ml" data-n="' + id + '">' + esc(NODES[id].it.name) + '</div>').join('') + '</div>')
+  const lw = Math.min(220, w * 0.28), qw = el.querySelector('#sov .qp').offsetWidth || 140
+  $('sov').style.setProperty('--lw', lw + 'px')
+  const n = hits.length, m = Math.ceil(n / 2), slots = Math.max(1, Math.ceil((m - 1) / 2)), step = 62 * Math.PI / 180 / slots
+  const x0 = qw / 2 + 56, x1 = Math.max(x0 + 40, w / 2 - lw - 28), y1 = Math.max(60, h / 2 - 34), y0 = Math.min(y1, Math.max(70, y1 * 0.45))
+  const top = n ? hits[0][1] : 0, low = n ? hits[n - 1][1] : 0
+  const prev = SN, still = matchMedia('(prefers-reduced-motion: reduce)').matches
+  SN = new Map()
+  const q = { id: 'q', q: true, x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: 0 }, nodes = [q], links = []
+  hits.forEach(([id, s], i) => {
+    const t = QSEM ? (top - s) / (top - low || 1) : i / (n - 1 || 1), k = i >> 1, a = (k % 2 ? 1 : -1) * Math.ceil(k / 2) * step
+    const o = NODES[id], from = prev.get(id) || o
+    const c = { id, it: o.it, c: o.c, noise: o.noise, deg: o.deg, s, tx: (i % 2 ? -1 : 1) * Math.cos(a) * (x0 + (x1 - x0) * t), ty: Math.sin(a) * (y0 + (y1 - y0) * t), tz: is3d ? Math.sin(i * 2.4) * 90 * (0.2 + t) : 0 }
+    Object.assign(c, still ? { x: c.tx, y: c.ty, z: c.tz } : { x: from.x, y: from.y, z: from.z || 0 })
+    c.fx = c.x; c.fy = c.y; c.fz = c.z
+    c.r = is3d ? Math.cbrt(nodeVal(c)) * 3 : Math.sqrt(nodeVal(c)) * 3.2   // the dot's radius, so its name clears it
+    SN.set(id, c); nodes.push(c); links.push({ source: q, target: c, spoke: true, s })
+  })
+  g.links.forEach(l => SN.has(l.source.id) && SN.has(l.target.id) && links.push({ ...l, source: SN.get(l.source.id), target: SN.get(l.target.id) }))
+  $('gcount').textContent = n + ' of ' + NODES.length + ' memories match · ' + (links.length - n) + ' edges between them'
+  if (!still) glide([...SN.values()])
+  if (!raf) raf = requestAnimationFrame(labels)
+  return { nodes, links }
+}
+// The matches ease from wherever they were to their places around the query.
+function glide(ns) {
+  const t0 = performance.now(), from = ns.map(c => [c.x, c.y, c.z])
+  const step = now => {
+    const p = Math.min(1, (now - t0) / 650), e = 1 - Math.pow(1 - p, 3)
+    ns.forEach((c, i) => { c.fx = from[i][0] + (c.tx - from[i][0]) * e; c.fy = from[i][1] + (c.ty - from[i][1]) * e; c.fz = from[i][2] + (c.tz - from[i][2]) * e })
+    if (p < 1 && ns.every(c => SN.get(c.id) === c)) requestAnimationFrame(step)
+  }
+  requestAnimationFrame(step)
+}
+// Names follow their dots every frame, beside them on the side away from the query.
+let raf = 0
+function labels() {
+  raf = 0
+  const ov = $('sov')
+  if (!ov || !Q || !G) return
+  const c = G.graph2ScreenCoords(0, 0, 0)
+  ov.firstChild.style.transform = 'translate(' + c.x + 'px,' + c.y + 'px) translate(-50%,-50%)'
+  for (const el of ov.querySelectorAll('.ml')) {
+    const n = SN.get(+el.dataset.n)
+    if (!n) continue
+    const p = G.graph2ScreenCoords(n.x, n.y, n.z || 0), right = p.x >= c.x
+    el.style.transform = 'translate(' + (p.x + (right ? 1 : -1) * (n.r + 6)) + 'px,' + p.y + 'px) translate(' + (right ? 0 : -100) + '%,-50%)'
+    el.classList.toggle('on', !!SEL && SEL.id === n.id)
+  }
+  raf = requestAnimationFrame(labels)
+}
+function view() { $('sov')?.remove(); H = null; if (!Q) SN = new Map(); return Q ? sdata() : gdata() }
+
 // Layout: each cluster is pulled toward an anchor (its centroid projected to 2D, so related
 // clusters sit near each other), members are held tight to their cluster's centre, and
 // clusters push each other apart as discs. Charge is local only.
@@ -397,6 +472,7 @@ const spread = () => 15 * Math.sqrt(NODES.length)
 let aspect = 1.4
 function anchor(n) { const c = CL[n.c]; return c ? [c.x * spread() * Math.sqrt(aspect), c.y * spread() / Math.sqrt(aspect)] : [0, 0] }
 function clusterForce(alpha) {
+  if (Q) return   // the search view is pinned in place
   const g = {}
   for (const n of gnodes) { const o = g[n.c] ??= { x: 0, y: 0, z: 0, k: 0, m: [] }; o.x += n.x; o.y += n.y; o.z += n.z || 0; o.k++; o.m.push(n) }
   const list = Object.entries(g).map(([c, o]) => ({ c: +c, x: o.x / o.k, y: o.y / o.k, z: o.z / o.k, r: 8 * Math.sqrt(o.k) + 8, m: o.m }))
@@ -440,6 +516,7 @@ function drawOverlay(ctx, scale) {
     }
     ctx.setLineDash([])
   }
+  if (Q) return
   // Cluster labels, biggest first; a label that would overlap one already drawn is skipped.
   ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.lineJoin = 'round'
   ctx.font = '500 ' + 12 / scale + 'px Inter, -apple-system, system-ui, sans-serif'
@@ -452,22 +529,9 @@ function drawOverlay(ctx, scale) {
     const x = o.x, y = top - 6 / scale, w = ctx.measureText(c.label).width / 2 + 4 / scale, h = 15 / scale
     if (placed.some(p => Math.abs(p[0] - x) < p[2] + w && Math.abs(p[1] - y) < h)) continue
     placed.push([x, y, w])
-    const dim = HC !== null ? o.c !== HC : (Q && !o.m.some(n => Q.has(n.id))) || (SEL && !o.m.some(inHood))
+    const dim = HC !== null ? o.c !== HC : SEL && !o.m.some(inHood)
     ctx.lineWidth = 3 / scale; ctx.strokeStyle = css(C.bg, 0.9); ctx.strokeText(c.label, x, y)
     ctx.fillStyle = css(byCluster ? C.cl[o.c] : C.soft, dim ? 0.3 : 1); ctx.fillText(c.label, x, y)
-  }
-  if (Q) {
-    ctx.font = 11 / scale + 'px Inter, -apple-system, system-ui, sans-serif'; ctx.textBaseline = 'bottom'
-    // Best matches first; a name that would overlap one already drawn is left to the hover tooltip.
-    const near = []
-    ;[...Q].sort((a, b) => b[1] - a[1]).forEach(([id]) => {
-      const n = NODES[id]
-      if (!gset.has(n)) return
-      const t = n.it.name.length > 42 ? n.it.name.slice(0, 40) + '…' : n.it.name, w = ctx.measureText(t).width / 2, y = n.y - 8 / scale
-      if (near.some(p => Math.abs(p[0] - n.x) < p[2] + w && Math.abs(p[1] - y) < 13 / scale) || placed.some(p => Math.abs(p[0] - n.x) < p[2] + w && Math.abs(p[1] - y) < 13 / scale)) return
-      near.push([n.x, y, w])
-      ctx.lineWidth = 3 / scale; ctx.strokeStyle = css(C.bg); ctx.strokeText(t, n.x, y); ctx.fillStyle = css(C.fg); ctx.fillText(t, n.x, y)
-    })
   }
 }
 
@@ -486,39 +550,57 @@ async function drawGraph() {
   aspect = Math.max(0.6, Math.min(2, w / h))
   NODES.forEach(n => { if (n.x === undefined) { const [ax, ay] = anchor(n); n.x = ax + (Math.random() - 0.5) * 40; n.y = ay + (Math.random() - 0.5) * 40; if (n.c < 0 && GR.clusters && GR.clusters.length) { const t = n.id * 2.4; n.x = Math.cos(t) * spread() * 1.25; n.y = Math.sin(t) * spread() * 1.25 } } })
   G = window[name]()(el).width(w).height(h).backgroundColor(css(C.bg))
-    .nodeId('id').nodeVal(n => (1 + 1.6 * Math.sqrt(n.it.hits)) * (n.noise ? 0.6 : 1) * (Q && Q.has(n.id) ? 2.5 : 1)).nodeRelSize(is3d ? 3 : 3.2)
-    .nodeColor(nodeColour).nodeLabel(tip)
+    .nodeId('id').nodeVal(nodeVal).nodeRelSize(is3d ? 3 : 3.2)
+    .nodeColor(nodeColour).nodeLabel(n => n.q ? '' : tip(n)).nodeVisibility(n => !n.q)
     .linkColor(linkColour).linkWidth(l => is3d ? (l.ex ? 0.4 : 0) : l.ex ? 0.7 : 0.4)
-    .onNodeClick(select).onBackgroundClick(() => select(null))
-    .onNodeHover(n => { H = n; el.style.cursor = n ? 'pointer' : '' })
+    .onNodeClick(n => n.q || select(n)).onBackgroundClick(() => select(null))
+    .onNodeHover(n => { H = n && !n.q ? n : null; el.style.cursor = H ? 'pointer' : '' })
     .cooldownTicks(500).warmupTicks(is3d ? 80 : 160).d3AlphaDecay(0.02)
     .onEngineStop(() => { if (!G.__fit) { G.__fit = true; fit() } })
-  if (is3d) G.nodeOpacity(0.95).linkOpacity(0.22).showNavInfo(false).linkVisibility(l => l.same)   // depth already separates clusters; cross edges in 3D are only clutter
+  if (is3d) G.nodeOpacity(0.95).linkOpacity(0.22).showNavInfo(false).linkVisibility(l => l.same || !!Q)   // depth already separates clusters; cross edges in 3D are only clutter
   else G.onRenderFramePost(drawOverlay).autoPauseRedraw(false)
   G.d3Force('charge').strength(-14).distanceMax(80)
   G.d3Force('center', null)
   G.d3Force('link').distance(l => l.same ? (l.ex ? 18 : 10 + 24 * (1 - l.s)) : 120).strength(l => l.same ? 0.5 / Math.max(1, Math.min(l.source.deg, l.target.deg)) : 0)
   G.d3Force('cluster', clusterForce)
-  G.graphData(gdata())
+  G.graphData(view())
   setTimeout(fit, 900); if (is3d) setTimeout(fit, 2500)
 }
-function fit() {
+function fit(ms = 0) {
   if (!G) return
-  if (!is3d) return G.zoomToFit(0, 48)
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) ms = 0
+  // Search view: the layout was sized to the stage, so the frame is fixed: centred, one unit per pixel.
+  if (Q && !is3d) { G.centerAt(0, 0, ms); return G.zoom(1, ms) }
+  if (Q) return G.cameraPosition({ x: 0, y: 0, z: G.height() / 2 / Math.tan(G.camera().fov * Math.PI / 360) }, { x: 0, y: 0, z: 0 }, ms)
+  if (!is3d) return G.zoomToFit(ms, 48)
   // 3D: frame the bounding box from the front, by the camera's own field of view.
   const b = G.getGraphBbox()
   if (!b) return
   const c = ['x', 'y', 'z'].map(k => (b[k][0] + b[k][1]) / 2), t = Math.tan(G.camera().fov * Math.PI / 360)
   const d = 1.1 * Math.max((b.y[1] - b.y[0]) / 2 / t, (b.x[1] - b.x[0]) / 2 / (t * G.camera().aspect)) + (b.z[1] - b.z[0]) / 2
-  G.cameraPosition({ x: c[0], y: c[1], z: c[2] + d }, { x: c[0], y: c[1], z: c[2] }, 0)
+  G.cameraPosition({ x: c[0], y: c[1], z: c[2] + d }, { x: c[0], y: c[1], z: c[2] }, ms)
 }
-function regraph() { if (G) { G.__fit = false; G.graphData(gdata()); setTimeout(fit, 900) } }
+const settle = () => G.warmupTicks(is3d ? 80 : 160).cooldownTicks(500)
+function regraph() { if (G) { G.__fit = false; settle(); G.graphData(view()); setTimeout(fit, 900) } }
+// Entering, changing or leaving a search: everything already has a place, so frame it now.
+// Leaving one puts the full graph back exactly where it was: no ticks, so nothing re-settles.
+function research() {
+  if (!G) return
+  G.__fit = true
+  // The search view is pinned, but the engine must run for the glide; the full graph must not.
+  G.warmupTicks(0).cooldownTicks(Q ? 500 : 0)
+  G.graphData(view())
+  // The data swaps on the library's next update: frame it, and allow ticks again (for drags), after that.
+  setTimeout(() => fit(650), 50)
+  if (!Q) setTimeout(() => G && !Q && G.cooldownTicks(500), 300)
+}
 function recolour() { if (G) G.nodeColor(n => nodeColour(n)).linkColor(l => linkColour(l)).nodeVal(G.nodeVal()) }
 function restyle() { if (!G) return; palette(); G.backgroundColor(css(C.bg)); recolour(); legend() }
 
 // Selection: the node's card and neighbours in the side panel.
 function select(n) {
-  SEL = n
+  SEL = n && NODES[n.id]   // never a search-view copy, which goes when the search clears
+  n = SEL
   const el = $('sel')
   el.hidden = !n
   if (n) {
@@ -534,7 +616,8 @@ function select(n) {
   recolour()
 }
 function focusNode(n) {
-  if (!G || n.x === undefined) return
+  if (Q) n = SN.get(n.id)   // in the search view only the matches are on the stage
+  if (!G || !n || n.x === undefined) return
   if (is3d) { const d = 120, r = 1 + d / Math.hypot(n.x, n.y, n.z || 1); G.cameraPosition({ x: n.x * r, y: n.y * r, z: (n.z || 0) * r }, n, 600) }
   else { G.centerAt(n.x, n.y, 500); G.zoom(Math.max(G.zoom(), 2.5), 500) }
 }
@@ -567,7 +650,7 @@ function legend() {
 let searchSeq = 0
 async function search() {
   const q = $('gq').value.trim(), seq = ++searchSeq, out = $('results')
-  if (!q) { Q = null; out.hidden = true; recolour(); return }
+  if (!q) { out.hidden = true; if (Q) { Q = null; research() } return }
   let hits = null, how = 'keyword'
   if (semantic) {
     try {
@@ -582,16 +665,17 @@ async function search() {
     const w = q.toLowerCase().split(/\s+/)
     hits = D.items.map(it => [it.n, w.filter(x => (it.name + '\n' + it.description + '\n' + it.body).toLowerCase().includes(x)).length / w.length]).filter(([, s]) => s === 1).sort((a, b) => D.items[b[0]].hits - D.items[a[0]].hits).slice(0, 40)
   }
-  Q = new Map(hits)
+  const was = Q
+  Q = hits.length ? new Map(hits) : null; QSEM = how === 'meaning'
   out.hidden = false
   out.innerHTML = '<div class="ptitle">' + (how === 'meaning' ? 'Closest in meaning' : 'Keyword matches') + '<span class="n">' + hits.length + '</span></div>' +
     (hits.length ? hits.map(([n, s]) => '<button class="chip" type="button" title="' + esc(D.scopes[D.items[n].scope]) + '" data-n="' + n + '"><i style="background:' + css(baseColour(NODES[n])) + '"></i><span class="l">' + esc(D.items[n].name) + '</span><span class="n">' + (how === 'meaning' ? s.toFixed(2) : '') + '</span></button>').join('') : '<div class="empty">Nothing matches.</div>') +
-    (how === 'keyword' && !SERVED ? '<div class="extra">For search by meaning, open this page with <code>bun otto/memviewer.ts --serve --open</code>.</div>' : '')
-  recolour()
-  if (G && hits.length) G.zoomToFit(600, 80, n => Q.has(n.id))
+    (how === 'keyword' && !SERVED ? '<div class="extra">For search by meaning, open this page with <code>bun otto/memviewer.ts --open</code>.</div>' : '')
+  if (Q || was) research()
 }
 let searchTimer
 $('gq').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(search, semantic ? 350 : 120) })
+$('gq').addEventListener('keydown', e => { if (e.key === 'Escape') { $('gq').value = ''; clearTimeout(searchTimer); search() } })
 
 $('gthr').addEventListener('input', () => { $('gthrv').textContent = (+$('gthr').value).toFixed(2) })
 ;['gthr', 'gkind', 'gscope', 'glinks', 'gsim', 'gnoise'].forEach(id => $(id).addEventListener('change', regraph))
@@ -599,7 +683,7 @@ function colourBy(c) { byCluster = c; $('ccluster').setAttribute('aria-pressed',
 $('ccluster').onclick = () => colourBy(true)
 $('ckind').onclick = () => colourBy(false)
 $('g3d').onclick = () => { is3d = !is3d; $('g3d').setAttribute('aria-pressed', is3d); history.replaceState(null, '', is3d ? '#graph-3d' : '#graph'); drawGraph() }
-addEventListener('resize', () => { if (G && !$('graphview').hidden) { const [w, h] = size(); G.width(w).height(h) } })
+addEventListener('resize', () => { if (G && !$('graphview').hidden) { const [w, h] = size(); G.width(w).height(h); if (Q) research() } })
 
 function showTab(t) {
   const g = t === 'graph'
