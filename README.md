@@ -224,6 +224,15 @@ and a watchdog (below). Each lives in its own module under `otto/`, with tests i
 `otto/supervisor.ts`, which holds the connection so the `reload` tool can restart
 it on new code without a reconnect.
 
+To see everything Otto remembers at once, `bun otto/memviewer.ts --open` writes
+one self-contained page, memory-viewer.html, to `~/.otto/state/`: both memory
+stores with search and filters, open loops by due date, never-recalled and stale
+badges, and a summary at the top from a headless Sonnet run with no tools. The
+summary is cached in `memory-summary.json` against a hash of what it was given,
+so reopening is free; `--refresh` forces a new one. It only reads the stores.
+The page holds personal data, which is why it lives in the state folder and
+never in the repo.
+
 The personality — who you are, your timezone, what matters to you, the tone —
 lives in a CLAUDE.md file that setup writes from
 `templates/CLAUDE.md.template`. It's plain text: open it and edit it
