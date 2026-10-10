@@ -5626,16 +5626,30 @@ async function appSnooze(req: Request): Promise<Response> {
   })
 }
 
-/** GET the app's settings that live on the Mac; POST a subset to change them. */
+/** GET: speakReplies plus every /settings switch. POST {speakReplies} or {id}: flip
+ * one, through the same classify + applySetting door a Telegram tap uses. */
 async function appSettings(req: Request): Promise<Response> {
+  let note: string | undefined
   if (req.method === 'POST') {
-    const body = (await req.json().catch(() => ({}))) as { speakReplies?: unknown }
-    if (typeof body.speakReplies !== 'boolean') return new Response(null, { status: 400 })
-    const a = loadAccess()
-    a.appSpeakReplies = body.speakReplies
-    saveAccess(a)
+    const body = (await req.json().catch(() => ({}))) as { speakReplies?: unknown; id?: unknown }
+    if (typeof body.speakReplies === 'boolean') {
+      const a = loadAccess()
+      a.appSpeakReplies = body.speakReplies
+      saveAccess(a)
+    } else if (typeof body.id === 'string') {
+      const t = settingsPage().find(x => x.id === body.id)
+      if (!t) return new Response(null, { status: 404 })
+      // The token is the user's own device, so the tap is first-hand — as with `set:`.
+      const d = classify([t.id], 'user-typed', { kind: 'tapped', buttonData: t.id })
+      try {
+        if (!d.allowed) throw new Error(d.reason)
+        note = applySetting(t)
+      } catch (err) {
+        note = `couldn't — ${err instanceof Error ? err.message : String(err)}`
+      }
+    } else return new Response(null, { status: 400 })
   } else if (req.method !== 'GET') return new Response(null, { status: 405 })
-  return Response.json({ speakReplies: loadAccess().appSpeakReplies !== false })
+  return Response.json({ speakReplies: loadAccess().appSpeakReplies !== false, toggles: settingsPage(), ...(note ? { note } : {}) })
 }
 
 /** POST {id, done}: close an open loop from the contact card, or reopen one closed by mistake. */
