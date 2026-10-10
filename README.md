@@ -233,6 +233,25 @@ so reopening is free; `--refresh` forces a new one. It only reads the stores.
 The page holds personal data, which is why it lives in the state folder and
 never in the repo.
 
+The page's Graph tab lays memories out by meaning. Each memory is embedded
+locally by `otto/memembed.py` with
+[multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small),
+so the text never leaves your machine; vectors are cached in
+`memory-embeddings.json` under a hash of the exact text, and a rerun embeds only
+what changed. They are clustered with k-means, and each cluster is named once by
+Sonnet and cached in `memory-clusters.json` (`--no-labels` uses keyword terms
+instead, `--recluster` picks the number of clusters again). The graph draws
+`[[links]]`, similar memories, and close neighbours across clusters. Its graph
+libraries load from jsDelivr at pinned versions; offline, the list still works.
+`bun otto/memviewer.ts --serve --open` serves the page on 127.0.0.1 instead and
+adds search by meaning; opened as a file, search falls back to keywords.
+
+Embedding needs a Python with torch and transformers, taken from
+`$OTTO_EMBED_PYTHON` or `~/.otto/state/embed/.venv`. One-time setup:
+`uv venv --python 3.12 ~/.otto/state/embed/.venv && uv pip install --python ~/.otto/state/embed/.venv/bin/python torch transformers`.
+The model (about 470 MB) downloads on first use. Without it the graph still
+draws, with explicit links only.
+
 The personality — who you are, your timezone, what matters to you, the tone —
 lives in a CLAUDE.md file that setup writes from
 `templates/CLAUDE.md.template`. It's plain text: open it and edit it

@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Otto Memory</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%23febc6a'/%3E%3Cstop offset='1' stop-color='%23ff9534'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='512' cy='512' r='512' fill='url(%23g)'/%3E%3Crect x='328' y='383' width='102' height='195' rx='47' fill='%23202020'/%3E%3Crect x='594' y='383' width='102' height='195' rx='47' fill='%23202020'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Tokens from the Otto site (dark is the design; light is its inverse for daylight reading). */
+:root{
+  --bg:#0a0a0a;--card:#1a1a1a;--raise:#222;--raise-2:#2c2c2c;--hover:#363636;--line:#1e1e1e;--line-2:#2a2a2a;
+  --fg:#fff;--fg-soft:#d5d9e2;--muted:#7d8187;--dim:#55585e;
+  --otto-1:#febc6a;--otto-2:#ff9534;--otto-text:#f5a462;--otto-tint:#f08a3c24;--otto-ink:#202020;--blue:#0a84ff;--warn:#ff6961;--ok:#34c759;
+  --k-user:#ff9534;--k-feedback:#0a84ff;--k-project:#34c759;--k-reference:#bf5af2;--k-fact:#ffd60a;--k-loop:#ff453a;--k-saved:#64d2ff;--k-write:#8e8e93;
+  --cl-s:78%;--cl-l:66%;--nav-bg:#0a0a0ad9;
+  --font-sans:"Inter",ui-sans-serif,system-ui,-apple-system,sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --radius-card:24px;--radius-panel:14px;--radius-sm:8px;--radius-pill:9999px;
+  --dur:.15s;--ease:cubic-bezier(0,0,.2,1);
+  color-scheme:dark}
+:root[data-theme=light]{
+  --bg:#f5f5f7;--card:#fff;--raise:#f0f0f2;--raise-2:#e8e8eb;--hover:#dcdce0;--line:#e4e4e7;--line-2:#d4d4d8;
+  --fg:#0a0a0a;--fg-soft:#2b2e33;--muted:#62666d;--dim:#8c9097;
+  --otto-text:#b45309;--otto-tint:#f08a3c26;--blue:#0066d6;--warn:#c4271b;--ok:#1f7a35;
+  --k-user:#d9700a;--k-feedback:#0a6fd8;--k-project:#248a3d;--k-reference:#8e44c9;--k-fact:#a67c00;--k-loop:#d70015;--k-saved:#0a84a8;--k-write:#6e6e73;
+  --cl-s:66%;--cl-l:42%;--nav-bg:#f5f5f7d9;
+  color-scheme:light}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/24px var(--font-sans);letter-spacing:-.01em;-webkit-font-smoothing:antialiased}
+::selection{color:#fff;background:#ff953459}
+:focus-visible{outline:2px solid var(--otto-2);outline-offset:2px}
+a{color:var(--otto-text);text-decoration:none}
+code,pre{font-family:var(--font-mono)}
+button{font:inherit;letter-spacing:inherit;color:var(--fg-soft);background:var(--raise-2);border:0;border-radius:var(--radius-pill);height:32px;padding:0 14px;font-size:13px;cursor:pointer;transition:background var(--dur) var(--ease),color var(--dur) var(--ease);display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+button:hover{background:var(--hover);color:var(--fg)}
+button[aria-pressed=true]{background:var(--fg);color:var(--bg)}
+input,select{font:inherit;font-size:14px;letter-spacing:inherit;color:var(--fg);background:var(--raise);border:1px solid var(--line-2);border-radius:var(--radius-pill);height:36px;padding:0 14px;min-width:0;transition:border-color var(--dur) var(--ease)}
+input:focus,select:focus{outline:none;border-color:var(--otto-2)}
+select{padding-right:8px}
+input[type=checkbox]{height:auto;accent-color:var(--otto-2)}
+input[type=range]{height:auto;padding:0;border:0;background:none;accent-color:var(--otto-2)}
+
+.nav{position:sticky;top:0;z-index:50;background:var(--nav-bg);-webkit-backdrop-filter:saturate(1.2) blur(12px);backdrop-filter:saturate(1.2) blur(12px);border-bottom:1px solid var(--line)}
+.nav-in{max-width:1200px;margin:0 auto;padding:0 16px;height:60px;display:flex;align-items:center;gap:12px}
+.brand{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:500;letter-spacing:-.01em;color:var(--fg)}
+.brand svg{width:20px;height:20px;flex:none}
+.brand span{color:var(--muted);font-weight:400}
+.seg{display:inline-flex;background:var(--raise);border-radius:var(--radius-pill);padding:3px;gap:2px}
+.seg button{height:28px;background:none}
+.seg button[aria-pressed=true]{background:var(--raise-2);color:var(--fg)}
+.nav .seg{margin-left:auto}
+.meta{color:var(--muted);font-size:13px}
+main{max-width:1200px;margin:0 auto;padding:0 16px 80px}
+#listview{max-width:880px;margin:0 auto}
+h1{font-size:40px;line-height:44px;font-weight:500;letter-spacing:-.6px;margin:44px 0 6px}
+.lead{color:var(--muted);font-size:16px;margin:0 0 28px}
+.lead .meta{display:block}
+section{background:var(--card);border-radius:var(--radius-card);padding:24px 28px;margin:16px 0}
+section>h2,.ptitle{font-size:13px;font-weight:500;color:var(--muted);letter-spacing:0;margin:0 0 10px}
+.summary{font-size:15px;line-height:24px;color:var(--fg-soft)}
+.summary h2{font-size:20px;line-height:28px;font-weight:500;letter-spacing:-.24px;color:var(--fg);margin:22px 0 6px}
+.summary h2:first-child{margin-top:0}
+.controls{position:sticky;top:60px;z-index:5;background:var(--bg);padding:12px 0;display:grid;gap:8px}
+.controls input{width:100%}
+.row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+@media (max-width:600px){.row{grid-template-columns:repeat(2,minmax(0,1fr))}h1{font-size:32px;line-height:38px;margin-top:28px}section{padding:20px;border-radius:20px}}
+.count{color:var(--muted);font-size:13px}
+details.mem{scroll-margin-top:190px;background:var(--card);border-radius:var(--radius-panel);margin:8px 0;overflow:hidden;transition:background var(--dur) var(--ease)}
+details.mem>summary{list-style:none;cursor:pointer;padding:14px 18px}
+details.mem>summary:hover{background:var(--raise)}
+details.mem>summary::-webkit-details-marker{display:none}
+details.mem[open]>summary{border-bottom:1px solid var(--line-2)}
+.name{font-weight:500;color:var(--fg);overflow-wrap:anywhere}
+.desc{color:var(--muted);font-size:14px;line-height:20px;margin-top:2px;overflow-wrap:anywhere}
+.tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.b{font-size:12px;line-height:20px;border-radius:var(--radius-pill);padding:0 9px;background:var(--raise-2);color:var(--fg-soft);white-space:nowrap}
+.b.accent{background:var(--otto-tint);color:var(--otto-text)}
+.b.warn{background:#ff69611f;color:var(--warn)}
+.b.ok{background:#34c7591f;color:var(--ok)}
+.body{padding:8px 18px 16px;overflow-wrap:anywhere;color:var(--fg-soft);font-size:15px}
+.md pre{background:var(--raise);padding:12px;border-radius:var(--radius-sm);overflow-x:auto;font-size:13px;line-height:20px}
+.md code{background:var(--raise-2);padding:1px 5px;border-radius:5px;font-size:.86em}
+.md pre code{background:none;padding:0}
+.md blockquote{margin:8px 0;padding-left:12px;border-left:2px solid var(--line-2);color:var(--muted)}
+.md table{border-collapse:collapse;display:block;overflow-x:auto;font-size:14px}
+.md td,.md th{border:1px solid var(--line-2);padding:4px 8px;text-align:left}
+.md ul,.md ol{padding-left:22px}
+.md h1,.md h2,.md h3,.md h4{font-size:16px;font-weight:500;color:var(--fg);margin:14px 0 4px}
+.md hr{border:0;border-top:1px solid var(--line-2)}
+a.wl{border-bottom:1px dashed var(--otto-text)}
+a.wl.dead{color:var(--muted);border-color:var(--muted);cursor:default}
+.loop{display:flex;gap:12px;align-items:baseline;padding:8px 0;border-top:1px solid var(--line-2);font-size:15px}
+.loop:first-of-type{border-top:0}
+.loop .when{flex:0 0 92px;font:13px var(--font-mono);color:var(--muted)}
+.loop .when.over{color:var(--warn)}
+.loop .when.soon{color:var(--otto-text)}
+.loop a{color:var(--fg-soft)}
+.loop a:hover{color:var(--fg)}
+.extra{font-size:13px;color:var(--muted);margin-top:10px}
+.flash{box-shadow:0 0 0 2px var(--otto-2)}
+.empty{color:var(--muted);padding:24px 0;text-align:center;font-size:14px}
+
+/* Graph */
+#graphview{padding-top:16px}
+.gbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.gbar .search{flex:1 1 280px;position:relative}
+.gbar .search input{width:100%;padding-left:36px}
+.gbar .search svg{position:absolute;left:13px;top:11px;width:14px;height:14px;color:var(--muted)}
+.gbar select{max-width:190px}
+.gbar label{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--fg-soft);white-space:nowrap;cursor:pointer}
+.gbar output{font:12px var(--font-mono);color:var(--muted);min-width:2.6em}
+.gbar input[type=range]{width:96px}
+.gsub{display:flex;flex-wrap:wrap;gap:4px 14px;justify-content:space-between;margin:8px 2px 10px}
+.stage{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:12px}
+@media (max-width:860px){.stage{grid-template-columns:minmax(0,1fr)}}
+#gstage{position:relative;background:var(--card);border-radius:var(--radius-panel);overflow:hidden;min-height:420px}
+#gstage .empty{padding:80px 24px}
+.side{background:var(--card);border-radius:var(--radius-panel);padding:16px;overflow:auto;font-size:14px;line-height:20px}
+.side .ptitle{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.side .ptitle button{height:24px;padding:0 10px;font-size:12px}
+.side>div:not([hidden]):not(:last-child){margin-bottom:22px}
+.chip{display:flex;align-items:center;gap:8px;width:100%;padding:5px 8px;margin:0 -8px;border-radius:var(--radius-sm);cursor:pointer;color:var(--fg-soft);background:none;height:auto;font-size:14px;line-height:20px;text-align:left;white-space:normal}
+.chip:hover{background:var(--raise)}
+.chip[aria-pressed=true]{background:var(--otto-tint);color:var(--fg)}
+.chip i{flex:none;width:9px;height:9px;border-radius:50%}
+.chip .l{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.chip .n{font:12px var(--font-mono);color:var(--muted)}
+.selcard .name{font-size:16px}
+.selcard .acts{display:flex;gap:6px;margin-top:10px}
+.selcard .acts button:first-child{background:var(--fg);color:var(--bg)}
+.float-tooltip-kap{background:var(--raise-2)!important;color:var(--fg)!important;border-radius:var(--radius-sm)!important;padding:8px 10px!important;font:13px/18px var(--font-sans)!important;max-width:320px;box-shadow:0 8px 24px #0006}
+.tip b{display:block;font-weight:500}
+.tip span{color:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:var(--muted)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+@media (prefers-reduced-motion:reduce){*{transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+<nav class="nav"><div class="nav-in">
+<a class="brand" href="#" aria-label="Otto memory"><svg viewBox="0 0 1024 1024" aria-hidden="true"><defs><linearGradient id="og" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#febc6a"/><stop offset="1" stop-color="#ff9534"/></linearGradient></defs><circle cx="512" cy="512" r="512" fill="url(#og)"/><rect x="328" y="383" width="102" height="195" rx="47" fill="#202020"/><rect x="594" y="383" width="102" height="195" rx="47" fill="#202020"/></svg>Otto <span>memory</span></a>
+<div class="seg" role="group" aria-label="View"><button id="tlist" type="button" aria-pressed="true">List</button><button id="tgraph" type="button" aria-pressed="false">Graph</button></div>
+<button id="theme" type="button" aria-label="Toggle light and dark">&#9680;</button>
+</div></nav>
+<main>
+<div id="listview">
+<h1>What Otto remembers</h1>
+<p class="lead"><span class="meta" id="gen"></span></p>
+<section class="summary"><div class="md" id="summary"></div><div class="extra" id="snote"></div></section>
+<section><h2>Open loops</h2><div id="loops"></div></section>
+<div class="controls">
+<input id="q" type="search" placeholder="Search names, descriptions, bodies" aria-label="Search">
+<div class="row">
+<select id="fstore" aria-label="Store"><option value="">All stores</option><option value="durable">Durable</option><option value="notes">Notes</option></select>
+<select id="fkind" aria-label="Type or kind"><option value="">All types</option></select>
+<select id="fscope" aria-label="Scope"><option value="">All scopes</option></select>
+<select id="fstatus" aria-label="Status"><option value="">Any status</option><option>open</option><option>done</option><option>dropped</option></select>
+</div>
+<div class="count" id="count"></div>
+</div>
+<div id="list"></div>
+</div>
+<div id="graphview" hidden>
+<div class="gbar">
+<div class="search"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="m11 11 3.5 3.5"/></svg><input id="gq" type="search" placeholder="Search memory" aria-label="Search memory"></div>
+<select id="gkind" aria-label="Type or kind"><option value="">All types</option></select>
+<select id="gscope" aria-label="Scope"><option value="">All scopes</option></select>
+<div class="seg" role="group" aria-label="Colour by"><button id="ccluster" type="button" aria-pressed="true">Clusters</button><button id="ckind" type="button" aria-pressed="false">Types</button></div>
+<button id="g3d" type="button" aria-pressed="false">3D</button>
+</div>
+<div class="gsub">
+<div class="gbar">
+<label><input type="checkbox" id="glinks" checked> links</label>
+<label><input type="checkbox" id="gsim" checked> similar</label>
+<label title="memories that sit between clusters"><input type="checkbox" id="gnoise" checked> outliers</label>
+<label title="minimum similarity for a drawn edge">&ge; <output id="gthrv"></output><input type="range" id="gthr" min="0.3" max="0.9" step="0.01" value="0.45" aria-label="Similarity threshold"></label>
+</div>
+<div class="count" id="gcount"></div>
+</div>
+<div class="extra" id="gnote"></div>
+<div class="stage">
+<div id="gstage"></div>
+<aside class="side" id="side">
+<div id="sel" hidden></div>
+<div id="results" hidden></div>
+<div id="cl"></div>
+</aside>
+</div>
+</div>
+</main>
+<script id="data" type="application/json">/*DATA*/null</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent)
+const $ = id => document.getElementById(id)
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+const byName = {}
+D.items.forEach((it, i) => { it.n = i; (byName[it.name.toLowerCase()] ??= []).push(it) })
+
+// [[name]] -> the memory of that name, preferring the linking memory's scope, then global.
+function resolve(name, scope) {
+  const c = byName[name.toLowerCase()] || []
+  return c.find(x => x.scope === scope) || c.find(x => x.scope === 'global') || c[0]
+}
+function inline(s, scope) {
+  const codes = []
+  s = esc(s).replace(/\x60([^\x60]+)\x60/g, (_, c) => (codes.push(c), '\u0000' + (codes.length - 1) + '\u0000'))
+  s = s.replace(/\[\[([^\]]+)\]\]/g, (_, n) => { const t = resolve(n.trim(), scope); return t ? '<a class="wl" href="#m' + t.n + '" data-n="' + t.n + '">' + n + '</a>' : '<a class="wl dead" title="no memory by that name">' + n + '</a>' })
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+|[^)\s]+\.md)\)/g, (_, t, u) => { const m = /([^/]+)\.md$/.exec(u); const r = m && !/^https?:/.test(u) && resolve(m[1], scope); return r ? '<a class="wl" href="#m' + r.n + '" data-n="' + r.n + '">' + t + '</a>' : /^https?:/.test(u) ? '<a href="' + u + '" target="_blank" rel="noopener">' + t + '</a>' : t })
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => '<code>' + codes[i] + '</code>')
+}
+function md(src, scope) {
+  const L = String(src).replace(/\r/g, '').split('\n'), out = []
+  for (let i = 0; i < L.length;) {
+    const l = L[i]
+    if (/^\s*\x60\x60\x60/.test(l)) { const b = []; i++; while (i < L.length && !/^\s*\x60\x60\x60/.test(L[i])) b.push(L[i++]); i++; out.push('<pre><code>' + esc(b.join('\n')) + '</code></pre>'); continue }
+    let m
+    if ((m = /^(#{1,6})\s+(.*)/.exec(l))) { const h = Math.min(m[1].length + 1, 4); out.push('<h' + h + '>' + inline(m[2], scope) + '</h' + h + '>'); i++; continue }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(l)) { out.push('<hr>'); i++; continue }
+    if (/^\s*\|.*\|\s*$/.test(l)) {
+      const rows = []; while (i < L.length && /^\s*\|.*\|\s*$/.test(L[i])) rows.push(L[i++])
+      const cells = r => r.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim())
+      const sep = rows[1] && /^[\s|:-]+$/.test(rows[1])
+      out.push('<table>' + rows.filter((_, k) => !(sep && k === 1)).map((r, k) => '<tr>' + cells(r).map(c => (k === 0 && sep ? '<th>' : '<td>') + inline(c, scope) + (k === 0 && sep ? '</th>' : '</td>')).join('') + '</tr>').join('') + '</table>'); continue
+    }
+    if (/^\s*>/.test(l)) { const b = []; while (i < L.length && /^\s*>/.test(L[i])) b.push(L[i++].replace(/^\s*>\s?/, '')); out.push('<blockquote>' + md(b.join('\n'), scope) + '</blockquote>'); continue }
+    if ((m = /^\s*([-*+]|\d+[.)])\s+/.exec(l))) {
+      const ol = /\d/.test(m[1]), items = []
+      while (i < L.length && (/^\s*([-*+]|\d+[.)])\s+/.test(L[i]) || (/^\s{2,}\S/.test(L[i]) && items.length))) {
+        if (/^\s*([-*+]|\d+[.)])\s+/.test(L[i]) && !/^\s{4,}/.test(L[i])) items.push(L[i].replace(/^\s*([-*+]|\d+[.)])\s+/, ''))
+        else items[items.length - 1] += '\n' + L[i].trim()
+        i++
+      }
+      out.push((ol ? '<ol>' : '<ul>') + items.map(x => '<li>' + inline(x, scope).replace(/\n/g, '<br>') + '</li>').join('') + (ol ? '</ol>' : '</ul>')); continue
+    }
+    if (!l.trim()) { i++; continue }
+    const p = []; while (i < L.length && L[i].trim() && !/^(#{1,6}\s|\s*\x60\x60\x60|\s*>|\s*([-*+]|\d+[.)])\s|\s*\|.*\|\s*$)/.test(L[i])) p.push(L[i++])
+    out.push('<p>' + inline(p.join('\n'), scope).replace(/\n/g, ' ') + '</p>')
+  }
+  return out.join('')
+}
+
+// Theme: dark is the design; light is a toggle away, remembered per browser.
+const root = document.documentElement
+try { const t = localStorage.getItem('otto-mem-theme'); if (t) root.dataset.theme = t } catch {}
+$('theme').onclick = () => {
+  root.dataset.theme = root.dataset.theme === 'light' ? 'dark' : 'light'
+  try { localStorage.setItem('otto-mem-theme', root.dataset.theme) } catch {}
+  restyle()
+}
+
+$('gen').textContent = D.items.length + ' memories · generated ' + new Date(D.generatedAt).toLocaleString()
+$('summary').innerHTML = md(D.summary.text, 'global')
+$('snote').textContent = D.summary.note
+
+// Open loops, soonest first; undated last.
+const today = new Date().toISOString().slice(0, 10)
+const soon = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10)
+const loops = D.items.filter(i => i.kind === 'loop' && i.status === 'open').sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999'))
+$('loops').innerHTML = loops.length ? loops.map(l => {
+  const d = (l.due || '').slice(0, 10), cls = !d ? '' : d < today ? 'over' : d <= soon ? 'soon' : ''
+  return '<div class="loop"><span class="when ' + cls + '">' + (d || 'no date') + '</span><a href="#m' + l.n + '" data-n="' + l.n + '">' + esc(l.name).replace(/\x60([^\x60]+)\x60/g, '<code>$1</code>') + '</a></div>'
+}).join('') : '<div class="empty">Nothing open.</div>'
+
+// Filters.
+const uniq = a => [...new Set(a)].sort()
+uniq(D.items.map(i => i.kind)).forEach(k => $('fkind').add(new Option(k, k)))
+Object.entries(D.scopes).sort((a, b) => a[1].localeCompare(b[1])).forEach(([s, l]) => $('fscope').add(new Option(l, s)))
+
+function card(it) {
+  const b = ['<span class="b accent">' + esc(it.kind) + '</span>', '<span class="b">' + esc(D.scopes[it.scope]) + '</span>']
+  if (it.status) b.push('<span class="b ' + (it.status === 'open' ? 'ok' : '') + '">' + it.status + '</span>')
+  if (it.due) b.push('<span class="b ' + (it.status === 'open' && it.due.slice(0, 10) < today ? 'warn' : '') + '">due ' + esc(it.due.slice(0, 16)) + '</span>')
+  if (it.badge === 'never') b.push('<span class="b warn" title="never returned by recall">never recalled</span>')
+  if (it.badge === 'stale') b.push('<span class="b warn" title="untouched and unrecalled for a long time">stale</span>')
+  if (it.hits) b.push('<span class="b" title="times returned by recall">' + it.hits + ' recall' + (it.hits > 1 ? 's' : '') + (it.lastHitDays != null ? ', last ' + it.lastHitDays + 'd ago' : '') + '</span>')
+  b.push('<span class="b">' + esc(it.updated.slice(0, 10)) + '</span>')
+  return '<details class="mem" id="m' + it.n + '" data-n="' + it.n + '"><summary><div class="name">' + esc(it.name) + '</div>' +
+    (it.description ? '<div class="desc">' + esc(it.description) + '</div>' : '') + '<div class="tags">' + b.join('') + '</div></summary><div class="body md"></div></details>'
+}
+function fill(el) {
+  const it = D.items[el.dataset.n], body = el.querySelector('.body')
+  if (body.dataset.done) return
+  const extra = [it.tags && it.tags.length && 'tags: ' + it.tags.join(', '), it.source && 'source: ' + it.source, it.undo && 'undo: ' + it.undo, it.closedReason && 'closed: ' + it.closedReason, 'id: ' + it.id].filter(Boolean)
+  body.innerHTML = md(it.body, it.scope) + '<div class="extra">' + extra.map(esc).join('<br>') + '</div>'
+  body.dataset.done = 1
+}
+function render() {
+  const words = $('q').value.toLowerCase().split(/\s+/).filter(Boolean)
+  const st = $('fstore').value, k = $('fkind').value, sc = $('fscope').value, ss = $('fstatus').value
+  const hits = D.items.filter(it => (!st || it.store === st) && (!k || it.kind === k) && (!sc || it.scope === sc) && (!ss || it.status === ss) &&
+    words.every(w => (it.name + '\n' + it.description + '\n' + it.body + '\n' + (it.tags || []).join(' ')).toLowerCase().includes(w)))
+    .sort((a, b) => b.updated.localeCompare(a.updated))
+  $('count').textContent = hits.length + ' of ' + D.items.length + ' memories'
+  $('list').innerHTML = hits.length ? hits.map(card).join('') : '<div class="empty">No memory matches.</div>'
+}
+document.addEventListener('toggle', e => { if (e.target.matches && e.target.matches('details.mem') && e.target.open) fill(e.target) }, true)
+;['q', 'fstore', 'fkind', 'fscope', 'fstatus'].forEach(id => $(id).addEventListener('input', render))
+
+// A link to a memory jumps to it, clearing filters if they hide it.
+function jump(n) {
+  let el = $('m' + n)
+  if (!el) { ['q', 'fstore', 'fkind', 'fscope', 'fstatus'].forEach(id => $(id).value = ''); render(); el = $('m' + n) }
+  el.open = true; fill(el)
+  el.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1400)
+  history.replaceState(null, '', '#m' + n)
+}
+document.addEventListener('click', e => { const a = e.target.closest('a[data-n]'); if (a) { e.preventDefault(); jump(+a.dataset.n) } })
+render()
+
+// ---------------------------------------------------------------------------
+// Graph. The libraries load from a CDN only when the tab is opened.
+const LIBS = { '2d': ['https://cdn.jsdelivr.net/npm/force-graph@1.51.4/dist/force-graph.min.js', 'ForceGraph'], '3d': ['https://cdn.jsdelivr.net/npm/3d-force-graph@1.80.0/dist/3d-force-graph.min.js', 'ForceGraph3D'] }
+const loaded = {}
+const lib = src => loaded[src] ??= new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => { delete loaded[src]; no(new Error(src)) }; document.head.append(s) })
+const GR = D.graph, KINDS = uniq(D.items.map(i => i.kind))
+const CL = Object.fromEntries((GR.clusters || []).map(c => [c.id, c]))
+const NOISE = new Set(GR.noise || [])
+const NODES = D.items.map(it => ({ id: it.n, it, c: GR.c && GR.c.length ? GR.c[it.n] : -1, noise: NOISE.has(it.n) }))
+// Every edge a node has, for its neighbourhood on hover or selection: links, and all its similar memories.
+const NB = NODES.map(() => [])
+GR.links.forEach(([a, b]) => { NB[a].push([b, 1, true]); NB[b].push([a, 1, true]) })
+GR.similar.forEach(([a, b, s]) => { NB[a].push([b, s, false]); NB[b].push([a, s, false]) })
+NB.forEach(l => l.sort((x, y) => y[1] - x[1]))
+const SERVED = /^https?:$/.test(location.protocol)
+const CROSS_EXTRA = 0.1   // a cross-cluster edge must be mutual and this much above the slider
+
+let G = null, is3d = false, byCluster = !!(GR.clusters && GR.clusters.length), C = {}, Q = null, H = null, HC = null, SEL = null, FOCUS = null, gnodes = [], semantic = SERVED
+
+KINDS.forEach(k => $('gkind').add(new Option(k, k)))
+Object.entries(D.scopes).sort((a, b) => a[1].localeCompare(b[1])).forEach(([s, l]) => $('gscope').add(new Option(l, s)))
+$('gthr').min = GR.floor ?? 0.3
+$('gthrv').textContent = (+$('gthr').value).toFixed(2)
+$('gnote').textContent = GR.note
+if (!GR.similar.length) { $('gsim').checked = false; $('gsim').disabled = true }
+if (!byCluster) { $('ccluster').disabled = true; $('ccluster').setAttribute('aria-pressed', false); $('ckind').setAttribute('aria-pressed', true) }
+$('gq').placeholder = SERVED ? 'Search by meaning' : 'Search by keyword'
+
+// Colours: read once per theme, as [r, g, b].
+const hex = h => (h.length === 4 ? [1, 2, 3].map(i => h[i] + h[i]) : [1, 3, 5].map(i => h.slice(i, i + 2))).map(x => parseInt(x, 16))
+function hsl(h, s, l) { s /= 100; l /= 100; const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l); return [0, 8, 4].map(n => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1))))) }
+function palette() {
+  const cs = getComputedStyle(root), v = n => cs.getPropertyValue(n).trim()
+  const sat = parseFloat(v('--cl-s')), lig = parseFloat(v('--cl-l'))
+  C = { bg: hex(v('--card')), fg: hex(v('--fg')), soft: hex(v('--fg-soft')), muted: hex(v('--muted')), accent: hex(v('--otto-2')),
+    kind: Object.fromEntries(KINDS.map(k => [k, hex(v('--k-' + k) || v('--muted'))])),
+    // Golden-angle hues from Otto's tangerine, so neighbouring ids never share a colour.
+    cl: Object.fromEntries((GR.clusters || []).map((c, i) => [c.id, hsl((30 + i * 137.508) % 360, sat, lig)])) }
+}
+const css = (c, a = 1) => 'rgba(' + c.join(',') + ',' + a + ')'
+const mix = (c, t) => c.map((x, i) => Math.round(x + (C.bg[i] - x) * t))
+const baseColour = n => byCluster ? (n.c >= 0 ? C.cl[n.c] : C.muted) : C.kind[n.it.kind]
+// Only a click dims the rest of the graph. Hover just draws the node's edges on top: dimming
+// on hover repainted everything each time the pointer crossed a node, and read as flashing.
+const inHood = n => !SEL || SEL === n || NB[SEL.id].some(([j]) => j === n.id)
+function nodeColour(n) {
+  let t = n.noise ? 0.55 : 0
+  if (HC !== null) t = n.c === HC ? 0 : 0.86
+  else if (Q) t = Q.has(n.id) ? 0 : 0.86
+  else if (!inHood(n)) t = 0.8
+  return css(mix(baseColour(n), t))
+}
+function linkColour(l) {
+  if (HC !== null) return l.source.c === HC && l.target.c === HC ? css(l.ex ? C.soft : C.muted, 0.5) : css(C.muted, 0.03)
+  if (Q && !(Q.has(l.source.id) && Q.has(l.target.id))) return css(C.muted, 0.03)
+  if (SEL) return css(C.muted, 0.04)
+  if (is3d) return css(l.ex ? C.soft : C.muted)
+  return l.ex ? css(C.soft, l.same ? 0.3 : 0.06) : css(C.muted, l.same ? 0.12 + 0.5 * (l.s - 0.3) : 0.12)
+}
+const tip = n => '<div class="tip"><b>' + esc(n.it.name) + '</b>' + esc(n.it.description || (n.it.body.length > n.it.name.length ? n.it.body.slice(0, 180) : '')) +
+  '<br><span>' + esc(n.it.kind) + (n.c >= 0 && CL[n.c] ? ' · ' + esc(CL[n.c].label) : '') + (n.it.hits ? ' · ' + n.it.hits + ' recalls' : '') + '</span></div>'
+
+// What is drawn by default: [[links]], similar edges inside a cluster, and mutual nearest
+// neighbours across clusters. Everything else waits for hover or selection.
+function gdata() {
+  const k = $('gkind').value, sc = $('gscope').value, thr = +$('gthr').value, noise = $('gnoise').checked
+  const keep = new Set(NODES.filter(n => (!k || n.it.kind === k) && (!sc || n.it.scope === sc) && (FOCUS === null || n.c === FOCUS) && (noise || !n.noise)).map(n => n.id))
+  const nodes = NODES.filter(n => keep.has(n.id)), links = []
+  if ($('glinks').checked) GR.links.forEach(([a, b]) => keep.has(a) && keep.has(b) && links.push({ source: NODES[a], target: NODES[b], ex: true, s: 1 }))
+  if ($('gsim').checked) GR.similar.forEach(([a, b, s, m]) => s >= thr && keep.has(a) && keep.has(b) && (NODES[a].c === NODES[b].c || (m && s >= thr + CROSS_EXTRA)) && links.push({ source: NODES[a], target: NODES[b], ex: false, s }))
+  nodes.forEach(n => n.deg = 0)
+  links.forEach(l => { l.same = l.source.c === l.target.c; if (l.same) { l.source.deg++; l.target.deg++ } })
+  const shown = new Set(nodes.map(n => n.c))
+  $('gcount').textContent = nodes.length + ' memories · ' + links.filter(l => l.ex).length + ' links · ' + links.filter(l => !l.ex).length + ' similar · ' + [...shown].filter(c => CL[c]).length + ' clusters'
+  return { nodes, links }
+}
+
+// Layout: each cluster is pulled toward an anchor (its centroid projected to 2D, so related
+// clusters sit near each other), members are held tight to their cluster's centre, and
+// clusters push each other apart as discs. Charge is local only.
+const spread = () => 15 * Math.sqrt(NODES.length)
+// The projection is stretched to the stage's shape so a wide screen gets a wide layout.
+let aspect = 1.4
+function anchor(n) { const c = CL[n.c]; return c ? [c.x * spread() * Math.sqrt(aspect), c.y * spread() / Math.sqrt(aspect)] : [0, 0] }
+function clusterForce(alpha) {
+  const g = {}
+  for (const n of gnodes) { const o = g[n.c] ??= { x: 0, y: 0, z: 0, k: 0, m: [] }; o.x += n.x; o.y += n.y; o.z += n.z || 0; o.k++; o.m.push(n) }
+  const list = Object.entries(g).map(([c, o]) => ({ c: +c, x: o.x / o.k, y: o.y / o.k, z: o.z / o.k, r: 8 * Math.sqrt(o.k) + 8, m: o.m }))
+  for (const o of list) {
+    const [ax, ay] = o.c >= 0 ? anchor(o.m[0]) : [0, 0]
+    for (const n of o.m) {
+      // No clusters at all (no embeddings): a plain pull to the middle. Otherwise the few
+      // unembedded memories wait on a ring outside the clusters.
+      if (o.c < 0 && !list.some(x => x.c >= 0)) { n.vx -= n.x * 0.02 * alpha; n.vy -= n.y * 0.02 * alpha; if (is3d) n.vz -= (n.z || 0) * 0.02 * alpha; continue }
+      if (o.c < 0) { const r = Math.hypot(n.x, n.y) || 1, R = spread() * 1.25; n.vx += n.x / r * (R - r) * 0.05 * alpha; n.vy += n.y / r * (R - r) * 0.05 * alpha; continue }
+      n.vx += ((o.x - n.x) * 0.12 + (ax - o.x) * 0.05) * alpha
+      n.vy += ((o.y - n.y) * 0.12 + (ay - o.y) * 0.05) * alpha
+      if (is3d) n.vz += ((o.z - (n.z || 0)) * 0.12 - o.z * 0.05) * alpha
+    }
+  }
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const a = list[i], b = list[j]
+    if (a.c < 0 || b.c < 0) continue
+    const dx = b.x - a.x, dy = b.y - a.y, dz = is3d ? b.z - a.z : 0, d = Math.hypot(dx, dy, dz) || 1, min = a.r + b.r + 18
+    if (d >= min) continue
+    const p = (min - d) / d * 0.35 * alpha
+    for (const n of a.m) { n.vx -= dx * p * b.m.length / (a.m.length + b.m.length); n.vy -= dy * p * b.m.length / (a.m.length + b.m.length); if (is3d) n.vz -= dz * p * 0.5 }
+    for (const n of b.m) { n.vx += dx * p * a.m.length / (a.m.length + b.m.length); n.vy += dy * p * a.m.length / (a.m.length + b.m.length); if (is3d) n.vz += dz * p * 0.5 }
+  }
+  centres = list
+}
+clusterForce.initialize = ns => { gnodes = ns; gset = new Set(ns) }
+let centres = [], gset = new Set()
+
+function drawOverlay(ctx, scale) {
+  // The hovered or selected node's whole neighbourhood, in accent.
+  const f = SEL || H
+  if (f) {
+    ctx.lineWidth = 1.2 / scale
+    for (const [j, s, ex] of NB[f.id]) {
+      const m = NODES[j]
+      if (!gset.has(m)) continue
+      ctx.strokeStyle = css(ex ? C.soft : C.accent, ex ? 0.7 : 0.25 + 0.6 * s)
+      ctx.setLineDash(ex ? [] : [3 / scale, 2 / scale])
+      ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(m.x, m.y); ctx.stroke()
+    }
+    ctx.setLineDash([])
+  }
+  // Cluster labels, biggest first; a label that would overlap one already drawn is skipped.
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.lineJoin = 'round'
+  ctx.font = '500 ' + 12 / scale + 'px Inter, -apple-system, system-ui, sans-serif'
+  const placed = []
+  for (const o of [...centres].sort((a, b) => b.m.length - a.m.length)) {
+    const c = CL[o.c]
+    if (!c || o.m.length < 3) continue
+    let top = Infinity
+    o.m.forEach(n => { top = Math.min(top, n.y) })
+    const x = o.x, y = top - 6 / scale, w = ctx.measureText(c.label).width / 2 + 4 / scale, h = 15 / scale
+    if (placed.some(p => Math.abs(p[0] - x) < p[2] + w && Math.abs(p[1] - y) < h)) continue
+    placed.push([x, y, w])
+    const dim = HC !== null ? o.c !== HC : (Q && !o.m.some(n => Q.has(n.id))) || (SEL && !o.m.some(inHood))
+    ctx.lineWidth = 3 / scale; ctx.strokeStyle = css(C.bg, 0.9); ctx.strokeText(c.label, x, y)
+    ctx.fillStyle = css(byCluster ? C.cl[o.c] : C.soft, dim ? 0.3 : 1); ctx.fillText(c.label, x, y)
+  }
+  if (Q) {
+    ctx.font = 11 / scale + 'px Inter, -apple-system, system-ui, sans-serif'; ctx.textBaseline = 'bottom'
+    // Best matches first; a name that would overlap one already drawn is left to the hover tooltip.
+    const near = []
+    ;[...Q].sort((a, b) => b[1] - a[1]).forEach(([id]) => {
+      const n = NODES[id]
+      if (!gset.has(n)) return
+      const t = n.it.name.length > 42 ? n.it.name.slice(0, 40) + '…' : n.it.name, w = ctx.measureText(t).width / 2, y = n.y - 8 / scale
+      if (near.some(p => Math.abs(p[0] - n.x) < p[2] + w && Math.abs(p[1] - y) < 13 / scale) || placed.some(p => Math.abs(p[0] - n.x) < p[2] + w && Math.abs(p[1] - y) < 13 / scale)) return
+      near.push([n.x, y, w])
+      ctx.lineWidth = 3 / scale; ctx.strokeStyle = css(C.bg); ctx.strokeText(t, n.x, y); ctx.fillStyle = css(C.fg); ctx.fillText(t, n.x, y)
+    })
+  }
+}
+
+function size() { const el = $('gstage'); return [el.clientWidth, Math.max(420, Math.min(innerHeight - el.getBoundingClientRect().top - 24, 960))] }
+
+async function drawGraph() {
+  const [src, name] = LIBS[is3d ? '3d' : '2d'], el = $('gstage')
+  try { await lib(src) } catch {
+    el.innerHTML = '<div class="empty">The graph library loads from cdn.jsdelivr.net, which could not be reached. The list works offline; reconnect and reload for the graph.</div>'
+    return
+  }
+  if (G) { try { G._destructor() } catch {} }
+  el.innerHTML = ''
+  palette()
+  const [w, h] = size()
+  aspect = Math.max(0.6, Math.min(2, w / h))
+  NODES.forEach(n => { if (n.x === undefined) { const [ax, ay] = anchor(n); n.x = ax + (Math.random() - 0.5) * 40; n.y = ay + (Math.random() - 0.5) * 40; if (n.c < 0 && GR.clusters && GR.clusters.length) { const t = n.id * 2.4; n.x = Math.cos(t) * spread() * 1.25; n.y = Math.sin(t) * spread() * 1.25 } } })
+  G = window[name]()(el).width(w).height(h).backgroundColor(css(C.bg))
+    .nodeId('id').nodeVal(n => (1 + 1.6 * Math.sqrt(n.it.hits)) * (n.noise ? 0.6 : 1) * (Q && Q.has(n.id) ? 2.5 : 1)).nodeRelSize(is3d ? 3 : 3.2)
+    .nodeColor(nodeColour).nodeLabel(tip)
+    .linkColor(linkColour).linkWidth(l => is3d ? (l.ex ? 0.4 : 0) : l.ex ? 0.7 : 0.4)
+    .onNodeClick(select).onBackgroundClick(() => select(null))
+    .onNodeHover(n => { H = n; el.style.cursor = n ? 'pointer' : '' })
+    .cooldownTicks(500).warmupTicks(is3d ? 80 : 160).d3AlphaDecay(0.02)
+    .onEngineStop(() => { if (!G.__fit) { G.__fit = true; fit() } })
+  if (is3d) G.nodeOpacity(0.95).linkOpacity(0.22).showNavInfo(false).linkVisibility(l => l.same)   // depth already separates clusters; cross edges in 3D are only clutter
+  else G.onRenderFramePost(drawOverlay).autoPauseRedraw(false)
+  G.d3Force('charge').strength(-14).distanceMax(80)
+  G.d3Force('center', null)
+  G.d3Force('link').distance(l => l.same ? (l.ex ? 18 : 10 + 24 * (1 - l.s)) : 120).strength(l => l.same ? 0.5 / Math.max(1, Math.min(l.source.deg, l.target.deg)) : 0)
+  G.d3Force('cluster', clusterForce)
+  G.graphData(gdata())
+  setTimeout(fit, 900); if (is3d) setTimeout(fit, 2500)
+}
+function fit() {
+  if (!G) return
+  if (!is3d) return G.zoomToFit(0, 48)
+  // 3D: frame the bounding box from the front, by the camera's own field of view.
+  const b = G.getGraphBbox()
+  if (!b) return
+  const c = ['x', 'y', 'z'].map(k => (b[k][0] + b[k][1]) / 2), t = Math.tan(G.camera().fov * Math.PI / 360)
+  const d = 1.1 * Math.max((b.y[1] - b.y[0]) / 2 / t, (b.x[1] - b.x[0]) / 2 / (t * G.camera().aspect)) + (b.z[1] - b.z[0]) / 2
+  G.cameraPosition({ x: c[0], y: c[1], z: c[2] + d }, { x: c[0], y: c[1], z: c[2] }, 0)
+}
+function regraph() { if (G) { G.__fit = false; G.graphData(gdata()); setTimeout(fit, 900) } }
+function recolour() { if (G) G.nodeColor(n => nodeColour(n)).linkColor(l => linkColour(l)).nodeVal(G.nodeVal()) }
+function restyle() { if (!G) return; palette(); G.backgroundColor(css(C.bg)); recolour(); legend() }
+
+// Selection: the node's card and neighbours in the side panel.
+function select(n) {
+  SEL = n
+  const el = $('sel')
+  el.hidden = !n
+  if (n) {
+    const it = n.it, c = CL[n.c]
+    const nb = NB[n.id].slice(0, 8).map(([j, s, ex]) => '<button class="chip" data-n="' + j + '" type="button"><i style="background:' + css(baseColour(NODES[j])) + '"></i><span class="l">' + esc(D.items[j].name) + '</span><span class="n">' + (ex ? 'link' : s.toFixed(2)) + '</span></button>').join('')
+    el.innerHTML = '<div class="ptitle">Selected<button type="button" id="seloff">clear</button></div><div class="selcard"><div class="name">' + esc(it.name) + '</div>' +
+      (it.description ? '<div class="desc">' + esc(it.description) + '</div>' : '') +
+      '<div class="tags"><span class="b accent">' + esc(it.kind) + '</span>' + (c ? '<span class="b">' + esc(c.label) + '</span>' : '') + (it.hits ? '<span class="b">' + it.hits + ' recalls</span>' : '') + (n.noise ? '<span class="b">between clusters</span>' : '') + '</div>' +
+      '<div class="acts"><button type="button" id="selopen">Open in list</button></div></div>' + (nb ? '<div class="ptitle" style="margin-top:14px">Nearest</div>' + nb : '')
+    $('seloff').onclick = () => select(null)
+    $('selopen').onclick = () => { showTab('list'); jump(n.id) }
+  }
+  recolour()
+}
+function focusNode(n) {
+  if (!G || n.x === undefined) return
+  if (is3d) { const d = 120, r = 1 + d / Math.hypot(n.x, n.y, n.z || 1); G.cameraPosition({ x: n.x * r, y: n.y * r, z: (n.z || 0) * r }, n, 600) }
+  else { G.centerAt(n.x, n.y, 500); G.zoom(Math.max(G.zoom(), 2.5), 500) }
+}
+$('side').addEventListener('click', e => {
+  const b = e.target.closest('.chip[data-n]')
+  if (b) { const n = NODES[+b.dataset.n]; select(n); focusNode(n) }
+  if (e.target.closest('.chip-off')) { FOCUS = null; legend(); regraph() }
+  const c = e.target.closest('.chip[data-c]')
+  if (c) { FOCUS = FOCUS === +c.dataset.c ? null : +c.dataset.c; legend(); regraph() }
+})
+
+// Hovering a cluster in the legend lights that cluster and dims the rest. Tracked on the list as a
+// whole, so moving from one chip to the next never passes through "nothing hovered" and flickers.
+function hoverCluster(c) { if (c === HC) return; HC = c; if (is3d) recolour() }
+$('cl').addEventListener('pointerover', e => { const b = e.target.closest('.chip[data-c]'); hoverCluster(b ? +b.dataset.c : null) })
+$('cl').addEventListener('pointerleave', () => hoverCluster(null))
+
+// The side panel's resting content: what the colours mean. Clusters filter on click.
+function legend() {
+  if (byCluster) {
+    $('cl').innerHTML = '<div class="ptitle">Clusters' + (FOCUS !== null ? '<button type="button" class="chip-off">show all</button>' : '') + '</div>' +
+      GR.clusters.slice().sort((a, b) => b.size - a.size).map(c => '<button class="chip" type="button" data-c="' + c.id + '" aria-pressed="' + (FOCUS === c.id) + '" title="' + esc(c.terms.join(', ')) + '"><i style="background:' + css(C.cl[c.id]) + '"></i><span class="l">' + esc(c.label) + '</span><span class="n">' + c.size + '</span></button>').join('')
+  } else {
+    $('cl').innerHTML = '<div class="ptitle">Types</div>' + KINDS.map(k => '<div class="chip"><i style="background:' + css(C.kind[k]) + '"></i><span class="l">' + esc(k) + '</span><span class="n">' + D.items.filter(i => i.kind === k).length + '</span></div>').join('')
+  }
+  $('cl').insertAdjacentHTML('beforeend', '<div class="legend" style="margin-top:14px"><span>solid: [[link]]</span><span>faint: similar meaning</span><span>size: recalls</span><span>faded: between clusters</span></div>')
+}
+
+// Search: by meaning when served (the server embeds the query with the same model), by keyword otherwise.
+let searchSeq = 0
+async function search() {
+  const q = $('gq').value.trim(), seq = ++searchSeq, out = $('results')
+  if (!q) { Q = null; out.hidden = true; recolour(); return }
+  let hits = null, how = 'keyword'
+  if (semantic) {
+    try {
+      const r = await fetch('search?q=' + encodeURIComponent(q))
+      const j = await r.json()
+      if (!r.ok || j.error) throw new Error(j.error || r.status)
+      hits = j.results.filter(([, s]) => s > 0.15).slice(0, 15); how = 'meaning'
+    } catch { semantic = false; $('gq').placeholder = 'Search by keyword' }
+  }
+  if (seq !== searchSeq) return
+  if (!hits) {
+    const w = q.toLowerCase().split(/\s+/)
+    hits = D.items.map(it => [it.n, w.filter(x => (it.name + '\n' + it.description + '\n' + it.body).toLowerCase().includes(x)).length / w.length]).filter(([, s]) => s === 1).sort((a, b) => D.items[b[0]].hits - D.items[a[0]].hits).slice(0, 40)
+  }
+  Q = new Map(hits)
+  out.hidden = false
+  out.innerHTML = '<div class="ptitle">' + (how === 'meaning' ? 'Closest in meaning' : 'Keyword matches') + '<span class="n">' + hits.length + '</span></div>' +
+    (hits.length ? hits.map(([n, s]) => '<button class="chip" type="button" title="' + esc(D.scopes[D.items[n].scope]) + '" data-n="' + n + '"><i style="background:' + css(baseColour(NODES[n])) + '"></i><span class="l">' + esc(D.items[n].name) + '</span><span class="n">' + (how === 'meaning' ? s.toFixed(2) : '') + '</span></button>').join('') : '<div class="empty">Nothing matches.</div>') +
+    (how === 'keyword' && !SERVED ? '<div class="extra">For search by meaning, open this page with <code>bun otto/memviewer.ts --serve --open</code>.</div>' : '')
+  recolour()
+  if (G && hits.length) G.zoomToFit(600, 80, n => Q.has(n.id))
+}
+let searchTimer
+$('gq').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(search, semantic ? 350 : 120) })
+
+$('gthr').addEventListener('input', () => { $('gthrv').textContent = (+$('gthr').value).toFixed(2) })
+;['gthr', 'gkind', 'gscope', 'glinks', 'gsim', 'gnoise'].forEach(id => $(id).addEventListener('change', regraph))
+function colourBy(c) { byCluster = c; $('ccluster').setAttribute('aria-pressed', c); $('ckind').setAttribute('aria-pressed', !c); recolour(); legend() }
+$('ccluster').onclick = () => colourBy(true)
+$('ckind').onclick = () => colourBy(false)
+$('g3d').onclick = () => { is3d = !is3d; $('g3d').setAttribute('aria-pressed', is3d); history.replaceState(null, '', is3d ? '#graph-3d' : '#graph'); drawGraph() }
+addEventListener('resize', () => { if (G && !$('graphview').hidden) { const [w, h] = size(); G.width(w).height(h) } })
+
+function showTab(t) {
+  const g = t === 'graph'
+  $('listview').hidden = g; $('graphview').hidden = !g
+  $('tlist').setAttribute('aria-pressed', !g); $('tgraph').setAttribute('aria-pressed', g)
+  if (g) { history.replaceState(null, '', is3d ? '#graph-3d' : '#graph'); if (!G) drawGraph(); else { const [w, h] = size(); G.width(w).height(h) } }
+  else if (/^#graph/.test(location.hash)) history.replaceState(null, '', location.pathname)
+}
+$('tlist').onclick = () => showTab('list')
+$('tgraph').onclick = () => showTab('graph')
+palette()
+legend()
+
+if (/^#m\d+$/.test(location.hash)) jump(+location.hash.slice(2))
+else if (/^#graph/.test(location.hash)) { is3d = location.hash === '#graph-3d'; $('g3d').setAttribute('aria-pressed', is3d); showTab('graph') }
+// ?q= opens the graph with that search, so a search can be bookmarked.
+const q0 = new URLSearchParams(location.search).get('q')
+if (q0) { if ($('graphview').hidden) showTab('graph'); $('gq').value = q0; search() }
+</script>
+</body>
+</html>
