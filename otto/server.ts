@@ -2420,7 +2420,11 @@ function checkEscalations(): void {
   pruneEscalation(state, loops.map(n => n.id))
 
   const now = Date.now()
-  const due = dueForInterruption(loops, state, { now, localHour: new Date(now).getHours() })
+  const due = dueForInterruption(loops, state, {
+    now,
+    localHour: new Date(now).getHours(),
+    today: new Date(now).toLocaleDateString('sv-SE'), // YYYY-MM-DD, machine-local
+  })
   // One event, however many loops are due. Two separate messages a minute apart
   // about two things the user forgot is the failure this module exists to prevent.
   const batch = due.slice(0, 3)

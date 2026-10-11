@@ -188,3 +188,15 @@ test('once exhausted it stays in the brief and never buzzes again', () => {
   expect(plan.interrupt).toBe(false)
   expect(dueForInterruption([loop], state, at(DUE + 30 * DAY, 9))).toEqual([])
 })
+
+test('a date-only due fires on that local day, not the morning before', () => {
+  const d = { id: 'd', due: '2026-10-12', status: 'open' }
+  const sunday = Date.parse('2026-10-11T08:46:00Z') // 10:46 at UTC+2
+  expect(planLoop(d, {}, { now: sunday, localHour: 10, today: '2026-10-11' })?.stage).not.toBe('morning')
+  const monday = Date.parse('2026-10-12T07:00:00Z')
+  expect(planLoop(d, {}, { now: monday, localHour: 9, today: '2026-10-12' })?.stage).toBe('morning')
+  let state: EscalationState = recordStage({}, 'd', 'morning', monday)
+  expect(planLoop(d, state, { now: monday + 3 * 3600_000, localHour: 12, today: '2026-10-12' })).toBeNull()
+  const tuesday = Date.parse('2026-10-13T06:00:00Z')
+  expect(planLoop(d, state, { now: tuesday, localHour: 8, today: '2026-10-13' })?.stage).toBe('overdue-check')
+})

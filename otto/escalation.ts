@@ -66,6 +66,9 @@ export const DIGEST_LEAD_MS = 2 * DAY
 export const MORNING_FROM = 7
 export const MORNING_TO = 12
 
+/** A due with no time on it: a calendar day where they are, not an instant. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
 /**
  * The stage this loop is entitled to right now, or null when it should stay
  * silent. Pure: the caller supplies the clock and the local hour, because the
@@ -75,7 +78,7 @@ export const MORNING_TO = 12
 export function planLoop(
   loop: LoopLike,
   state: EscalationState,
-  opts: { now: number; localHour: number },
+  opts: { now: number; localHour: number; today?: string },
 ): Plan | null {
   if ((loop.status ?? 'open') !== 'open') return null
   if (!loop.due) return null
@@ -97,9 +100,15 @@ export function planLoop(
   const { now, localHour } = opts
   const msToDue = due - now
   const overdueBy = -msToDue
+  // A bare date parses as midnight UTC, so a 24-hour window around that
+  // instant made "2026-10-12" come due the morning of the 11th. Compare it as a
+  // calendar day against the caller's local date instead.
+  const dateOnly = DATE_ONLY.test(loop.due)
+  const today = opts.today ?? new Date(now).toISOString().slice(0, 10)
+  const daysPast = Math.round((Date.parse(today) - due) / DAY)
 
   // A day past due, once: is this still a thing?
-  if (overdueBy >= DAY) {
+  if (dateOnly ? daysPast >= 1 : overdueBy >= DAY) {
     return {
       stage: 'overdue-check',
       interrupt: true,
@@ -109,7 +118,7 @@ export function planLoop(
   }
 
   // The morning it comes due — the one nudge that is actually actionable.
-  const sameDay = msToDue <= DAY && msToDue > -DAY
+  const sameDay = dateOnly ? daysPast === 0 : msToDue <= DAY && msToDue > -DAY
   if (sameDay && localHour >= MORNING_FROM && localHour < MORNING_TO && !has('morning')) {
     return { stage: 'morning', interrupt: true, buttons: buttonsFor('morning', loop), why: 'due today' }
   }
@@ -225,7 +234,7 @@ export function saveEscalation(file: string, state: EscalationState): void {
 export function dueForInterruption(
   loops: LoopLike[],
   state: EscalationState,
-  opts: { now: number; localHour: number },
+  opts: { now: number; localHour: number; today?: string },
 ): { loop: LoopLike; plan: Plan }[] {
   const out: { loop: LoopLike; plan: Plan }[] = []
   for (const loop of loops) {
