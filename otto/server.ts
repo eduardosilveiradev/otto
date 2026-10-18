@@ -1560,7 +1560,7 @@ function maybeRunHygiene(): void {
 // ---------------------------------------------------------------------------
 // Timezone watcher
 // ---------------------------------------------------------------------------
-// Moving between Italy and Brazil used to be handled by a hand-written trigger
+// Moving between countries used to be handled by a hand-written trigger
 // that rewrote CLAUDE.md and re-anchored six other triggers by id. That is a
 // migration wearing a cron job's clothes, and it only existed because nothing
 // in the channel noticed the machine had moved. Detection belongs here; the
@@ -2809,7 +2809,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         'Store something worth keeping. Two stores behind one tool — pick the kind and it routes.\n' +
         'OPERATIONAL (channel state, lives with the assistant, survives into fired triggers and scans):\n' +
-        '- fact: a standing truth that affects how you operate right now ("the user is in Brazil until 15 Aug"). Appears in the brief, so keep these few and current.\n' +
+        '- fact: a standing truth that affects how you operate right now ("the user is abroad until 15 Aug"). Appears in the brief, so keep these few and current.\n' +
         '- loop: something owed, by them or to them ("owes Marco the signed contract"), with due if there is a date. Surfaces in the brief until closed.\n' +
         '- saved: a link, document or clipping the user parked for later, summarised enough to be useful without re-opening it.\n' +
         '- write: a change you made on the user’s behalf — a created calendar event or task — with undo describing exactly how to reverse it. Record one after every write, so "undo that" is answerable tomorrow.\n' +
