@@ -6560,7 +6560,21 @@ function appReplyMeta(id: unknown): Record<string, string> {
 //   GET /app/release/<key>/Otto.ipa     the build
 //   GET /app/release/<key>/source.json  a SideStore source listing it
 //   GET /app/release/<key>/icon.png     its icon (SideStore requires one)
+// Other apps can ride the same source: app-release/extra/<slug>/ holds App.ipa,
+// icon.png and a release.json that also names the app (name, bundleIdentifier,
+// description). They are served under /app/release/<key>/<slug>/.
 const RELEASE_DIR = join(STATE_DIR, 'app-release')
+
+type ExtraRelease = { slug: string; name: string; bundleIdentifier: string; description: string; version: string; build: string; date: string; size: number }
+
+function extraReleases(): ExtraRelease[] {
+  const dir = join(RELEASE_DIR, 'extra')
+  let slugs: string[] = []
+  try { slugs = readdirSync(dir).filter(s => /^[a-z0-9-]{1,40}$/.test(s)) } catch { return [] }
+  return slugs.flatMap(slug => {
+    try { return [{ ...JSON.parse(readFileSync(join(dir, slug, 'release.json'), 'utf8')), slug }] } catch { return [] }
+  })
+}
 
 function appRelease(): { version: string; build: string; date: string; size: number; key: string } | null {
   try {
@@ -6590,6 +6604,14 @@ function releaseLinks(req: Request, key: string): { ipa: string; source: string 
 }
 
 function handleRelease(req: Request, path: string): Response | undefined {
+  const x = path.match(/^\/app\/release\/([^/]+)\/([a-z0-9-]{1,40})\/(App\.ipa|icon\.png)$/)
+  if (x) {
+    const r = appRelease()
+    const e = extraReleases().find(e => e.slug === x[2])
+    if (req.method !== 'GET' || !r || !e || !tokenMatches(x[1], r.key)) return new Response(null, { status: 404 })
+    const file = join(RELEASE_DIR, 'extra', e.slug, x[3])
+    return new Response(Bun.file(file), x[3] === 'App.ipa' ? { headers: { 'content-type': 'application/octet-stream' } } : {})
+  }
   const m = path.match(/^\/app\/release\/([^/]+)\/(Otto\.ipa|icon\.png|source\.json)$/)
   if (!m) return undefined
   const r = appRelease()
@@ -6603,7 +6625,13 @@ function handleRelease(req: Request, path: string): Response | undefined {
   return Response.json({
     name: 'Otto', identifier: 'dev.otto.source', news: [],
     apps: [{ name: 'Otto', bundleIdentifier: 'dev.otto.app', developerName: 'Otto',
-      localizedDescription: 'Your assistant, in one chat.', iconURL: source.replace(/source\.json$/, 'icon.png'), versions: [version], ...version, versionDate: r.date }],
+      localizedDescription: 'Your assistant, in one chat.', iconURL: source.replace(/source\.json$/, 'icon.png'), versions: [version], ...version, versionDate: r.date },
+      ...extraReleases().map(e => {
+        const base = source.replace(/source\.json$/, `${e.slug}/`)
+        const v = { version: e.version, buildVersion: e.build, date: e.date, downloadURL: `${base}App.ipa`, size: e.size }
+        return { name: e.name, bundleIdentifier: e.bundleIdentifier, developerName: 'Otto', localizedDescription: e.description,
+          iconURL: `${base}icon.png`, versions: [v], ...v, versionDate: e.date }
+      })],
   })
 }
 
