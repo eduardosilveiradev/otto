@@ -30,6 +30,11 @@ import { loadNotes, dueLoops, searchNotes, type Note } from './store.ts'
 import { probeWorkspace, formatWorkspace } from './workspace.ts'
 import { loadTrips } from './trips.ts'
 import { formatTripMode } from './triplife.ts'
+import { findReplyDebt, summarizeThread, threadIds, displayName, type Debt, type ThreadSummary } from './replydebt.ts'
+import { loadMoney } from './money.ts'
+import { purchases, formatReturnsLine, returnsConfig, loadRatesLoose } from './returns.ts'
+import { loadPackages } from './packages.ts'
+import { deskNow } from './desk.ts'
 
 const GATHER_TIMEOUT_MS = 15_000
 export const BRIEF_MAX_CHARS = 2200
@@ -80,6 +85,41 @@ export async function recentMail(account: string): Promise<MailThread[] | null> 
   } catch {
     return null
   }
+}
+
+const REPLY_DEBT_QUERY = 'in:inbox newer_than:30d -category:promotions -category:social'
+const REPLY_DEBT_MAX_THREADS = 25
+const REPLY_DEBT_CONCURRENCY = 5
+
+/**
+ * Recent inbox threads as summaries for replydebt.ts: one search, then one
+ * `gog gmail thread` per hit, five at a time. A thread that fails to fetch is
+ * skipped; the search failing, or every fetch failing, is a failed source.
+ */
+export async function recentThreads(account: string): Promise<ThreadSummary[] | null> {
+  const out = await run(['gog', 'gmail', 'search', REPLY_DEBT_QUERY, '-a', account, '--json', '--max', String(REPLY_DEBT_MAX_THREADS)])
+  if (out === null) return null
+  let ids: string[]
+  try {
+    ids = threadIds(JSON.parse(out))
+  } catch {
+    return null
+  }
+
+  const summaries: (ThreadSummary | null)[] = []
+  for (let i = 0; i < ids.length; i += REPLY_DEBT_CONCURRENCY) {
+    summaries.push(...await Promise.all(ids.slice(i, i + REPLY_DEBT_CONCURRENCY).map(async id => {
+      const raw = await run(['gog', 'gmail', 'thread', id, '-a', account, '--json'])
+      if (raw === null) return null
+      try {
+        return summarizeThread(JSON.parse(raw), account, id)
+      } catch {
+        return null
+      }
+    })))
+  }
+  const ok = summaries.filter((t): t is ThreadSummary => t !== null)
+  return ids.length && !ok.length ? null : ok
 }
 
 /**
@@ -205,12 +245,19 @@ export type BriefParts = {
   history: HistoryLine[]
   workspace?: string
   playing?: string | null
+  desk?: string
   /** Where they left off: repos with uncommitted work, notes, failing tests. */
   resume?: string
   /** Usage projection, only when it has crossed a threshold worth saying. */
   spend?: string
   /** Trip mode: the current or next trip, already rendered (triplife.ts). */
   trip?: string
+  /** People waiting on a reply (replydebt.ts); null when the mail source failed. */
+  debts?: Debt[] | null
+  /** Birthdays that are today in the person's own calendar (birthdays.ts). */
+  birthdays?: string
+  /** Return windows closing in the next few days, already rendered (returns.ts). */
+  returns?: string
 }
 
 /**
@@ -290,6 +337,8 @@ export function formatBrief(p: BriefParts): string {
   // Straight after the calendar: on a travel day the flight is the day, and
   // the character cap trims from the bottom.
   if (p.trip) out.push(p.trip)
+  // The day itself speaks here and nowhere else — the nudge went out days ago.
+  if (p.birthdays) out.push(p.birthdays)
 
   if (p.mail !== null) {
     const named = p.mail.filter(mailWorthNaming).sort((a, b) => mailRank(a) - mailRank(b))
@@ -304,9 +353,24 @@ export function formatBrief(p: BriefParts): string {
     }
   }
 
+  // Rendered even when empty, like the inbox: the watchdog reads a vanished
+  // section as a dead source, so "nobody" has to be said out loud.
+  if (p.debts !== undefined && p.debts !== null) {
+    out.push(
+      p.debts.length
+        ? `Waiting on you (as of ${stamp}): ${p.debts.slice(0, 3).map(d => `${truncate(displayName(d.from), 22)} ${d.daysWaiting}d — ${truncate(d.snippet, 50)} [thread ${d.threadId}]`).join('; ')}` +
+            (p.debts.length > 3 ? ` (+${p.debts.length - 3} more)` : '')
+        : `Waiting on you (as of ${stamp}): nobody.`,
+    )
+  }
+
   if (p.loops.length) {
     out.push(`Open loops: ${p.loops.slice(0, 5).map(n => `[${n.id}] ${truncate(n.text, 60)}${n.due ? ` (due ${n.due.slice(0, 10)})` : ''}`).join('; ')}`)
   }
+
+  // A deadline with money on it, beside the other things they owe. Present
+  // only when a window closes within days; it never becomes a message.
+  if (p.returns) out.push(truncate(p.returns, 300))
 
   if (p.facts.length) {
     out.push(`Standing facts: ${p.facts.slice(0, 6).map(n => truncate(n.text, 70)).join('; ')}`)
@@ -326,6 +390,7 @@ export function formatBrief(p: BriefParts): string {
 
   if (p.workspace) out.push(`Machine: ${truncate(p.workspace, 160)}`)
   if (p.playing) out.push(`Playing: ${truncate(p.playing, 60)}`)
+  if (p.desk) out.push(`Desk: ${p.desk}`)
   // What was in flight when they stopped. Renders as nothing on a morning with
   // nothing to resume, which is most of them.
   if (p.resume) out.push(p.resume)
@@ -387,6 +452,8 @@ export type GatherOpts = {
   resume?: string
   spend?: string
   trip?: string
+  birthdays?: string
+  returns?: string
   notes: Note[]
   triggers: TriggerGist[]
   history: HistoryLine[]
@@ -399,15 +466,18 @@ export async function gatherBrief(o: GatherOpts): Promise<{ text: string; busyUn
   const now = o.now ?? new Date()
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
 
-  const [events, mail, playing, ws] = await Promise.all([
+  const [events, mail, threads, playing, ws] = await Promise.all([
     calendarToday(o.account),
     recentMail(o.account),
+    recentThreads(o.account),
     nowPlaying(),
     probeWorkspace(o.projectsRoot).then(formatWorkspace).catch(() => undefined),
   ])
 
+  const desk = deskNow()
   const parts: BriefParts = {
     now, tz, events, mail, playing,
+    debts: threads === null ? null : findReplyDebt(threads, { now: now.getTime() }),
     loops: dueLoops(o.notes, now.getTime(), 7 * 24 * 60 * 60 * 1000).slice(0, 5)
       .concat(searchNotes(o.notes, { kind: 'loop', limit: 5 }).filter(n => !n.due))
       .slice(0, 5),
@@ -415,9 +485,12 @@ export async function gatherBrief(o: GatherOpts): Promise<{ text: string; busyUn
     triggers: o.triggers,
     history: o.history,
     ...(ws ? { workspace: ws } : {}),
+    ...(desk ? { desk } : {}),
     ...(o.resume ? { resume: o.resume } : {}),
     ...(o.spend ? { spend: o.spend } : {}),
     ...(o.trip ? { trip: o.trip } : {}),
+    ...(o.birthdays ? { birthdays: o.birthdays } : {}),
+    ...(o.returns ? { returns: o.returns } : {}),
   }
   const text = formatBrief(parts)
 
@@ -440,10 +513,24 @@ if (import.meta.main) {
   const trip = formatTripMode(loadTrips(join(stateDir, 'trips.json')), Date.now(), {
     stamp: new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(new Date()),
   })
+  let access: unknown = null
+  try { access = JSON.parse(readFileSync(join(stateDir, 'access.json'), 'utf8')) } catch {}
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const returns = formatReturnsLine(
+    purchases(loadMoney(join(stateDir, 'money.json')), {
+      config: returnsConfig(access as Parameters<typeof returnsConfig>[0]),
+      rates: loadRatesLoose(join(stateDir, 'fx.json')),
+      shipments: loadPackages(join(stateDir, 'packages.json')),
+    }),
+    today,
+    new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(now),
+  )
   const { text } = await gatherBrief({
     account: process.env.OTTO_GOOGLE_ACCOUNT ?? '',
     notes, triggers, history: [],
     ...(trip ? { trip } : {}),
+    ...(returns ? { returns } : {}),
   })
   console.log(text)
 }

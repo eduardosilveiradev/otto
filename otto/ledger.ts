@@ -25,6 +25,7 @@ export type LedgerEntry = {
   dir: 'in' | 'out'
   chat_id: string
   text: string
+  kind?: string
   /** "trigger:<id>", "email-scan", "webhook", "chat", "queue-flush". */
   src?: string
 }
@@ -53,7 +54,8 @@ export function proactivityReport(
   const windowMs = opts.windowMs ?? ENGAGE_WINDOW_MS
   const sorted = [...entries].sort((a, b) => a.ts.localeCompare(b.ts))
   const inboundTimes = sorted
-    .filter(e => e.dir === 'in')
+    // A prompt typed into the terminal isn't an answer to anything Otto sent on a chat.
+    .filter(e => e.dir === 'in' && e.kind !== 'terminal')
     .map(e => Date.parse(e.ts))
     .filter(t => !Number.isNaN(t))
     .sort((a, b) => a - b)

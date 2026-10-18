@@ -1,0 +1,5 @@
+[
+  { "id": "j1", "task": "compare three flights to Barcelona", "state": "done", "createdAt": "2026-03-14T10:00:00Z", "startedAt": "2026-03-14T10:00:05Z", "endedAt": "2026-03-14T10:04:00Z",
+    "scratchDir": "__HOME__/.otto/state/jobs/j1", "tools": ["WebSearch"], "wallClockMs": 600000, "tokenBudget": 150000, "tokensUsed": 12000,
+    "costUsd": 0.12, "pid": 4242, "tags": [], "chatId": "1234567890", "result": "the morning one is cheapest" }
+]

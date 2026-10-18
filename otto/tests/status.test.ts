@@ -136,3 +136,23 @@ test('helpers', () => {
   expect(rowToProbe({ id: 'webhook', label: 'w', verdict: 'down', detail: 'x' }, 'webhook')).toMatchObject({ ok: false })
   expect(rowToProbe({ id: 'webhook', label: 'w', verdict: 'off', detail: 'x' }, 'webhook')).toEqual({ name: 'webhook', ok: true })
 })
+
+test('domain expiry: off without domains, failures shown here and nowhere else', async () => {
+  expect(row(await collectStatus(setup({}).deps), 'domains').verdict).toBe('off')
+  const { deps } = setup({
+    'access.json': { domains: ['example.com'] },
+    'domains.json': {
+      lastRunAt: new Date(NOW - min(60)).toISOString(),
+      domains: { 'example.com': {
+        tls: { expiresAt: '2026-12-01T00:00:00.000Z', okAt: new Date(NOW - min(60)).toISOString(), checkedAt: new Date(NOW - min(60)).toISOString() },
+        registration: { checkedAt: new Date(NOW - min(60)).toISOString(), error: 'rdap example.com: HTTP 503' },
+        alerted: [],
+      } },
+    },
+  })
+  const r = row(await collectStatus(deps), 'domains')
+  expect(r.verdict).toBe('degraded')
+  expect(r.at).toBe(NOW - min(60))
+  expect(r.detail).toContain('HTTP 503')
+  expect(r.detail).toContain('2026-12-01 UTC')
+})

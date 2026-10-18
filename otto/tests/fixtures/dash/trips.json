@@ -1,0 +1,21 @@
+[
+  {
+    "id": "t1", "start": "2026-03-16", "end": "2026-03-20",
+    "segments": [
+      { "kind": "flight", "flight": "XX123", "carrier": "XX", "from": "LIS", "to": "BCN",
+        "depart": { "local": "2026-03-16T10:00", "zone": "Europe/Lisbon", "utc": "2026-03-16T10:00:00Z" },
+        "arrive": { "local": "2026-03-16T13:00", "zone": "Europe/Madrid", "utc": "2026-03-16T12:00:00Z" },
+        "pnr": "ABC123", "seat": "12A", "cabin": "economy" },
+      { "kind": "stay", "name": "Hotel Example", "address": "1 Example Street", "city": "Barcelona", "country": "ES",
+        "checkIn": "2026-03-16", "checkOut": "2026-03-20", "confirmation": "CONF999" }
+    ],
+    "pnrs": ["ABC123"], "sources": ["msg-3"], "updatedAt": "2026-03-01T10:00:00Z", "fired": []
+  },
+  {
+    "id": "t2", "start": "2026-05-01", "end": "2026-05-01",
+    "segments": [
+      { "kind": "flight", "flight": "YY9", "carrier": "YY", "to": "OPO", "depart": { "local": "2026-05-01T08:00" }, "pnr": "ZZZ999" }
+    ],
+    "pnrs": ["ZZZ999"], "sources": ["msg-4"], "updatedAt": "2026-03-02T10:00:00Z"
+  }
+]

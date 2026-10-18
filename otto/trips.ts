@@ -37,6 +37,7 @@ import { readFileSync, writeFileSync, renameSync } from 'fs'
 import { randomBytes } from 'crypto'
 import { homedir } from 'os'
 import { join } from 'path'
+import { passportProblems, type Doc } from './documents.ts'
 
 // ---------------------------------------------------------------------------
 // Zoned times
@@ -786,6 +787,20 @@ function dayCountInclusive(from: string, to: string): number {
  * guess, and the gap shows up in tripProblems.
  */
 export function daysInCountry(trip: Trip, airports: AirportTable): CountryDays[] {
+  const spans = countrySpans(trip, airports)
+  const byCountry = new Map<string, CountryDays>()
+  for (const s of spans) {
+    const existing = byCountry.get(s.country)
+    if (!existing) { byCountry.set(s.country, { ...s }); continue }
+    existing.days += s.days
+    existing.from = existing.from < s.from ? existing.from : s.from
+    existing.to = existing.to > s.to ? existing.to : s.to
+  }
+  return [...byCountry.values()].sort((a, b) => b.days - a.days)
+}
+
+/** One inclusive date span per flight arrival; daysInCountry sums them, staylimits.ts expands them. */
+export function countrySpans(trip: Trip, airports: AirportTable): CountryDays[] {
   const flights = trip.segments
     .filter((s): s is FlightSegment => s.kind === 'flight')
     .sort((a, b) => a.depart.local.localeCompare(b.depart.local))
@@ -802,16 +817,7 @@ export function daysInCountry(trip: Trip, airports: AirportTable): CountryDays[]
     if (to < from) continue
     spans.push({ country: arrivalCountry, days: dayCountInclusive(from, to), from, to })
   }
-
-  const byCountry = new Map<string, CountryDays>()
-  for (const s of spans) {
-    const existing = byCountry.get(s.country)
-    if (!existing) { byCountry.set(s.country, { ...s }); continue }
-    existing.days += s.days
-    existing.from = existing.from < s.from ? existing.from : s.from
-    existing.to = existing.to > s.to ? existing.to : s.to
-  }
-  return [...byCountry.values()].sort((a, b) => b.days - a.days)
+  return spans
 }
 
 /** Free-cancellation deadlines still ahead, soonest first. */
@@ -833,8 +839,8 @@ export function cancellationDeadlines(trip: Trip, now = Date.now()): { stay: Sta
  * missing zone with the user’s current one, the gap is named so the session can ask
  * the user or look it up.
  */
-export function tripProblems(trip: Trip): string[] {
-  const out: string[] = []
+export function tripProblems(trip: Trip, docs: Doc[] = []): string[] {
+  const out: string[] = passportProblems(trip.end, docs)
   for (const s of trip.segments) {
     if (s.kind !== 'flight') continue
     if (!s.depart.utc) out.push(`${s.flight}: departure ${s.depart.local} has no timezone — do not convert it`)

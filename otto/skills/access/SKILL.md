@@ -21,6 +21,8 @@ where noted below.
   "webhook": { "port": 4589, "token": "", "host": "127.0.0.1" },
                                  // loopback ingress for webhooks and the iOS app;
                                  // off while token is empty
+  "money": { "home": "EUR" },    // foreign amounts get an approximate figure in this ISO code beside them; totals stay per currency
+  "returns": { "minAmount": 30 }, // purchases below this (home currency) get no return/warranty tracking
   "selfEdit": false              // true lets Otto draft and install changes to itself
 }
 ```

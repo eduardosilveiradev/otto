@@ -26,6 +26,10 @@
  *
  * Nothing here inspects meaning, so nothing here can be talked out of firing by
  * the content of an email.
+ *
+ * replylint.ts is the stricter gate in front of this one: it blocks spoken
+ * links, code, lists and length outright, bare machinery words, and raw ids.
+ * The voice warnings below still stand for direct callers of lintOutbound.
  */
 
 export type LintSeverity = 'block' | 'warn'
@@ -84,9 +88,10 @@ const LEAKAGE: { re: RegExp; hint: string }[] = [
 
 const BARE_MACHINERY = /\b(trigger|scan|agent|session|webhook|cron)\b/i
 
-const URL_RE = /https?:\/\/\S+/i
-const CODE_FENCE_RE = /```|`[^`\n]+`/
-const LIST_RE = /^\s*(?:[-*•]|\d+[.)])\s+/m
+// Shared with replylint.ts, which turns the spoken-form ones into hard blocks.
+export const URL_RE = /https?:\/\/\S+/i
+export const CODE_FENCE_RE = /```|`[^`\n]+`/
+export const LIST_RE = /^\s*(?:[-*•]|\d+[.)])\s+/m
 
 /** Claims that mail went out. Otto may only say this after a shown, approved draft. */
 const SENT_MAIL_RE = /\b(?:i(?:'ve| have)? )?(?:sent|replied to|forwarded|emailed)\b[^.!?]*\b(?:email|mail|reply|thread|message to)\b/i

@@ -1,0 +1,21 @@
+[
+  {
+    "id": "p1", "carrier": "dhl", "tracking": "JD000000000000000000", "merchant": "Example Shop", "item": "Desk lamp",
+    "status": "in_transit", "eta": "2026-03-17", "etaLatest": "2026-03-18",
+    "events": [
+      { "at": "2026-03-12T09:00:00.000Z", "status": "shipped", "text": "Shipped", "source": "email:msg-5" },
+      { "at": "2026-03-14T09:00:00.000Z", "status": "in_transit", "text": "Left the hub", "source": "email:msg-6" }
+    ],
+    "sources": ["email:msg-5", "email:msg-6"], "createdAt": "2026-03-12T09:00:00.000Z", "updatedAt": "2026-03-14T09:00:00.000Z"
+  },
+  {
+    "id": "p2", "carrier": "amazon", "tracking": "TBA000000000000", "merchant": "Amazon", "item": "Cables",
+    "status": "delivered",
+    "events": [{ "at": "2026-03-10T15:00:00.000Z", "status": "delivered", "text": "Delivered", "source": "email:msg-7" }],
+    "sources": ["email:msg-7"], "createdAt": "2026-03-08T09:00:00.000Z", "updatedAt": "2026-03-10T15:00:00.000Z", "deliveredAt": "2026-03-10T15:00:00.000Z"
+  },
+  {
+    "id": "p3", "carrier": "ups", "tracking": "1Z0000000000000000", "status": "delivered",
+    "events": [], "sources": [], "createdAt": "2026-01-01T09:00:00.000Z", "updatedAt": "2026-01-02T09:00:00.000Z", "deliveredAt": "2026-01-02T09:00:00.000Z"
+  }
+]

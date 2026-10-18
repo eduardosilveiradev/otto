@@ -24,7 +24,7 @@
  * page itself is memviewer.html, next to this file.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, renameSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { createHash } from 'crypto'
@@ -33,12 +33,16 @@ import type { Note } from './store.ts'
 import { loadStats, auditMemories, memoryKey, type RecallStats } from './recallstats.ts'
 import { HOUSE_RULES_NAME } from './houserules.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
+import { displayName, lastContactAt, type Person } from './people.ts'
 
 const STATE_DIR = process.env.OTTO_STATE_DIR ?? join(homedir(), '.otto', 'state')
 export const VIEWER_FILE = join(STATE_DIR, 'memory-viewer.html')
+/** The page's data blob on its own, for the dashboard API. */
+export const VIEWER_JSON = 'memory-viewer.json'
 const SUMMARY_FILE = join(STATE_DIR, 'memory-summary.json')
 export const SUMMARY_MODEL = 'claude-sonnet-5-5'
-const EMBED_FILE = join(STATE_DIR, 'memory-embeddings.json')
+const EMBED_NAME = 'memory-embeddings.json'
+const EMBED_FILE = join(STATE_DIR, EMBED_NAME)
 export const EMBED_MODEL = 'intfloat/multilingual-e5-small'
 const OPENER = process.platform === 'darwin' ? 'open' : 'xdg-open'
 
@@ -397,18 +401,18 @@ const toB64 = (v: Float32Array) => Buffer.from(v.buffer, v.byteOffset, v.byteLen
 const fromB64 = (s: string) => { const b = Buffer.from(s, 'base64'); return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)) }
 
 /** The first interpreter that exists; memembed.py itself reports a missing torch or transformers. */
-export function embedPython(): string | null {
-  const c = [process.env.OTTO_EMBED_PYTHON, join(STATE_DIR, 'embed', '.venv', 'bin', 'python')]
+export function embedPython(dir = STATE_DIR): string | null {
+  const c = [process.env.OTTO_EMBED_PYTHON, join(dir, 'embed', '.venv', 'bin', 'python')]
   return c.find(p => p && existsSync(p)) ?? null
 }
 
 /** The embedder as a long-lived child: one JSON line in, one JSON line out. Used once per build, and per query under --serve. */
-function embedder() {
-  const py = embedPython()
+function embedder(dir = STATE_DIR) {
+  const py = embedPython(dir)
   if (!py) return null
   const proc = Bun.spawn([py, '-I', join(import.meta.dir, 'memembed.py'), EMBED_MODEL], {
     env: { ...process.env, HF_HUB_DISABLE_TELEMETRY: '1', TOKENIZERS_PARALLELISM: 'false' },
-    cwd: STATE_DIR, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
+    cwd: dir, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
   })
   const lines = (async function* () {
     let buf = ''
@@ -429,7 +433,7 @@ function embedder() {
     queue = run.catch(() => {})
     return run
   }
-  return { embed, close: () => { try { proc.stdin.end(); proc.kill() } catch {} } }
+  return { embed, pid: proc.pid, close: () => { try { proc.stdin.end(); proc.kill() } catch {} } }
 }
 
 /** One vector per item (null where it could not be had), and a line saying what happened. Never throws. */
@@ -574,13 +578,127 @@ export type Graph = {
   note: string
 }
 
-/** The page is a static template next to this file; the data goes in as one JSON script tag. */
-export function buildHtml(items: Item[], summary: { text: string; note: string }, generatedAt: string, graph: Graph = { links: [], similar: [], note: '' }): string {
-  const data = JSON.stringify({
-    items, summary, generatedAt, graph,
+// ---------------------------------------------------------------------------
+// People
+// ---------------------------------------------------------------------------
+
+export type PersonCard = {
+  name: string
+  relationship?: string
+  city?: string
+  timezone?: string
+  org?: string
+  notes: { at: string; text: string }[]
+  inbound: number
+  outbound: number
+  lastContact?: string
+  /** Indexes into the items: the memories and notes that name them. */
+  mentions: number[]
+}
+
+/** A family word says who someone is in every language the user writes in. */
+const KIN: Record<string, string[]> = {
+  dad: ['dad', 'father', 'papà', 'papa', 'pai'], mom: ['mom', 'mum', 'mother', 'mamma', 'mãe'],
+  uncle: ['uncle', 'zio', 'tio'], aunt: ['aunt', 'zia', 'tia'],
+  brother: ['brother', 'fratello', 'irmão'], sister: ['sister', 'sorella', 'irmã'],
+}
+const NOT_A_NAME = new Set(['his', 'her', 'their', 'the', 'and', 'friend', 'from', 'with', 'who', 'my'])
+
+/** people.json, read-only like notes.json: a viewer never moves a corrupt file aside. */
+export function readPeople(file: string): Person[] {
+  if (!existsSync(file)) return []
+  const parsed = JSON.parse(readFileSync(file, 'utf8'))
+  if (!Array.isArray(parsed)) throw new Error(`${file} is not an array`)
+  return parsed as Person[]
+}
+
+/**
+ * Each person with the memories that name them: by name, alias, or, for family,
+ * the role in any of the user's languages. A whole-word match, so it can miss a
+ * nickname nobody recorded and can catch a namesake.
+ */
+export function peopleCards(people: Person[], items: Item[]): PersonCard[] {
+  return people.map(p => {
+    const words = (s: string) => s.toLowerCase().match(/\p{L}{3,}/gu) ?? []
+    // Names and aliases are searched as they are; the relationship only for a
+    // family role, since "school friend" would otherwise match every school memory.
+    const terms = [...new Set([
+      ...[p.name ?? '', ...p.aliases].flatMap(words).flatMap(w => KIN[w] ?? (NOT_A_NAME.has(w) ? [] : [w])),
+      ...words(p.relationship ?? '').flatMap(w => KIN[w] ?? []),
+    ])]
+    const re = terms.length ? new RegExp(`(?<!\\p{L})(?:${terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?!\\p{L})`, 'iu') : null
+    const last = lastContactAt(p)
+    return {
+      name: displayName(p), relationship: p.relationship, city: p.city, timezone: p.timezone, org: p.org,
+      notes: p.notes ?? [], inbound: p.inbound.count, outbound: p.outbound.count,
+      lastContact: last ? new Date(last).toISOString() : undefined,
+      mentions: re ? items.flatMap((it, n) => (re.test(`${it.name}\n${it.description}\n${it.body}`) ? [n] : [])) : [],
+    }
+  })
+}
+
+/** The page's data as JSON, with `<` escaped so it can sit inside a script tag (and still parse as JSON on its own). */
+export function viewerData(items: Item[], summary: { text: string; note: string }, generatedAt: string, graph: Graph = { links: [], similar: [], note: '' }, people: PersonCard[] = []): string {
+  return JSON.stringify({
+    items, summary, generatedAt, graph, people,
     scopes: Object.fromEntries([...new Set(items.map(i => i.scope))].map(s => [s, scopeLabel(s)])),
   }).replace(/</g, '\\u003c')
+}
+
+/** The page is a static template next to this file; the data goes in as one JSON script tag. */
+export function buildHtml(data: string): string {
   return readFileSync(join(import.meta.dir, 'memviewer.html'), 'utf8').replace('/*DATA*/null', () => data)
+}
+
+/**
+ * Search by meaning for the dashboard API, out of the files the last build
+ * wrote: the items in memory-viewer.json, their vectors in the embedding cache.
+ * Both are re-read only when either file's mtime changes. The embedder starts
+ * on the first query and is killed after five idle minutes, since it holds a
+ * model in memory. Results index into memory-viewer.json's items.
+ */
+export const SEARCH_IDLE_MS = 5 * 60_000
+let searchIndex: { stamp: string; unit: (Float32Array | null)[]; mean: Float32Array } | null = null
+let searchChild: ReturnType<typeof embedder> = null
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+
+export function stopSearch(): void {
+  clearTimeout(searchTimer)
+  searchChild?.close()
+  searchChild = null
+}
+
+/** The running embedder's pid, if one is up. */
+export const searchPid = () => searchChild?.pid
+
+export async function searchMemory(q: string, opts: { dir?: string; idleMs?: number } = {}): Promise<{ results: [number, number][] } | { error: string }> {
+  const dir = opts.dir ?? STATE_DIR
+  const files = [join(dir, VIEWER_JSON), join(dir, EMBED_NAME)]
+  let stamp: string
+  try { stamp = files.map(f => statSync(f).mtimeMs).join(',') } catch { return { error: 'no embeddings: build the memory viewer first' } }
+  if (searchIndex?.stamp !== stamp) {
+    try {
+      const { items } = JSON.parse(readFileSync(files[0], 'utf8')) as { items: Item[] }
+      const cache = JSON.parse(readFileSync(files[1], 'utf8')) as EmbedCache
+      const { keys } = embedPlan(items.map(embedText), cache)
+      searchIndex = { stamp, ...centre(keys.map(k => (cache.vectors[k] ? fromB64(cache.vectors[k]) : null))) }
+    } catch (err) { return { error: `unreadable index: ${String(err).slice(0, 160)}` } }
+  }
+  if (!searchIndex.unit.some(Boolean)) return { error: 'no embeddings' }
+  q = q.trim().slice(0, 500)
+  if (!q) return { results: [] }
+  searchChild ??= embedder(dir)
+  if (!searchChild) return { error: 'no embedder' }
+  const { unit, mean } = searchIndex
+  try {
+    const r = await searchChild.embed([q])
+    return { results: rankQuery(r.vecs[0], mean, unit, 20) }
+  } catch (err) {
+    stopSearch()
+    return { error: String(err).slice(0, 200) }
+  } finally {
+    if (searchChild) { clearTimeout(searchTimer); searchTimer = setTimeout(stopSearch, opts.idleMs ?? SEARCH_IDLE_MS); searchTimer.unref?.() }
+  }
 }
 
 /**
@@ -655,10 +773,15 @@ if (import.meta.main) {
       : `Semantic edges, clusters and search by meaning are off (${emb.note}). Setup is one command; see the memory viewer paragraph in the README.`,
   }
   console.log(`graph: ${links.length} explicit links (${dead} dead), ${similar.length} semantic edges (k=${SIM_K}, floor ${SIM_FLOOR}), ${similar.filter(e => e[3]).length} mutual (k=${MUTUAL_K}), ${graph.clusters.length} clusters, ${graph.noise.length} between clusters`)
-  const html = buildHtml(items, summary, new Date().toISOString(), graph)
+  const people = peopleCards(readPeople(join(STATE_DIR, 'people.json')), items)
+  const data = viewerData(items, summary, new Date().toISOString(), graph, people)
+  const html = buildHtml(data)
   writeFileSync(VIEWER_FILE, html, { mode: 0o600 })
+  const json = join(STATE_DIR, VIEWER_JSON)
+  writeFileSync(json + '.tmp', data, { mode: 0o600 })
+  renameSync(json + '.tmp', json)
   const count = (store: string) => items.filter(i => i.store === store).length
-  console.log(`${count('durable')} durable memories, ${count('notes')} notes → ${VIEWER_FILE}`)
+  console.log(`${count('durable')} durable memories, ${count('notes')} notes, ${people.length} people → ${VIEWER_FILE}`)
   // --open serves too: opened as a file, the page can only search by keyword.
   if (argv.includes('--serve') || argv.includes('--open')) serve(html, unit, mean, Number(argv[argv.indexOf('--port') + 1]) || 0, argv.includes('--open'))
 }

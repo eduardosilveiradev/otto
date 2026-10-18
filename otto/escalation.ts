@@ -34,6 +34,8 @@
 import { readFileSync, writeFileSync, renameSync } from 'fs'
 
 export type Stage = 'quiet' | 'digest' | 'morning' | 'overdue-check' | 'exhausted'
+  // Document radar (documents.ts): the same two-interruption budget.
+  | 'doc-act-by' | 'doc-chase'
 
 export type LoopLike = {
   id: string

@@ -1,0 +1,10 @@
+[
+  {
+    "id": "alex@example.com", "name": "Alex", "addresses": ["alex@example.com"], "aliases": ["Alex"],
+    "phones": ["+442079460100"], "handles": ["alex_example"], "org": "Example Co", "city": "Lisbon",
+    "timezone": "Europe/Lisbon", "relationship": "friend from school", "offsetSamples": [0],
+    "inbound": { "first": "2026-01-10T10:00:00Z", "last": "2026-03-01T10:00:00Z", "count": 3 },
+    "outbound": { "count": 2 }, "contacts": ["2026-01-10T10:00:00Z", "2026-03-01T10:00:00Z"],
+    "notes": [{ "at": "2026-02-01T10:00:00Z", "text": "moved to Lisbon in January" }], "updatedAt": "2026-03-01T10:00:00Z"
+  }
+]

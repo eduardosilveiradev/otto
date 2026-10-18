@@ -1,0 +1,5 @@
+[
+  { "id": "c1", "at": "2026-03-10T10:00:00Z", "what": "a morning ping, weekdays at 08:00", "sha": "abc1234", "paths": ["triggers.json"], "tier": "confirmed", "origin": "user-typed", "by": "forge", "revert": { "kind": "delete-trigger", "triggerId": "trg1" } },
+  { "id": "c2", "at": "2026-03-12T03:00:00Z", "what": "restarted the phone relay", "paths": [], "tier": "unattended", "origin": "triggered", "by": "watchdog", "revert": { "kind": "none", "why": "a restart has no inverse" } },
+  { "id": "c0", "at": "2025-12-01T10:00:00Z", "what": "something long ago", "paths": [], "tier": "unattended", "origin": "triggered", "by": "forge", "revert": { "kind": "none", "why": "old" } }
+]

@@ -91,7 +91,21 @@ export function flipAccess<T extends Switchable>(a: T, id: string): T {
   return b
 }
 
-type TriggerLike = { id: string; type: string; action: string; repeating: boolean; enabled: boolean }
+/**
+ * Set the quiet window to a new value on a copy — the `setting:quiet` write when
+ * the value comes from somewhere other than the toggle (the sleep offer in
+ * sleep.ts). Like a flip it touches only the field the id names; the off-marker
+ * goes, since a window just chosen is on.
+ */
+export function setQuietWindow<T extends Switchable>(a: T, window: string): T {
+  if (!/^\d{2}:\d{2}-\d{2}:\d{2}$/.test(window)) throw new Error(`not a quiet window: ${window}`)
+  const b: T = structuredClone(a)
+  b.quietHours = window
+  delete b.quietHoursOff
+  return b
+}
+
+type TriggerLike ={ id: string; type: string; action: string; repeating: boolean; enabled: boolean }
 
 /** Recurring cron triggers — the morning brief, the pings. One-shots are reminders, not settings. */
 export function triggerToggles(ts: TriggerLike[]): Toggle[] {

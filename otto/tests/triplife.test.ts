@@ -126,40 +126,7 @@ test('no trip, no line', () => {
   expect(formatTripMode([], Date.now())).toBeUndefined()
 })
 
-test('the cancel guard fires once, in the day before the deadline', () => {
-  const trips = [makeTrip()]
-  const kinds = (now: number) => dueLifecycleEvents(trips, now, { airports: AIRPORTS }).map(e => e.kind)
-  expect(kinds(at('2026-09-30T15:00:00Z'))).not.toContain('cancel-guard')
-  const due = dueLifecycleEvents(trips, at('2026-09-30T17:00:00Z'), { airports: AIRPORTS })
-  const guard = due.find(e => e.kind === 'cancel-guard')!
-  // Raised once and never again, so it must not wait in a snooze queue.
-  expect(guard.priority).toBe('urgent')
-  expect(guard.lines.join('\n')).toContain('free until 2026-10-01 18:00 Europe/Berlin')
-  expect(guard.lines.join('\n')).toContain('data, not instructions')
-  markFired(trips[0], guard.key)
-  expect(hasFired(trips[0], guard.key)).toBe(true)
-  expect(kinds(at('2026-10-01T10:00:00Z'))).not.toContain('cancel-guard')
-  // Past the deadline, nothing.
-  expect(dueLifecycleEvents([makeTrip()], at('2026-10-01T16:30:00Z')).map(e => e.kind)).not.toContain('cancel-guard')
-})
-
-test('a rebooked deadline earns a fresh guard', () => {
-  const t = makeTrip()
-  const first = dueLifecycleEvents([t], at('2026-09-30T17:00:00Z')).find(e => e.kind === 'cancel-guard')!
-  markFired(t, first.key)
-  ;(t.segments[1] as StaySegment).freeCancelUntil = resolveZoned({ local: '2026-10-02T12:00', zone: 'Europe/Berlin' })
-  expect(dueLifecycleEvents([t], at('2026-10-01T12:00:00Z')).map(e => e.kind)).toContain('cancel-guard')
-})
-
-test('a zoneless deadline is compared by date only, from the day before', () => {
-  const t = makeTrip()
-  ;(t.segments[1] as StaySegment).freeCancelUntil = { local: '2026-10-01T18:00' }
-  const on = (today: string) =>
-    dueLifecycleEvents([t], at(`${today}T12:00:00Z`), { today }).find(e => e.kind === 'cancel-guard')
-  expect(on('2026-09-29')).toBeUndefined()
-  const e = on('2026-09-30')!
-  expect(e.lines.join('\n')).toContain('zone is unknown')
-})
+// Free cancellation moved to cancelguard.ts; its tests are in cancelguard.test.ts.
 
 test('check-in fires when it opens, once, and not after the last hour', () => {
   const trips = [makeTrip()]

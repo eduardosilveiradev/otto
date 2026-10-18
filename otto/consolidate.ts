@@ -32,8 +32,11 @@ import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSy
 import { homedir } from 'os'
 import { join, basename } from 'path'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
+import { loadBurned, burnedMatcher } from './burn.ts'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
+/** Hashes of messages the user burned; any entry containing one never reaches a digest. */
+const BURNED_FILE = join(process.env.OTTO_STATE_DIR ?? join(homedir(), '.otto', 'state'), 'burned.json')
 
 export type Turn = { role: 'user' | 'assistant'; text: string }
 export type Digest = {
@@ -97,7 +100,7 @@ function isMachineSession(turns: Turn[]): boolean {
   return META_MARKERS.some(m => head.includes(m))
 }
 
-export function digestTranscript(path: string, project: string): Digest | null {
+export function digestTranscript(path: string, project: string, isBurned: (text: string) => boolean = () => false): Digest | null {
   if (project.includes(SELF_SLUG)) return null
   let raw: string
   try { raw = readFileSync(path, 'utf8') } catch { return null }
@@ -124,6 +127,8 @@ export function digestTranscript(path: string, project: string): Digest | null {
     const message = d.message as { content?: unknown } | undefined
     let text = textOf(message?.content).trim()
     if (!text) continue
+    // Before unwrapping and truncation: the secret may sit past the cut.
+    if (isBurned(text)) continue
     text = unwrapChannel(text)
     if (!text) continue
     if (text.length > TURN_MAX) text = text.slice(0, TURN_MAX) + '…'
@@ -215,8 +220,9 @@ export type ConsolidationPlan = {
 }
 
 /** Extract and stage digests. Separated from spawning so it can be inspected. */
-export function prepare(since: number, digestRoot: string, maxSessions = 40): ConsolidationPlan {
+export function prepare(since: number, digestRoot: string, maxSessions = 40, burnedFile = BURNED_FILE): ConsolidationPlan {
   const found = transcriptsSince(since).slice(0, maxSessions)
+  const isBurned = burnedMatcher(loadBurned(burnedFile))
   mkdirSync(digestRoot, { recursive: true })
   // Fresh dir each run — a leftover digest would be re-consolidated forever.
   for (const f of readdirSync(digestRoot)) {
@@ -224,7 +230,7 @@ export function prepare(since: number, digestRoot: string, maxSessions = 40): Co
   }
   const files: string[] = []
   for (const t of found) {
-    const d = digestTranscript(t.path, t.project)
+    const d = digestTranscript(t.path, t.project, isBurned)
     if (!d) continue
     const out = join(digestRoot, `${d.project}--${d.sessionId}.md`)
     writeFileSync(out, renderDigest(d))

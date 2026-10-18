@@ -43,6 +43,7 @@
 import { readFileSync, writeFileSync, renameSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { parseBirthday, describeBirthday, localDate } from './birthdays.ts'
 
 export type Direction = 'in' | 'out'
 
@@ -68,6 +69,8 @@ export type Person = {
   timezone?: string
   /** How the user knows them, in the user's own words: "lawyer in Munich". */
   relationship?: string
+  /** "MM-DD" or "YYYY-MM-DD", exactly as the user gave it. Never read off mail. */
+  birthday?: string
   /** Recent UTC offsets in minutes, newest last. Sampled, not averaged. */
   offsetSamples: number[]
   inbound: { first?: string; last?: string; count: number }
@@ -494,6 +497,8 @@ export type StatedFacts = {
   city?: string
   /** IANA zone. Only when the user said where they are, never guessed from a domain. */
   timezone?: string
+  /** "MM-DD" or "YYYY-MM-DD" — only what the user said, with the year only if they gave it. */
+  birthday?: string
   /** One thing worth keeping, in the user's words. */
   note?: string
   /** When it was said. Defaults to now. */
@@ -527,7 +532,7 @@ function pushUnique(list: string[] | undefined, value: string): string[] | undef
  */
 function stateScalar(
   p: Person,
-  key: 'relationship' | 'org' | 'city' | 'timezone',
+  key: 'relationship' | 'org' | 'city' | 'timezone' | 'birthday',
   value: string | undefined,
   at: string,
 ): void {
@@ -553,6 +558,11 @@ export function recordPerson(people: Person[], f: StatedFacts): Person {
   const name = f.name?.replace(/\s+/g, ' ').trim() ?? ''
   if (!email && !phone && !handle && !name) {
     throw new Error('recordPerson needs a name, email, phone or handle')
+  }
+  const birthday = f.birthday?.trim()
+  // Refused before anything is written, so a bad date never half-records a person.
+  if (birthday && !parseBirthday(birthday)) {
+    throw new Error(`birthday "${birthday}" is not MM-DD or YYYY-MM-DD`)
   }
 
   let p =
@@ -587,6 +597,7 @@ export function recordPerson(people: Person[], f: StatedFacts): Person {
   stateScalar(p, 'org', f.org, at)
   stateScalar(p, 'city', f.city, at)
   stateScalar(p, 'timezone', f.timezone, at)
+  stateScalar(p, 'birthday', birthday, at)
   if (f.note) pushNote(p, at, f.note)
 
   p.updatedAt = at
@@ -782,7 +793,7 @@ export function formatPerson(p: Person, now = Date.now()): string {
  */
 export function describePerson(
   p: Person,
-  o: { now?: number; yourOffsetMinutes?: number; maxNotes?: number } = {},
+  o: { now?: number; yourOffsetMinutes?: number; maxNotes?: number; userZone?: string } = {},
 ): string {
   const now = o.now ?? Date.now()
   const lines: string[] = [formatPerson(p, now)]
@@ -793,6 +804,14 @@ export function describePerson(
   if (p.timezone) {
     const offset = offsetForZone(p.timezone, new Date(now))
     lines.push(`${p.timezone}${offset === undefined ? '' : ` (${formatOffset(offset)} now)`}`)
+  }
+
+  if (p.birthday) {
+    // Their calendar decides whether it is today; the user's stands in when unplaced.
+    const userZone = o.userZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+    const today = (p.timezone ? localDate(p.timezone, new Date(now)) : undefined) ?? localDate(userZone, new Date(now))
+    const line = today ? describeBirthday(p.birthday, today) : undefined
+    if (line) lines.push(line)
   }
 
   if (o.yourOffsetMinutes !== undefined) {

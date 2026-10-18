@@ -1,9 +1,9 @@
 import { test, expect, afterAll } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, statSync, utimesSync, chmodSync, existsSync, readdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { parseMemory } from '../memory.ts'
-import { collect, readNotes, scopeLabel, summaryPrompt, buildHtml, explicitEdges, centre, neighbours, similarEdges, kmeans, chooseClusters, clusterKey, memberKey, embedPlan, embedKey, embedText, reuseLabel, clusterTerms, rankQuery, type Item } from '../memviewer.ts'
+import { collect, readNotes, scopeLabel, summaryPrompt, buildHtml, viewerData, searchMemory, searchPid, stopSearch, explicitEdges, centre, neighbours, similarEdges, kmeans, chooseClusters, clusterKey, memberKey, embedPlan, embedKey, embedText, reuseLabel, clusterTerms, rankQuery, type Item } from '../memviewer.ts'
 import { emptyStats } from '../recallstats.ts'
 
 const tmp = mkdtempSync(join(tmpdir(), 'otto-memviewer-'))
@@ -54,7 +54,10 @@ test('frontmatter, notes and recall stats come together as items', () => {
   expect(prompt).toContain('due 2026-05-30')
   expect(prompt).not.toContain('Old thing')         // closed loops stay out
 
-  const html = buildHtml(items, { text: '## Who they are\n</script>', note: '' }, new Date(now).toISOString())
+  const data = viewerData(items, { text: '## Who they are\n</script>', note: '' }, new Date(now).toISOString())
+  const html = buildHtml(data)
+  expect(html).toContain(data)
+  expect(JSON.parse(data).items).toEqual(items)     // the blob is plain JSON too
   expect(html).not.toContain('/*DATA*/')
   expect(html.match(/<\/script>/g)!.length).toBe(2)  // embedded data cannot close the tag
 })
@@ -159,4 +162,87 @@ test('a query ranks memories by centred cosine', () => {
   const r = rankQuery(v(0, 1, 0.1), mean, unit, 2)
   expect(r[0][0]).toBe(1)
   expect(r).toHaveLength(2)
+})
+
+test('a person links to the memories that name them, family roles in any language', async () => {
+  const { peopleCards } = await import('../memviewer.ts')
+  const item = (name: string, body: string) => ({ id: name, store: 'durable', kind: 'user', scope: 'global', name, description: '', body, updated: '2026-06-01', hits: 0 }) as Item
+  const items = [item('school-plan', 'Emailed papà about the fees.'), item('friends', 'Sees Lorenzo on Fridays.'), item('dadaist-art', 'Likes Dada posters.')]
+  const person = (name: string, relationship: string) => ({ id: name, name, relationship, addresses: [], aliases: [name], offsetSamples: [], inbound: { count: 2 }, outbound: { count: 0 }, contacts: [], updatedAt: '2026-06-01' })
+  items.push(item('school-sheet', 'Homework at school.'))
+  const [dad, lorenzo, giorgio] = peopleCards([person('Dad', 'their dad'), person('Lorenzo', 'friend'), person('Giorgio', 'school friend')], items)
+  expect(giorgio.mentions).toEqual([])     // "school" in the relationship is not a search term
+  expect(dad.mentions).toEqual([0])        // "papà" counts, "Dada" does not
+  expect(lorenzo.mentions).toEqual([1])    // "friend" is not a name to search for
+  expect(dad.inbound).toBe(2)
+})
+
+
+test('a build writes memory-viewer.json, 0600, byte-equal to the blob in the page', () => {
+  const home = join(tmp, 'home'), state = join(tmp, 'state')
+  mkdirSync(home); mkdirSync(state)
+  writeFileSync(join(state, 'notes.json'), JSON.stringify([{ id: 'n1', kind: 'fact', text: 'Likes </script> tea', tags: [], createdAt: '2026-05-01T00:00:00Z' }]))
+  // HOME is empty, so there is no claude CLI to call and no durable memory to read.
+  const r = Bun.spawnSync([process.execPath, join(import.meta.dir, '..', 'memviewer.ts'), '--no-labels'], { env: { ...process.env, HOME: home, OTTO_STATE_DIR: state, OTTO_EMBED_PYTHON: '' } })
+  expect(r.exitCode).toBe(0)
+  const json = readFileSync(join(state, 'memory-viewer.json'), 'utf8')
+  expect(readFileSync(join(state, 'memory-viewer.html'), 'utf8')).toContain(json)
+  expect(JSON.parse(json).items[0].body).toBe('Likes </script> tea')
+  expect(statSync(join(state, 'memory-viewer.json')).mode & 0o777).toBe(0o600)
+  expect(existsSync(join(state, 'memory-viewer.json.tmp'))).toBe(false)
+})
+
+const vec = (...v: number[]) => Buffer.from(new Float32Array(v).buffer).toString('base64')
+
+test('search by meaning: an error without an embedder, ranked results with one, killed when idle', async () => {
+  const dir = join(tmp, 'search')
+  mkdirSync(dir)
+  stopSearch()
+  expect('error' in await searchMemory('plumber', { dir })).toBe(true)   // nothing built yet
+
+  const items = [
+    { id: 'a', store: 'notes', kind: 'loop', scope: 'notes', name: 'Pay the plumber', description: '', body: 'Pay the plumber', updated: '', hits: 0 },
+    { id: 'b', store: 'notes', kind: 'fact', scope: 'notes', name: 'Likes tea', description: '', body: 'Likes tea', updated: '', hits: 0 },
+    { id: 'c', store: 'notes', kind: 'fact', scope: 'notes', name: 'Lives somewhere', description: '', body: 'Lives somewhere', updated: '', hits: 0 },
+  ] as Item[]
+  writeFileSync(join(dir, 'memory-viewer.json'), viewerData(items, { text: '', note: '' }, ''))
+  const writeVectors = (v: number[][]) => writeFileSync(join(dir, 'memory-embeddings.json'), JSON.stringify({
+    model: 'x', dim: 3, vectors: Object.fromEntries(items.map((it, i) => [embedKey(embedText(it)), vec(...v[i])])),
+  }))
+  writeVectors([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+
+  process.env.OTTO_EMBED_PYTHON = join(dir, 'missing-python')
+  expect(await searchMemory('plumber', { dir })).toEqual({ error: 'no embedder' })
+
+  // The stub embedder speaks memembed.py's protocol: "plumber" points one way, anything else another.
+  const stub = join(dir, 'stub.ts'), sh = join(dir, 'python')
+  writeFileSync(stub, `for await (const line of console) {
+  const { texts } = JSON.parse(line)
+  const v = new Float32Array(texts.flatMap(t => t.includes('plumber') ? [1, 0, 0] : [0, 1, 0]))
+  console.log(JSON.stringify({ dim: 3, device: 'cpu', vectors: Buffer.from(v.buffer).toString('base64') }))
+}`)
+  writeFileSync(sh, `#!/bin/sh\nexec "${process.execPath}" "${stub}"\n`)
+  chmodSync(sh, 0o755)
+  process.env.OTTO_EMBED_PYTHON = sh
+  try {
+    const r = await searchMemory('the plumber', { dir, idleMs: 300 }) as { results: [number, number][] }
+    expect(r.results[0][0]).toBe(0)
+    expect(r.results).toHaveLength(3)
+    expect(await searchMemory('  ', { dir })).toEqual({ results: [] })
+    const pid = searchPid()!
+    expect(pid).toBeGreaterThan(0)
+
+    // A rebuild that changes the vectors is picked up by mtime, without restarting the embedder.
+    writeVectors([[0, 0, 1], [1, 0, 0], [0, 1, 0]])
+    const later = new Date(Date.now() + 5000)
+    utimesSync(join(dir, 'memory-embeddings.json'), later, later)
+    expect(((await searchMemory('the plumber', { dir, idleMs: 300 })) as { results: [number, number][] }).results[0][0]).toBe(1)
+    expect(searchPid()).toBe(pid)
+
+    await Bun.sleep(500)
+    expect(searchPid()).toBeUndefined()
+    let alive = true
+    for (let n = 0; n < 20 && alive; n++) { try { process.kill(pid, 0); await Bun.sleep(50) } catch { alive = false } }
+    expect(alive).toBe(false)
+  } finally { stopSearch(); delete process.env.OTTO_EMBED_PYTHON }
 })

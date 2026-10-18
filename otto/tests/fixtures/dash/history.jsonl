@@ -1,0 +1,3 @@
+{"ts":"2026-03-14T08:57:00Z","dir":"out","chat_id":"1234567890","kind":"text","text":"morning brief","src":"trigger:trg1"}
+{"ts":"2026-03-14T09:10:00Z","dir":"in","chat_id":"1234567890","kind":"text","text":"thanks"}
+{"ts":"2026-03-14T15:00:00Z","dir":"out","chat_id":"1234567890","kind":"text","text":"an email needs you","src":"email-scan"}

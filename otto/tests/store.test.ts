@@ -83,3 +83,12 @@ test('formatNote surfaces the undo line for writes', () => {
   const w = notes.find(n => n.kind === 'write')!
   expect(formatNote(w)).toContain('undo: delete the "dentist" event')
 })
+
+test('an empty due clears the date and leaves the loop open', () => {
+  const notes = seed()
+  const loop = notes.find(n => n.text.startsWith('reply to Jony'))!
+  const { note } = upsertNote(notes, { id: loop.id, due: '', status: 'open' })
+  expect(note.due).toBeUndefined()
+  expect(note.status).toBe('open')
+  expect(note.deferrals).toBeUndefined()
+})

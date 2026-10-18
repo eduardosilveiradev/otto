@@ -289,7 +289,7 @@ test('a person summarises to one line with their rhythm and zone', () => {
 // ---------------------------------------------------------------------------
 
 test('a phone keeps its country code and refuses to invent one', () => {
-  expect(normalizePhone('+39 335 123 4567')).toBe('+393351234567')
+  expect(normalizePhone('+44 20 7946 0958')).toBe('+442079460958')
   expect(normalizePhone('(11) 98765-4321')).toBe('11987654321')
   expect(normalizePhone('12345')).toBe('')
   expect(normalizePhone('not a phone')).toBe('')
@@ -469,4 +469,62 @@ test('people round-trip through disk', () => {
   savePeople(file, people)
   expect(loadPeople(file)).toEqual(people)
   expect(loadPeople(join(tmp, 'nope.json'))).toEqual([])
+})
+
+// ---------------------------------------------------------------------------
+// Birthdays
+// ---------------------------------------------------------------------------
+
+test('a birthday is stored exactly as the user gave it', () => {
+  const people: Person[] = []
+  recordPerson(people, { name: 'Ana', birthday: '03-14' })
+  recordPerson(people, { name: 'Marco', birthday: ' 1986-10-16 ' })
+  expect(people.map(p => p.birthday)).toEqual(['03-14', '1986-10-16'])
+})
+
+test('a malformed birthday is refused before anything is recorded', () => {
+  const people: Person[] = []
+  expect(() => recordPerson(people, { name: 'Ana', birthday: '14/03' })).toThrow(/MM-DD or YYYY-MM-DD/)
+  expect(() => recordPerson(people, { name: 'Ana', birthday: '2023-02-29' })).toThrow(/MM-DD or YYYY-MM-DD/)
+  expect(people).toEqual([])
+})
+
+test('a corrected birthday replaces the old one and keeps it as a note', () => {
+  const people: Person[] = []
+  recordPerson(people, { name: 'Ana', birthday: '03-14', at: '2026-01-01T00:00:00.000Z' })
+  recordPerson(people, { name: 'Ana', birthday: '1990-03-15', at: '2026-02-01T00:00:00.000Z' })
+  expect(people[0].birthday).toBe('1990-03-15')
+  expect(people[0].notes).toEqual([{ at: '2026-02-01T00:00:00.000Z', text: 'birthday was 03-14' }])
+})
+
+test('who shows the birthday, with an age only when the year is known', () => {
+  const now = Date.parse('2026-10-13T15:00:00Z')
+  const people: Person[] = []
+  const marco = recordPerson(people, { name: 'Marco', birthday: '1986-10-16' })
+  const ana = recordPerson(people, { name: 'Ana', birthday: '10-16' })
+  expect(describePerson(marco, { now, userZone: 'America/Argentina/Buenos_Aires' })).toContain('birthday 16 Oct 1986 (age 39, in 3 days)')
+  const anaText = describePerson(ana, { now, userZone: 'America/Argentina/Buenos_Aires' })
+  expect(anaText).toContain('birthday 16 Oct (in 3 days)')
+  expect(anaText).not.toMatch(/age|turns/)
+})
+
+test('who counts "today" in the person\'s own zone', () => {
+  // 01:00 on the 16th in Tokyo, still the 15th for a user in Buenos Aires.
+  const now = Date.parse('2026-10-15T16:00:00Z')
+  const people: Person[] = []
+  const kenji = recordPerson(people, { name: 'Kenji', birthday: '1990-10-16', timezone: 'Asia/Tokyo' })
+  expect(describePerson(kenji, { now, userZone: 'America/Argentina/Buenos_Aires' })).toContain('birthday 16 Oct 1990 (36 today)')
+  delete kenji.timezone
+  expect(describePerson(kenji, { now, userZone: 'America/Argentina/Buenos_Aires' })).toContain('(age 35, tomorrow)')
+})
+
+test('mail never sets a birthday', () => {
+  const people: Person[] = []
+  ingestMessage(people, {
+    direction: 'in',
+    from: 'Ana <ana@x.com>',
+    date: 'Tue, 11 Aug 2026 09:00:00 +0000',
+    body: 'Happy birthday to me! My birthday is 03-14, born 1990-03-14.',
+  })
+  expect(people[0].birthday).toBeUndefined()
 })

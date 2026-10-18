@@ -1,0 +1,40 @@
+[
+  {
+    "id": "lume|lisbon",
+    "name": "Lume",
+    "city": "Lisbon",
+    "kind": "cafe",
+    "status": "loved",
+    "recommendedBy": "Alex",
+    "recommenderId": "alex@example.com",
+    "tags": ["brunch"],
+    "notes": [
+      { "at": "2026-02-01T10:00:00Z", "text": "Alex says the pastel is the best in town" },
+      { "at": "2026-03-01T10:00:00Z", "text": "status was want" }
+    ],
+    "createdAt": "2026-02-01T10:00:00Z",
+    "updatedAt": "2026-03-01T10:00:00Z"
+  },
+  {
+    "id": "taberna azul|lisboa",
+    "name": "Taberna Azul",
+    "city": "lisboa",
+    "kind": "restaurant",
+    "status": "avoid",
+    "tags": [],
+    "notes": [{ "at": "2026-02-10T10:00:00Z", "text": "never again, cold food" }],
+    "createdAt": "2026-02-10T10:00:00Z",
+    "updatedAt": "2026-02-10T10:00:00Z"
+  },
+  {
+    "id": "nightjar|london",
+    "name": "Nightjar",
+    "city": "London",
+    "kind": "bar",
+    "status": "want",
+    "tags": ["cocktails"],
+    "notes": [],
+    "createdAt": "2026-01-05T10:00:00Z",
+    "updatedAt": "2026-01-05T10:00:00Z"
+  }
+]

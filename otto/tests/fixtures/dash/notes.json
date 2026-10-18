@@ -1,0 +1,7 @@
+[
+  { "id": "n1", "kind": "loop", "text": "send the signed lease back", "tags": ["home"], "createdAt": "2026-03-01T09:00:00Z", "due": "2026-03-20", "status": "open", "source": "telegram" },
+  { "id": "n2", "kind": "loop", "text": "waiting on Sam for the slides", "tags": [], "createdAt": "2025-11-01T09:00:00Z", "status": "open", "source": "email:thread-1" },
+  { "id": "n3", "kind": "loop", "text": "renew the passport", "tags": [], "createdAt": "2026-02-01T09:00:00Z", "status": "done", "closedBy": "hygiene", "closedAt": "2026-03-10T05:00:00Z", "closedReason": "exact duplicate of another loop" },
+  { "id": "n4", "kind": "write", "text": "created calendar event: dentist", "tags": [], "createdAt": "2026-03-02T10:00:00Z", "status": "open", "undo": "delete the event 'dentist' on 2026-03-20", "source": "telegram" },
+  { "id": "n5", "kind": "fact", "text": "prefers aisle seats", "tags": ["travel"], "createdAt": "2026-01-05T10:00:00Z", "source": "telegram" }
+]

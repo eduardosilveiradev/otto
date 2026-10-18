@@ -23,6 +23,7 @@ import { join } from 'path'
 import { readHeartbeat, STALE_MS } from './heartbeat.ts'
 import { omittedSections, OMITTED_REBUILDS, type BriefRebuild, type ProbeName, type ProbeResult } from './watchdog.ts'
 import { readEnvKey } from './deadman.ts'
+import { domainStatus, peekDomains } from './domains.ts'
 
 export type Verdict = 'up' | 'degraded' | 'down' | 'off' | 'unknown'
 
@@ -79,6 +80,7 @@ type Access = {
   quietHours?: string
   webhook?: { port?: number; token?: string; host?: string }
   voice?: { enabled?: boolean }
+  domains?: string[]
 }
 
 type EmailState = { lastScan?: string; lastError?: { at: string; message: string } }
@@ -209,8 +211,47 @@ export async function collectStatus(d: StatusDeps): Promise<StatusRow[]> {
     })
   }
 
+  // --- Nightly backup -----------------------------------------------------
+  // Written by `backup.ts nightly` at 05:30: the archive, then the restore drill.
+  const bk = readJson<{ last?: BackupNight; lastOk?: BackupNight; failStreak?: number }>(join(stateDir, 'backup-state.json'))
+  if (!bk?.last) {
+    rows.push({ id: 'backup', label: 'Nightly backup', verdict: 'unknown', detail: 'has not run yet (05:30 nightly)' })
+  } else {
+    const lastAt = Date.parse(bk.last.at)
+    const okAt = Date.parse(bk.lastOk?.at ?? '')
+    const streak = bk.failStreak ?? 0
+    const good = Number.isNaN(okAt) ? 'never a good one' : `last good ${ago(now - okAt)} ago`
+    if (bk.last.ok) {
+      const age = now - lastAt
+      rows.push({
+        id: 'backup', label: 'Nightly backup', at: lastAt,
+        verdict: age > BACKUP_STALE_MS ? 'down' : age > BACKUP_LATE_MS ? 'degraded' : 'up',
+        detail: `${bk.last.files ?? '?'} files, drill passed, ${ago(age)} ago` + (age > BACKUP_LATE_MS ? ' (expected nightly)' : ''),
+      })
+    } else {
+      rows.push({
+        id: 'backup', label: 'Nightly backup', at: lastAt,
+        verdict: streak >= 3 ? 'down' : 'degraded',
+        detail: `failed ${streak} night(s) in a row: ${bk.last.error ?? 'no error recorded'}; ${good}`,
+      })
+    }
+  }
+  // --- Domain and TLS expiry ----------------------------------------------
+  // The only place a failed lookup is ever shown: it is retried tomorrow and
+  // never messaged.
+  const dom = domainStatus(
+    Array.isArray(access.domains) ? access.domains : [],
+    peekDomains(join(stateDir, 'domains.json')),
+    now,
+  )
+  rows.push({ id: 'domains', label: 'Domain expiry', verdict: dom.verdict, ...(dom.at ? { at: dom.at } : {}), detail: dom.detail })
+
   return rows
 }
+
+type BackupNight = { at: string; ok: boolean; files?: number; error?: string }
+const BACKUP_LATE_MS = 36 * 60 * 60_000
+const BACKUP_STALE_MS = 72 * 60 * 60_000
 
 const MARK: Record<Verdict, string> = { up: 'UP      ', degraded: 'DEGRADED', down: 'DOWN    ', off: 'off     ', unknown: 'unknown ' }
 

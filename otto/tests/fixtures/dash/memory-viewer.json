@@ -1,0 +1,15 @@
+{
+  "items": [
+    { "id": "alex-in-lisbon", "store": "durable", "kind": "user", "scope": "global", "name": "alex-in-lisbon", "description": "Alex lives in Lisbon now", "body": "Alex moved to Lisbon in January.", "updated": "2026-02-01", "source": "telegram", "hits": 2, "lastHitDays": 3 },
+    { "id": "note:n1", "store": "notes", "kind": "loop", "scope": "notes", "name": "send the signed lease back", "description": "due 2026-03-20", "body": "send the signed lease back", "updated": "2026-03-01", "status": "open", "due": "2026-03-20", "tags": ["home"], "source": "telegram", "undo": "nothing to undo", "hits": 0, "badge": "never" }
+  ],
+  "summary": { "text": "Mostly settled; one lease to send back.", "note": "Written by a model on 2026-03-14." },
+  "generatedAt": "2026-03-14T04:00:00Z",
+  "graph": {
+    "links": [[0, 1]], "similar": [[0, 1, 0.52, 1]], "floor": 0.3, "c": [0, 0], "noise": [],
+    "clusters": [{ "id": 0, "size": 2, "label": "Lisbon", "terms": ["lisbon", "lease"], "x": 0.1, "y": -0.2 }],
+    "note": ""
+  },
+  "people": [],
+  "scopes": { "global": "global", "notes": "notes" }
+}

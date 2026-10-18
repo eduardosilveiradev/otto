@@ -36,6 +36,12 @@ otto  →  a power bill came in, due friday. $214.
 - **Keeps track of the boring stuff.** Receipts become a spending ledger (per
   currency, never mixed), booking emails become trips with flight-day help in
   each airport's own timezone, calendar changes get noticed.
+- **Catches what slips.** Login codes reach you at once and delete themselves
+  afterwards. Mail asking for a password or a payment is checked for phishing
+  before it is shown to you. Parcels are tracked from courier mail, return and
+  warranty windows from receipts, promises you made in sent mail become open
+  loops, and you hear about birthdays, expiring documents and domains a few
+  days ahead.
 - **An iPhone app, if you want one.** The [Otto app](https://github.com/eduardosilveiradev/otto-app)
   (early beta, you build it yourself) is a second window onto the same chat,
   reached over Tailscale only — see [The iPhone app](#the-iphone-app).
@@ -155,6 +161,29 @@ show your own icon on the banner. Otto also pushes through Bark, even with the
 app open or on Telegram, when a message must not be missed: a reminder you set,
 a one-time code, a security alert. That sends the message text, cut to 1000
 characters, to Bark. Leave the key out and nothing leaves the computer.
+
+## The web dashboard
+
+Optional, and only for a browser on one of your own Tailscale devices. Otto
+answers a dashboard web app under `/app/dash/*`, on the same listener and the
+same `tailscale serve` path as the iPhone app, so nothing new is published.
+[otto/dash.ts](otto/dash.ts) is the API and
+[otto/dash-types.ts](otto/dash-types.ts) its wire contract; every answer is an
+explicit pick of the stored record, so a new field never leaks by accident.
+
+1. Allow the dashboard's origin: `bun otto/dash.ts allow https://<dashboard host>`
+   (`deny` and `list` too). Any other origin gets a 403 with no CORS headers.
+2. In the dashboard, enter the https address `tailscale serve status` prints. It
+   shows a pairing code; send `pair <code>` to Otto on Telegram or in the app,
+   check what is asking (origin, read or read + control, browser) and tap
+   approve. The token it mints is bound to that origin, works only under
+   `/app/dash/*`, and expires; `bun otto/apptokens.ts list` / `revoke <id>`.
+
+The Host header must be this machine's ts.net name (or a private LAN address),
+which stops DNS rebinding. Sending a chat message from the dashboard needs a
+read + control token. The calls pages answer 501 here: there is no phone
+relay in this repo. `bun otto/dash-dev.ts` runs the same API on a port of its
+own against your real state, with throwaway tokens, for working on a dashboard.
 
 ## Background work and your Claude plan
 
@@ -296,6 +325,26 @@ reported, not fixed.
 | Telegram poller, the session itself | `bash ~/.otto/scripts/otto-ctl.sh restart` |
 | gog auth | none unattended — `gog auth login` needs a browser, so it is reported |
 | email scan | none — reported only |
+
+**Backups.** At 05:30 [otto/backup.ts](otto/backup.ts) packs `~/.otto/state`
+(no logs, nothing over 20 MB) and the durable memory markdown
+(`~/.claude/memory/global`, every `~/.claude/projects/*/memory`) into one tar.gz
+with a sha256 manifest, encrypts it with AES-256-GCM, and keeps the newest
+`backup.keep` (default 14) in `backup.dir` (default `~/.otto/backups`), both in
+`access.json`. It then runs a restore drill on the archive it just wrote:
+decrypt into a temp dir, check every hash and that every `.json` parses, delete
+the temp dir. `otto_status` shows the last night; you hear about it only after
+three failed nights in a row. By hand:
+`bun otto/backup.ts run | list | verify <file> | restore <file> <dest>`;
+`restore` only extracts into an empty `dest` away from the live state. The key
+is created 0600 at `~/.otto/state/backup.key` on the first run: copy it
+somewhere off the machine, because without it every archive is unreadable.
+
+**Domain and TLS expiry.** List hostnames under `domains` in `access.json`.
+Once a day [otto/domains.ts](otto/domains.ts) reads each certificate's expiry
+off a TLS handshake and the registration expiry from RDAP (rdap.org). One
+warning at 30 days, one at 7 and one on expiry, per domain per expiry date; a
+failed lookup is retried the next day and shown only in `otto_status`.
 
 ## Upgrading, and going back
 

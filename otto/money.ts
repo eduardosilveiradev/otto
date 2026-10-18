@@ -48,7 +48,33 @@ export type MoneyRecord = {
   /** Card, account, "pix", "cash" — free text, whatever the receipt said. */
   method?: string
   note?: string
+  /** Goods bought from a retailer — what returns.ts reads to work out the
+   * return window and the warranty. Absent on everything else. */
+  purchase?: PurchaseFacts
   createdAt: string
+}
+
+/**
+ * The facts about a retail purchase that decide its return window and its
+ * warranty. Only what the receipt said: the deadlines themselves are worked out
+ * on read (returns.ts), because the delivery date they run from often arrives
+ * days after the receipt does.
+ */
+export type PurchaseFacts = {
+  /** What was bought, in words they would ask about: "headphones", "kettle". */
+  item?: string
+  /** Bought online, by phone or on the doorstep, or in a shop. Default online. */
+  channel?: 'online' | 'store'
+  /** Built to last (electronics, appliances) rather than used up. Default true. */
+  durable?: boolean
+  /** Whose consumer law applies. Default from the currency: EUR → EU, BRL → BR. */
+  jurisdiction?: 'EU' | 'BR'
+  /** The order number, which is how a shipment record finds this purchase. */
+  orderRef?: string
+  /** A return deadline the receipt states outright, YYYY-MM-DD. */
+  returnBy?: string
+  /** A warranty end the receipt states outright, YYYY-MM-DD. */
+  warrantyUntil?: string
 }
 
 /** Currencies whose minor unit is not 1/100. Everything else is assumed 2. */
@@ -192,8 +218,26 @@ export type MoneyInput = {
   source?: string
   method?: string
   note?: string
+  purchase?: PurchaseFacts
   /** Timezone for interpreting a timestamped date. */
   tz?: string
+}
+
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/
+
+/** Keep only the fields that mean something; a bad date is dropped, not stored. */
+export function cleanPurchase(p: PurchaseFacts): PurchaseFacts {
+  const item = p.item?.trim()
+  const orderRef = p.orderRef?.trim()
+  return {
+    ...(item ? { item } : {}),
+    ...(p.channel === 'online' || p.channel === 'store' ? { channel: p.channel } : {}),
+    ...(typeof p.durable === 'boolean' ? { durable: p.durable } : {}),
+    ...(p.jurisdiction === 'EU' || p.jurisdiction === 'BR' ? { jurisdiction: p.jurisdiction } : {}),
+    ...(orderRef ? { orderRef } : {}),
+    ...(p.returnBy && ISO_DAY.test(p.returnBy) ? { returnBy: p.returnBy } : {}),
+    ...(p.warrantyUntil && ISO_DAY.test(p.warrantyUntil) ? { warrantyUntil: p.warrantyUntil } : {}),
+  }
 }
 
 /**
@@ -208,7 +252,7 @@ export type MoneyInput = {
 export function recordMoney(
   records: MoneyRecord[],
   input: MoneyInput,
-): { records: MoneyRecord[]; record: MoneyRecord; created: boolean } {
+): { records: MoneyRecord[]; record: MoneyRecord; created: boolean; updated?: boolean } {
   const merchant = input.merchant?.trim()
   if (!merchant) throw new Error('merchant is required')
   if (!Number.isFinite(input.amount)) throw new Error('amount must be a number')
@@ -224,7 +268,15 @@ export function recordMoney(
         r.amount === input.amount && r.currency === currency && r.date === date &&
         (r.note ?? '') === (input.note ?? ''),
   )
-  if (existing) return { records, record: existing, created: false }
+  if (existing) {
+    // The first scan logged the charge; a later pass that knows it was goods
+    // from a retailer adds that rather than being turned away as a duplicate.
+    if (input.purchase && !existing.purchase) {
+      existing.purchase = cleanPurchase(input.purchase)
+      return { records, record: existing, created: false, updated: true }
+    }
+    return { records, record: existing, created: false }
+  }
 
   const record: MoneyRecord = {
     id: moneyId(),
@@ -236,6 +288,7 @@ export function recordMoney(
     ...(input.source ? { source: input.source } : {}),
     ...(input.method ? { method: input.method } : {}),
     ...(input.note ? { note: input.note } : {}),
+    ...(input.purchase ? { purchase: cleanPurchase(input.purchase) } : {}),
     createdAt: new Date().toISOString(),
   }
   records.push(record)
@@ -360,13 +413,26 @@ export function formatMoney(amount: number, currency: string): string {
   }
 }
 
-export function formatTotals(totals: CurrencyTotal[]): string {
-  if (!totals.length) return '(nothing recorded)'
-  return totals.map(t => `${formatMoney(t.total, t.currency)} (${t.count})`).join(' · ')
+/**
+ * Something that writes a note beside an amount — fx.ts's approximate
+ * home-currency figure. It returns '' when it has nothing to say, and it only
+ * ever decorates one amount: the totals it sits beside stay per currency.
+ */
+export type Annotate = (amount: number, currency: string) => string
+
+/** An amount, and its annotation when there is one. */
+export function formatAmount(amount: number, currency: string, fx?: Annotate): string {
+  const note = fx?.(amount, currency)
+  return note ? `${formatMoney(amount, currency)} ${note}` : formatMoney(amount, currency)
 }
 
-export function formatRecord(r: MoneyRecord): string {
-  const bits = [r.date, formatMoney(r.amount, r.currency), r.merchant]
+export function formatTotals(totals: CurrencyTotal[], fx?: Annotate): string {
+  if (!totals.length) return '(nothing recorded)'
+  return totals.map(t => `${formatAmount(t.total, t.currency, fx)} (${t.count})`).join(' · ')
+}
+
+export function formatRecord(r: MoneyRecord, fx?: Annotate): string {
+  const bits = [r.date, formatAmount(r.amount, r.currency, fx), r.merchant]
   if (r.category) bits.push(`#${r.category}`)
   return bits.join(' · ')
 }

@@ -51,6 +51,14 @@ export type Note = {
   reopenedAt?: string
   /** loop: when its due date was pushed later, newest last. Avoidance evidence. */
   deferrals?: string[]
+  /** fact: a stable name for what the fact is about ("home.city", "school"), so
+   * a new value replaces the old one instead of sitting beside it. */
+  key?: string
+  /** fact: when it was last said to be true. Absent on facts written before this
+   * existed — those count from createdAt. */
+  confirmedAt?: string
+  /** fact: the id of the fact that replaced this one. Kept on disk, hidden from search. */
+  supersededBy?: string
 }
 
 /** More than this is a loop nobody is going to finish; the tail adds nothing. */
@@ -116,8 +124,15 @@ export function upsertNote(
       ...(patch.closedReason !== undefined ? { closedReason: patch.closedReason } : {}),
       ...(patch.closedBy !== undefined ? { closedBy: patch.closedBy } : {}),
       ...(patch.closedAt !== undefined ? { closedAt: patch.closedAt } : {}),
+      ...(patch.key !== undefined ? { key: patch.key } : {}),
+      ...(patch.supersededBy !== undefined ? { supersededBy: patch.supersededBy } : {}),
+      ...(patch.confirmedAt !== undefined ? { confirmedAt: patch.confirmedAt } : {}),
+      // Rewriting a fact's text is saying it again.
+      ...(existing.kind === 'fact' && patch.text !== undefined && patch.confirmedAt === undefined ? { confirmedAt: now } : {}),
       updatedAt: now,
     })
+    // An empty due clears it: "still live" keeps the loop without a date.
+    if (patch.due === '') delete existing.due
     return { notes, note: existing, created: false }
   }
   if (!patch.kind) throw new Error('kind is required when creating a note')
@@ -137,6 +152,8 @@ export function upsertNote(
         : {}),
     ...(patch.source ? { source: patch.source } : {}),
     ...(patch.undo ? { undo: patch.undo } : {}),
+    ...(patch.key ? { key: patch.key } : {}),
+    ...(patch.kind === 'fact' ? { confirmedAt: patch.confirmedAt ?? now } : {}),
   }
   notes.push(note)
   return { notes, note, created: true }
@@ -150,9 +167,9 @@ export function upsertNote(
  */
 export function searchNotes(
   notes: Note[],
-  opts: { query?: string; kind?: NoteKind; tag?: string; includeClosed?: boolean; limit?: number } = {},
+  opts: { query?: string; kind?: NoteKind; tag?: string; includeClosed?: boolean; includeSuperseded?: boolean; limit?: number } = {},
 ): Note[] {
-  const { query, kind, tag, includeClosed = false, limit = 20 } = opts
+  const { query, kind, tag, includeClosed = false, includeSuperseded = false, limit = 20 } = opts
   const terms = (query ?? '')
     .toLowerCase()
     .split(/\s+/)
@@ -162,8 +179,10 @@ export function searchNotes(
     if (kind && n.kind !== kind) return false
     if (tag && !n.tags.includes(tag)) return false
     if (!includeClosed && n.status && n.status !== 'open') return false
+    // A replaced fact is history, not an answer.
+    if (!includeSuperseded && n.supersededBy) return false
     if (!terms.length) return true
-    const hay = `${n.text} ${n.tags.join(' ')} ${n.source ?? ''}`.toLowerCase()
+    const hay = `${n.text} ${n.tags.join(' ')} ${n.source ?? ''} ${n.key ?? ''}`.toLowerCase()
     return terms.every(t => hay.includes(t))
   })
 
@@ -182,12 +201,15 @@ export function searchNotes(
 export function formatNote(n: Note): string {
   const bits = [`[${n.id}] ${n.kind}`]
   if (n.status && n.status !== 'open') bits.push(`(${n.status})`)
+  if (n.supersededBy) bits.push(`(superseded by ${n.supersededBy})`)
+  if (n.key) bits.push(`{${n.key}}`)
   if (n.due) bits.push(`due ${n.due}`)
   if (n.tags.length) bits.push(`#${n.tags.join(' #')}`)
   const head = bits.join(' ')
   const tail = (n.undo ? `\n      undo: ${n.undo}` : '') +
     (n.closedReason ? `\n      closed: ${n.closedReason}` : '')
-  return `${head} — ${n.text}${tail}`
+  const via = n.kind === 'fact' && n.source ? ` (via ${n.source})` : ''
+  return `${head} — ${n.text}${via}${tail}`
 }
 
 /** Loops that are open and either overdue or coming due inside `withinMs`. */
