@@ -564,7 +564,8 @@ const routes: Record<string, Route> = {
   },
 
   'POST calls/listen': {
-    scope: 'read', run: async c => {
+    // Live audio of a call is control, not a read: the 90-day read token must not be able to listen in.
+    scope: 'write', run: async c => {
       const b = await readJson(c.req)
       if (!('body' in b)) return reply(c, { error: b.error }, b.status)
       if (typeof b.body.id !== 'string' || !CALL_ID_RE.test(b.body.id)) return reply(c, { error: 'id' }, 400)

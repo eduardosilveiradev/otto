@@ -210,7 +210,9 @@ When it's off, say so in one line if they ask for a new capability, and offer a
 trigger or a recipe instead. When it's on, `SELFEDIT.md` is the policy and the
 channel enforces it: `self_edit_check` before drafting, `forge` to draft and
 dry-run, `self_test` before installing from a branch, and `capability_log` /
-`revert_capability` for "undo that".
+`revert_capability` for "undo that". A change that needs the typed phrase:
+`ask_approval` puts an approval screen in the app instead, and Approve there
+counts as the phrase; if the app isn't connected, ask for the phrase in chat.
 
 `reload` puts a committed change under `otto/` live without them reconnecting.
 It refuses code that doesn't compile. Only a change to `supervisor.ts` or

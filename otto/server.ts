@@ -88,7 +88,7 @@ import {
   freshState as freshOriginState, onWake, taint, effectiveOrigin, recordTyped,
   currentProof, describeOrigin, type OriginState, type Wake,
 } from './origin.ts'
-import { classify, describeTier, type Origin, type Proof } from './selfedit.ts'
+import { classify, describeTier, tierForPath, TYPED_PHRASE, type Origin, type Proof } from './selfedit.ts'
 import {
   createJob, applyEvent, scheduleJobs, spawnJob, loadJobs, saveJobs, updateJob,
   pruneJobs, formatJobs, formatJob, parseQuietHours, JOBS_FILE, SCRATCH_ROOT,
@@ -1971,6 +1971,8 @@ type RuntimeState = {
   lastDomainCheckDay?: string
   /** Boot timestamps, newest last. Crash-loop detection reads these. */
   recentStarts?: number[]
+  /** Set by `reload` just before it exits: the next boot is planned, not a crash. */
+  plannedRestartAt?: number
   /** What the watchdog thought of each probe last tick. */
   probeStates?: ProbeState[]
   /** Which sections the last few briefs managed to build. */
@@ -2852,6 +2854,12 @@ async function watchdogTick(): Promise<void> {
  */
 async function triageStartup(): Promise<void> {
   const rt = loadRuntimeState()
+  // A reload is a restart someone asked for; counting it made three reloads read as a crash loop.
+  if (rt.plannedRestartAt && Date.now() - rt.plannedRestartAt < 60_000) {
+    const { plannedRestartAt: _, ...rest } = rt
+    saveRuntimeState(rest)
+    return
+  }
   const starts = [...(rt.recentStarts ?? []), Date.now()].slice(-10)
   saveRuntimeState({ ...rt, recentStarts: starts })
 
@@ -3975,6 +3983,23 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         'One read-only report of whether each moving part is up — this server, trigger engine, email scan, webhook, voice daemon, gog auth, connectors, nightly backup, domain expiry — each with the time of its last evidence and a plain verdict. Use it when they ask if you are working. Repairs nothing.',
       inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'ask_approval',
+      title: 'Ask for approval in the app',
+      annotations: { title: 'Ask for approval', readOnlyHint: false, openWorldHint: false },
+      description:
+        'For a change that needs the typed phrase: show the user an approval screen in the Otto app instead — what it does, every file with its tier, and the diff stat of `branch` against main, which the server computes itself. Approve there counts exactly as typing the phrase; the answer comes back as a button event. If the app is not connected it says so: then ask for the typed phrase as before. Show them the change first; never ask for approval of something they have not seen.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'A few words: what the change is.' },
+          summary: { type: 'string', description: 'What it changes and why, plainly, a few short lines. They decide on this.' },
+          paths: { type: 'array', items: { type: 'string' }, description: 'Every file the change touches.' },
+          branch: { type: 'string', description: 'The branch holding the change, for the diff stat.' },
+        },
+        required: ['title', 'summary', 'paths'],
+      },
     },
     {
       name: 'reload',
@@ -5128,6 +5153,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const why = build.logs.map(l => String(l.message ?? l)).slice(0, 5).join('\n')
           return { content: [{ type: 'text', text: `not reloading — the code on disk does not compile:\n${why}` }], isError: true }
         }
+        saveRuntimeState({ ...loadRuntimeState(), plannedRestartAt: Date.now() })
         setTimeout(shutdown, 300) // after this reply is out
         return { content: [{ type: 'text', text: 'reloading — back in a few seconds' }] }
       }
@@ -5136,6 +5162,34 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const deps = statusDeps()
         const rows = await collectStatus(deps)
         return { content: [{ type: 'text', text: formatStatus(rows, deps.now, recentRepairLines(STATE_DIR)) }] }
+      }
+
+      case 'ask_approval': {
+        const paths = (Array.isArray(args.paths) ? args.paths : []).map(String).filter(Boolean)
+        const title = String(args.title ?? '').trim().slice(0, 80)
+        const summary = String(args.summary ?? '').trim().slice(0, 1500)
+        if (!paths.length || !title || !summary) throw new Error('title, summary and paths are required')
+        const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
+        if (!selfEditEnabled()) return text(SELF_EDIT_OFF)
+        // Approval stands in for the typed phrase and nothing else, so it can't clear what the phrase can't.
+        if (effectiveOrigin(origin) !== 'user-typed') return text(`no approval can clear this turn — ${describeOrigin(origin)}`)
+        const tier = classify(paths, 'user-typed', { kind: 'none' })
+        if (tier.allowed) return text('nothing to approve — this change is allowed as it stands')
+        if (tier.tier !== 'guarded') return text(`this needs ${tier.tier}, not the typed phrase: offer it as a button`)
+        if (!appSockets.size) return text(`the app isn't connected — ask them to type "${TYPED_PHRASE}" in chat instead`)
+        const branch = typeof args.branch === 'string' && /^[\w./-]{1,100}$/.test(args.branch) ? args.branch : undefined
+        let stat: string | undefined
+        if (branch) {
+          const r = Bun.spawnSync(['git', 'diff', '--stat=60', '--no-color', `main...${branch}`], { cwd: REPO_ROOT })
+          stat = r.exitCode === 0 ? r.stdout.toString().trim().split('\n').slice(-30).join('\n').slice(0, 2500) || undefined : undefined
+        }
+        const a: Approval = { id: randomBytes(6).toString('hex'), title, summary, at: Date.now(),
+          files: paths.map(p => ({ path: p, ...tierForPath(p) })), ...(branch ? { branch } : {}), ...(stat ? { stat } : {}) }
+        approvals.set(a.id, a)
+        const frame = approvalFrame(a)
+        for (const ws of appSockets) ws.send(frame)
+        barkPush(`approve? ${title}`)
+        return text(`approval screen is up in the app (${a.id}). Their answer arrives as a button event; the typed phrase still works too.`)
       }
 
       case 'self_edit_check': {
@@ -5152,6 +5206,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           decision.reason,
           ...(!selfEditEnabled() && paths.some(p => !PARAM_PATH.test(p)) ? ['', SELF_EDIT_OFF] : []),
           ...(decision.because.length ? ['', 'because:', ...decision.because.map(b => `  ${b}`)] : []),
+          ...(!decision.allowed && decision.tier === 'guarded' && appSockets.size ? ['', 'the app is connected: ask_approval shows them an approval screen instead of asking for the phrase'] : []),
         ]
         return { content: [{ type: 'text', text: lines.join('\n') }] }
       }
@@ -6195,6 +6250,7 @@ function startWebhook(retry = true): void {
         open: ws => {
           appSockets.add(ws)
           for (const frame of appPending.splice(0)) ws.send(frame)
+          for (const a of liveApprovals()) ws.send(approvalFrame(a))
           const steps = liveSteps.snapshot()
           if (steps) ws.send(steps)
           if (appTyping) ws.send(JSON.stringify({ type: 'typing', on: true }))
@@ -6335,8 +6391,8 @@ async function otpFastLane(text: string): Promise<Otp[]> {
     const line = formatOtp(o)
     try {
       const m = await bot.api.sendMessage(chat_id, line)
-      // isArchive 0: a code should not outlive its Telegram message in Bark's history.
-      barkPush(line, true, { isArchive: 0 })
+      // The push names the sender, never the code: Bark's server would see it in plain text.
+      barkPush(o.sender ? `code from ${o.sender}` : 'a verification code', true, { isArchive: 0 })
       recordOtpSent(state, o, now)
       if (cfg.deleteAfterMs > 0) scheduleOtpDelete(state, chat_id, m.message_id, now + cfg.deleteAfterMs)
       // History keeps that a code went out, never the code.
@@ -6614,6 +6670,35 @@ function triggerWriteRefused() {
   return { content: [{ type: 'text' as const, text: `not writing a trigger — ${describeOrigin(origin)}. Offer it to the user with a button instead; a tap from them is a fresh request.` }], isError: true }
 }
 
+/**
+ * The typed phrase as a screen in the app: a change, its files and tiers, and a diff stat the
+ * server worked out itself. Approve is the user (a native app token) and sets the same proof
+ * the phrase does. Kept in memory: a reload drops pending ones, and the app is told so on
+ * reconnect by their absence.
+ */
+type Approval = { id: string; title: string; summary: string; files: { path: string; tier: string; why: string }[]; branch?: string; stat?: string; at: number }
+const APPROVAL_TTL_MS = 30 * 60_000
+const approvals = new Map<string, Approval>()
+const approvalFrame = (a: Approval) => JSON.stringify({ type: 'approval', ...a, expires: new Date(a.at + APPROVAL_TTL_MS).toISOString() })
+function liveApprovals(): Approval[] {
+  for (const [id, a] of approvals) if (Date.now() - a.at > APPROVAL_TTL_MS) approvals.delete(id)
+  return [...approvals.values()]
+}
+function decideApproval(id: string, approve: boolean): void {
+  const a = liveApprovals().find(x => x.id === id)
+  if (!a) return
+  approvals.delete(id)
+  for (const ws of appSockets) ws.send(JSON.stringify({ type: 'approval_done', id }))
+  if (!approve) {
+    injectEvent('button', `declined in the app: ${a.title} — don't make this change`, { chat_id: APP_CHAT, button_label: 'Decline' })
+    return
+  }
+  injectEvent('button', `approved in the app: ${a.title}`, { chat_id: APP_CHAT, button_label: 'Approve' })
+  // After the stamp, which a tap makes user-typed: the same proof the typed phrase leaves.
+  origin = { ...origin, typedProof: { at: Date.now(), text: TYPED_PHRASE } }
+  saveOrigin()
+}
+
 /** Bumped per status line, so a late Haiku label only lands if it's still the newest. */
 let statusSeq = 0
 
@@ -6873,9 +6958,13 @@ async function appUpload(req: Request, url: URL): Promise<Response> {
 }
 
 function appFrame(raw: string): void {
-  let f: { type?: unknown; text?: unknown; data?: unknown; label?: unknown; id?: unknown; reply_to?: unknown; emoji?: unknown; shared?: unknown }
+  let f: { type?: unknown; text?: unknown; data?: unknown; label?: unknown; id?: unknown; reply_to?: unknown; emoji?: unknown; shared?: unknown; decision?: unknown }
   try { f = JSON.parse(raw) } catch { return }
   const id = typeof f.id === 'string' && f.id ? f.id.slice(0, 64) : undefined
+  if (f.type === 'approval' && id && (f.decision === 'approve' || f.decision === 'decline')) {
+    decideApproval(id, f.decision === 'approve')
+    return
+  }
   if (f.type === 'message' && typeof f.text === 'string' && f.text.trim()) {
     const shared = f.shared === true
     appInbound(f.text.trim(), { ...appReplyMeta(f.reply_to), ...(shared ? { shared: '1' } : {}) }, 'text', id,

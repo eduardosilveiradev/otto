@@ -782,9 +782,11 @@ test('calls: controls need control and a known action; the relay\'s refusal read
   expect(calls.filter(c => c.name === 'relay').length).toBe(2)
 })
 
-test('calls: listening takes only a read token and hands back the relay\'s one-time URL', async () => {
-  const r = await call('calls/listen', { method: 'POST', token: dashToken('read').token, body: { id: 'call-0001' } })
+test('calls: listening takes a control token and hands back the relay\'s one-time URL', async () => {
+  const r = await call('calls/listen', { method: 'POST', token: dashToken('write').token, body: { id: 'call-0001' } })
   expect(await r.json()).toEqual({ url: 'wss://relay/listen/abc' })
+  const ro = await call('calls/listen', { method: 'POST', token: dashToken('read').token, body: { id: 'call-0001' } })
+  expect(ro.status).toBe(403)
 })
 
 test('calls: no relay configured answers 501, an unreachable one 503', async () => {
