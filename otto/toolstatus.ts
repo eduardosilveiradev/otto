@@ -14,7 +14,7 @@ export function statusLabel(tool: string, input: Record<string, unknown>): strin
     case 'Glob': return `Looking for ${str('pattern')}`
     case 'WebSearch': return `Searching the web for ${str('query')}`
     case 'WebFetch': { try { return `Reading ${new URL(str('url')).hostname}` } catch { return 'Reading a web page' } }
-    case 'Agent': case 'Task': return str('description') || 'Handing off a job'
+    case 'Agent': case 'Task': return str('description') ? `Subagent: ${str('description')}` : 'Starting a subagent'
     case 'ToolSearch': case 'TodoWrite': return ''
   }
   const m = /^mcp__(.+?)__(.+)$/.exec(tool)

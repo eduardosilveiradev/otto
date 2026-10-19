@@ -20,6 +20,8 @@ test('connectors read as what they check', () => {
   expect(statusLabel('mcp__claude_ai_Gmail__search_threads', {})).toBe('Checking mail')
   expect(statusLabel('mcp__plugin_otto_otto__recall', {})).toBe('Remembering')
   expect(statusLabel('mcp__plugin_otto_otto__reload', {})).toBe('Restarting with the update')
+  expect(statusLabel('Agent', { description: 'iOS app security review' })).toBe('Subagent: iOS app security review')
+  expect(statusLabel('Agent', {})).toBe('Starting a subagent')
   expect(statusLabel('mcp__thing__do_stuff', {})).toBe('Do stuff')
 })
 
