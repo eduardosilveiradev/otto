@@ -6253,7 +6253,8 @@ function startWebhook(retry = true): void {
           for (const a of liveApprovals()) ws.send(approvalFrame(a))
           const steps = liveSteps.snapshot()
           if (steps) ws.send(steps)
-          if (appTyping) ws.send(JSON.stringify({ type: 'typing', on: true }))
+          // Always, on or off: after a restart the app may still be showing the old server's dots.
+          ws.send(JSON.stringify({ type: 'typing', on: appTyping }))
         },
         close: ws => { appSockets.delete(ws) },
         message: (ws, raw) => {
@@ -6545,8 +6546,10 @@ let lastAppOut = 0
  * the app still queued behind it. A reply doesn't end them — Otto often answers and keeps going.
  */
 let appTyping = false
-function setAppTyping(on: boolean): void {
-  if (on === appTyping) return
+/** `force`: send even when unchanged. The turn's end says "off" outright, so a restart or a
+ *  missed "on" (both have left a status stuck on screen) can never strand the dots. */
+function setAppTyping(on: boolean, force = false): void {
+  if (on === appTyping && !force) return
   appTyping = on
   chatFeed.setTyping(on)
   const frame = JSON.stringify({ type: 'typing', on })
@@ -6628,7 +6631,7 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   if (h.hook_event_name === 'Stop') {
     closeTurn()
     liveSteps.finish()
-    if (!unreadApp.size) setAppTyping(false)
+    if (!unreadApp.size) setAppTyping(false, true)
     return new Response(null, { status: 204 })
   }
   const waiting = appTyping || (lastInbound.get(APP_CHAT) ?? 0) > lastAppOut
