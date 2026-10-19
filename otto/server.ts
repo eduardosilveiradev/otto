@@ -6655,6 +6655,10 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   }
   if (appSockets.size === 0) return new Response(null, { status: 204 })
   if (text) {
+    // A status means Otto is working, so the dots are on: otherwise a turn started by a tap
+    // (never marked typing) left its last step on screen after the reply, until the app's
+    // 15-minute safety net, because the Stop hook had no "typing on" to turn off.
+    setAppTyping(true)
     const frame = JSON.stringify({ type: 'status', text })
     for (const ws of appSockets) ws.send(frame) // live only: never queued, it's stale by the next connect
   }
