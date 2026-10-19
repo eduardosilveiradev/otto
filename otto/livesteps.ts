@@ -46,6 +46,14 @@ export class LiveSteps {
     this.changed()
   }
 
+  /** A late, better label for a step already shown (the most recent one with `from`). */
+  relabel(from: string, to: string): void {
+    if (!this.task || !to) return
+    for (let i = this.task.steps.length - 1; i >= 0; i--) {
+      if (this.task.steps[i].label === from) { this.task.steps[i].label = to; this.changed(); return }
+    }
+  }
+
   /** The latest screenshot, base64 JPEG. Dropped when no task is running. */
   screenshot(jpeg: string): void {
     if (!this.task || this.task.done) return

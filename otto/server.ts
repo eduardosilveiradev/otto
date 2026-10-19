@@ -177,6 +177,7 @@ import {
 import { homedir, tmpdir } from 'os'
 import { join, extname, sep, isAbsolute, dirname, basename, resolve } from 'path'
 import { statusLabel } from './toolstatus.ts'
+import { wantsPolish, polishStatus } from './statuspolish.ts'
 import { LiveSteps, findImage, shrinkScreenshot } from './livesteps.ts'
 import { promptSnippet } from './terminalprompt.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
@@ -6520,8 +6521,21 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
     if (img) void shrinkScreenshot(img).then(jpeg => { if (jpeg) liveSteps.screenshot(jpeg) })
     return new Response(null, { status: 204 })
   }
-  const text = statusLabel(String(h.tool_name ?? ''), h.tool_input ?? {})
+  const tool = String(h.tool_name ?? '')
+  const text = statusLabel(tool, h.tool_input ?? {})
   liveSteps.step(text) // kept with no socket open too: a reconnect mid-task gets the whole list
+  const seq = ++statusSeq
+  // A bare "Remembering" or a tool's own name: Haiku says what it's about, and the
+  // better line replaces the bare one, in the bubble only if nothing newer took over.
+  if (wantsPolish(tool, text)) {
+    void polishStatus(tool, redactSecrets(JSON.stringify(h.tool_input ?? {})).text).then(better => {
+      if (!better) return
+      liveSteps.relabel(text, better)
+      if (seq !== statusSeq) return
+      const frame = JSON.stringify({ type: 'status', text: better })
+      for (const ws of appSockets) ws.send(frame)
+    })
+  }
   if (appSockets.size === 0) return new Response(null, { status: 204 })
   if (text) {
     const frame = JSON.stringify({ type: 'status', text })
@@ -6530,6 +6544,9 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   process.stderr.write(`otto channel: status ${text ? `"${text}" to ${appSockets.size} socket(s)` : 'skipped'}\n`)
   return new Response(null, { status: 204 })
 }
+
+/** Bumped per status line, so a late Haiku label only lands if it's still the newest. */
+let statusSeq = 0
 
 /** App messages not yet seen in the transcript, i.e. still queued behind whatever Otto is doing. */
 const unreadApp = new Set<string>()
