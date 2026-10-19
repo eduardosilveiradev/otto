@@ -383,6 +383,21 @@ const HINT_MIN_SCORE = 14
 const HINT_LIMIT = 3
 const HINT_STALE_DAYS = 30
 
+/** Handles already in this session's context, from memhints.jsonl lines stamped with its `sess`:
+ *  offered as hints, opened by handle, or returned by a recall. Survives the server reloading. */
+export function seenFromLog(log: string, sess: number): Set<string> {
+  const seen = new Set<string>()
+  for (const line of log.split('\n')) {
+    if (!line.includes(`"sess":${sess},`) && !line.includes(`"sess":${sess}}`)) continue
+    try {
+      const j = JSON.parse(line)
+      if (j.sess !== sess) continue
+      for (const h of [...(j.offered ?? []), ...(j.opened ?? []), ...(j.returned ?? [])]) seen.add(h)
+    } catch {}
+  }
+  return seen
+}
+
 /**
  * The line that rides on an inbound message as mem="…", or "" — which is most
  * messages. It sits at the end of the context so the prompt cache survives, and

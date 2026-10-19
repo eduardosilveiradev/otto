@@ -73,8 +73,8 @@ import {
 import { checkAppToken, isLiveAppToken, loadAppTokens, touchAppToken } from './apptokens.ts'
 import {
   loadMemories, searchMemories, writeMemory, deleteMemory, formatHit,
-  memHints, memHandle, HANDLE_RE,
-  type MemoryType, type SearchHit,
+  memHints, memHandle, HANDLE_RE, seenFromLog,
+  type Memory, type MemoryType, type SearchHit,
 } from './memory.ts'
 import {
   runHygiene, resolveConfig, formatHygieneEvent, formatPlan, recentClosures, isSilent, hygieneDue,
@@ -4484,7 +4484,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (handles.length && handles.every(h => HANDLE_RE.test(h))) {
           const wanted = new Set(handles)
           const found = loadMemories().filter(m => wanted.has(memHandle(m)))
-          try { appendFileSync(MEMHINTS_FILE, JSON.stringify({ ts: new Date().toISOString(), opened: handles }) + '\n', { mode: 0o600 }) } catch {}
+          markSeen('opened', found, handles)
           return { content: [{ type: 'text', text: found.length
             ? `MEMORY (durable, all sessions)\n${found.map(m => formatHit({ memory: m, score: 0 }, true)).join('\n\n')}`
             : `(no memory with handle ${handles.join(', ')})` }] }
@@ -4497,6 +4497,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             ...(args.scope ? { scope: scopeSlug(String(args.scope)) } : {}),
             limit,
           })
+          markSeen('returned', hits.map(h => h.memory))
           if (hits.length) {
             sections.push(`MEMORY (durable, all sessions)\n${hits.map(h => formatHit(h, Boolean(args.full))).join('\n')}`)
           }
@@ -6815,14 +6816,34 @@ function appFrame(raw: string): void {
 
 /** handleInbound's bookkeeping, minus everything Telegram-specific. */
 /** desk="at desk 12m" / "away 1h05" on what they send, when a presence watcher runs on this Mac. */
-/** Memories offered once per process, so a long session never sees the same hint twice. */
-const hintSeen = new Set<string>()
+/** Memories already in this session's context (offered, opened or returned by recall), so a hint
+ *  never repeats one. Keyed on the supervisor's pid, which outlives a reload, and seeded from the
+ *  log on first use. */
+const HINT_SESS = process.ppid
+let hintSeenSet: Set<string> | null = null
+function hintSeen(): Set<string> {
+  if (hintSeenSet) return hintSeenSet
+  let log = ''
+  try { log = readFileSync(MEMHINTS_FILE, 'utf8') } catch {}
+  const seen = seenFromLog(log, HINT_SESS)
+  // memHints also dedupes by name (one memory filed in two project dirs).
+  if (seen.size) for (const m of loadMemories()) if (seen.has(memHandle(m))) seen.add(m.name)
+  return hintSeenSet = seen
+}
+/** Mark memories as in context and log them for the next reload. */
+function markSeen(field: 'opened' | 'returned', memories: Pick<Memory, 'path' | 'name'>[], handles = memories.map(memHandle)): void {
+  const seen = hintSeen()
+  for (const m of memories) seen.add(m.name)
+  for (const h of handles) seen.add(h)
+  if (!handles.length) return
+  try { appendFileSync(MEMHINTS_FILE, JSON.stringify({ ts: new Date().toISOString(), sess: HINT_SESS, [field]: handles }) + '\n', { mode: 0o600 }) } catch {}
+}
 /** mem="m7f2a lights via SmartThings CLI | …" on what they send, when anything clears the bar. */
 function memMeta(text: string): Record<string, string> {
   try {
-    const mem = memHints(loadMemories(), text, hintSeen)
+    const mem = memHints(loadMemories(), text, hintSeen())
     if (!mem) return {}
-    appendFileSync(MEMHINTS_FILE, JSON.stringify({ ts: new Date().toISOString(), offered: mem.split(' | ').map(h => h.split(' ')[0]), chars: mem.length }) + '\n', { mode: 0o600 })
+    appendFileSync(MEMHINTS_FILE, JSON.stringify({ ts: new Date().toISOString(), sess: HINT_SESS, offered: mem.split(' | ').map(h => h.split(' ')[0]), chars: mem.length }) + '\n', { mode: 0o600 })
     return { mem }
   } catch (err) {
     process.stderr.write(`otto channel: mem hints failed: ${err}\n`)

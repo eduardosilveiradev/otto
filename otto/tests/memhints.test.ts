@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { memHints, memHandle, HANDLE_RE, type Memory } from '../memory.ts'
+import { memHints, memHandle, HANDLE_RE, seenFromLog, type Memory } from '../memory.ts'
 
 const mem = (name: string, description: string, body: string, ageDays = 1): Memory => ({
   name, description, body, type: 'reference', scope: 'global', path: `/m/${name}.md`,
@@ -27,4 +27,17 @@ test('a matching message gets a hint, offered once, with age when stale', () => 
 test('short or unmatched messages get nothing', () => {
   expect(memHints(pool, 'yeah', new Set())).toBe('')
   expect(memHints(pool, 'what is the weather in tokyo today', new Set(), Date.now(), 0)).toBe('')
+})
+
+test('a reload keeps what this session already saw, and only this session', () => {
+  const log = [
+    JSON.stringify({ ts: 't', sess: 42, offered: ['maaaa', 'mbbbb'], chars: 30 }),
+    JSON.stringify({ ts: 't', sess: 42, returned: ['mcccc'] }),
+    JSON.stringify({ ts: 't', sess: 420, opened: ['mdddd'] }),
+    JSON.stringify({ ts: 't', offered: ['meeee'] }),
+    'not json',
+  ].join('\n')
+  expect([...seenFromLog(log, 42)].sort()).toEqual(['maaaa', 'mbbbb', 'mcccc'])
+  const seen = seenFromLog(JSON.stringify({ sess: 7, returned: [memHandle(lights)] }), 7)
+  expect(memHints(pool, 'turn off the bedroom lights with smartthings, desk lamp too', seen, Date.now(), 0)).toBe('')
 })
