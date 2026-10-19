@@ -23,6 +23,8 @@ export function statusLabel(tool: string, input: Record<string, unknown>): strin
   // Its own sends are the reply itself, not a step towards it.
   if (/otto/.test(srv) && /^(reply|react|edit_message|set_email_state)$/.test(name)) return ''
   if (/otto/.test(srv) && name === 'recall') return 'Remembering'
+  // The server restarts mid-call, so a Haiku label for it would never arrive.
+  if (/otto/.test(srv) && name === 'reload') return 'Restarting with the update'
   const where = /gmail/i.test(srv) ? 'mail' : /calendar/i.test(srv) ? 'calendar' : /drive/i.test(srv) ? 'Drive' : ''
   return where ? `Checking ${where}` : name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
 }
