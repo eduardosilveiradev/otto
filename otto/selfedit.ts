@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 /**
  * What Otto is allowed to change about Otto.
  *
@@ -127,6 +128,12 @@ const RULES: Rule[] = [
   { re: /(^|\/)scripts\/hooks\//, tier: 'guarded', why: 'git hooks run without asking' },
   { re: /(^|\/)scripts\/canary-deploy\.sh$/, tier: 'guarded', why: 'it holds the deploy revert' },
   { re: /(^|\/)\.claude\/settings(\.local)?\.json$/, tier: 'guarded', why: 'harness permissions' },
+  // The rest of the rails: who a request is from, how installs run, who holds a token.
+  { re: /(^|\/)otto\/(origin|forge|supervisor|headless|jobs|redact|apptokens|pairing|dash|capability)\.ts$/, tier: 'guarded', why: 'the safety rails and the credentials' },
+  { re: /(^|\/)hooks(\/|\.json$)/, tier: 'guarded', why: 'hooks run shell on every tool call' },
+  { re: /(^|\/)node_modules\//, tier: 'guarded', why: 'the dependency supply chain' },
+  { re: /(^|\/)\.claude\/(agents|commands|plugins|skills)\//, tier: 'guarded', why: 'it changes every Claude session on this machine' },
+  { re: /(^|\/)\.claude\/CLAUDE\.md$/, tier: 'guarded', why: 'it changes every Claude session on this machine' },
 
   // --- confirmed: prose, recipes, and the rest of the module tree -----------
   { re: /(^|\/)\.claude\/memory\//, tier: 'confirmed', why: 'durable memory' },
@@ -175,10 +182,17 @@ export function normalizePath(raw: string): string {
   return (absolute ? '/' : '') + out.join('/')
 }
 
+/** The repo this file lives in. An absolute or ~ path outside it is guarded, whatever it looks like. */
+const REPO_ROOT = normalizePath(join(import.meta.dir, '..'))
+
 /** The tier one path demands, and the sentence explaining why. */
 export function tierForPath(raw: string): { tier: Tier; why: string } {
   const p = normalizePath(raw)
   if (!p) return { tier: 'guarded', why: 'an empty path' }
+  const t = raw.trim()
+  if ((t.startsWith('/') || t.startsWith('~')) && !p.startsWith(REPO_ROOT + '/') && !/(^|\/)\.claude\/memory\//.test(p)) {
+    return { tier: 'guarded', why: 'outside the Otto repo' }
+  }
   for (const r of RULES) {
     if (r.re.test(p)) return { tier: r.tier, why: r.why }
   }

@@ -1368,7 +1368,45 @@ function isConversational(chat_id: string): boolean {
 // the session text a stranger wrote. Neither is ever read from tool arguments —
 // an origin the model can pass is an origin an injected instruction can pass.
 
-let origin: OriginState = freshOriginState()
+/**
+ * Taint outlives the wake that set it until the turn ends (the Stop hook), so a message
+ * the user sends while an email turn is still running cannot clear what that turn read.
+ * It is saved on every change and read back at boot, so a reload mid-turn clears nothing
+ * either. Capped by TAINT_CARRY_MS in case a Stop never arrives.
+ */
+const ORIGIN_FILE = join(STATE_DIR, 'origin.json')
+const TAINT_CARRY_MS = 20 * 60_000
+/** A delegated job's own otto runs on a task the user did not type; it is never user-typed. */
+const ORIGIN_PINNED = process.env.OTTO_ORIGIN_PIN === 'external-content'
+let turnOpen = false
+let taintedAt = 0
+let origin: OriginState = ORIGIN_PINNED ? taint(freshOriginState(), 'a delegated job runs on a task the user did not type') : loadOrigin()
+
+function loadOrigin(): OriginState {
+  try {
+    const o = JSON.parse(readFileSync(ORIGIN_FILE, 'utf8')) as OriginState & { taintedAt?: number; turnOpen?: boolean }
+    const carry = o.tainted && o.turnOpen && Date.now() - (o.taintedAt ?? 0) < TAINT_CARRY_MS
+    turnOpen = Boolean(o.turnOpen)
+    taintedAt = carry ? o.taintedAt ?? 0 : 0
+    return {
+      origin: carry ? o.origin : 'user-typed', tainted: Boolean(carry),
+      ...(carry && o.taintedBy ? { taintedBy: o.taintedBy } : {}),
+      ...(o.typedProof ? { typedProof: o.typedProof } : {}),
+    }
+  } catch { return freshOriginState() }
+}
+function saveOrigin(): void {
+  if (process.env.OTTO_SUPERVISED !== '1') return // a twin or a delegated child never writes the live session's stamp
+  try {
+    writeFileSync(ORIGIN_FILE + '.tmp', JSON.stringify({ ...origin, taintedAt, turnOpen }), { mode: 0o600 })
+    renameSync(ORIGIN_FILE + '.tmp', ORIGIN_FILE)
+  } catch {}
+}
+/** The Stop hook: the turn is over, and the next wake starts clean. */
+function closeTurn(): void {
+  turnOpen = false
+  saveOrigin()
+}
 
 /**
  * Which surface the user is talking on this turn, for a fact's `source` when the
@@ -1379,8 +1417,14 @@ let origin: OriginState = freshOriginState()
 let factSurface: 'telegram' | 'app' | undefined
 
 function stampOrigin(wake: Wake): void {
+  const carried = origin.tainted && turnOpen && Date.now() - taintedAt < TAINT_CARRY_MS ? origin.taintedBy ?? 'external text was read' : undefined
   origin = onWake(origin, wake)
+  if (carried && !origin.tainted) origin = taint(origin, `${carried.replace(/ \(earlier this turn\)$/, '')} (earlier this turn)`)
+  else if (origin.tainted) taintedAt = Date.now()
+  if (ORIGIN_PINNED && !origin.tainted) origin = taint(origin, 'a delegated job runs on a task the user did not type')
+  turnOpen = true
   factSurface = undefined
+  saveOrigin()
 }
 
 /**
@@ -1393,6 +1437,8 @@ function stampOrigin(wake: Wake): void {
 function taintOrigin(why: string): void {
   if (origin.tainted) return
   origin = taint(origin, why)
+  taintedAt = Date.now()
+  saveOrigin()
   process.stderr.write(`otto channel: origin tainted — ${why}\n`)
 }
 
@@ -2235,7 +2281,8 @@ async function handleCapabilityButton(instruction: string, chat_id: string): Pro
       return null
     }
     // Notes written before the `repetition:<id>` tag existed carry the bare id.
-    const note = readNotes().find(n => n.tags?.includes(`repetition:${id}`) || n.tags?.includes(id))
+    // Only the miner's own note (kind saved, tagged by persistPayload); `remember` refuses these tags.
+    const note = readNotes().find(n => n.kind === 'saved' && n.tags?.includes('repetition') && n.tags?.includes(`repetition:${id}`))
     if (!note) return `that suggestion has aged out (${id})`
     // The note carries the cron and the action text the miner drafted; the
     // session is not in the loop, so everything needed is on disk.
@@ -4282,6 +4329,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       }
 
       case 'create_trigger': {
+        if (effectiveOrigin(origin) === 'external-content') return triggerWriteRefused()
         const type = args.type as Trigger['type']
         const action = String(args.action ?? '').trim()
         if (!action) throw new Error('action is required')
@@ -4347,6 +4395,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       }
 
       case 'update_trigger': {
+        // Disabling stays open to a tainted turn ("do X unless Y" pairs switch each other off); rewriting does not.
+        if (effectiveOrigin(origin) === 'external-content'
+          && (args.action != null || args.schedule != null || args.condition != null || args.tz != null || args.enabled === true)) return triggerWriteRefused()
         const ts = loadTriggers()
         const t = ts.find(x => x.id === String(args.id))
         if (!t) throw new Error(`no trigger ${args.id}`)
@@ -4401,6 +4452,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
       case 'remember': {
         const kind = String(args.kind ?? '')
+        // repetition tags are the miner's: one written here could be armed by a planted button.
+        if (Array.isArray(args.tags)) args.tags = (args.tags as unknown[]).filter(t => !/^repetition(\b|:|-)/i.test(String(t)))
         // Knowledge goes to markdown so every session in every project can read
         // it; operational state stays in the channel's own store.
         if (KNOWLEDGE_KINDS.has(kind)) {
@@ -4481,13 +4534,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         // mem="…" handles from an inbound message: those memories, whole.
         const handles = query.split(/[\s,]+/).filter(Boolean)
-        if (handles.length && handles.every(h => HANDLE_RE.test(h))) {
-          const wanted = new Set(handles)
-          const found = loadMemories().filter(m => wanted.has(memHandle(m)))
+        // Only when every word is a real handle: "maths" or "marco" fit the shape too.
+        const found = handles.length && handles.every(h => HANDLE_RE.test(h))
+          ? loadMemories().filter(m => handles.includes(memHandle(m))) : []
+        if (found.length && new Set(found.map(memHandle)).size === new Set(handles).size) {
           markSeen('opened', found, handles)
-          return { content: [{ type: 'text', text: found.length
-            ? `MEMORY (durable, all sessions)\n${found.map(m => formatHit({ memory: m, score: 0 }, true)).join('\n\n')}`
-            : `(no memory with handle ${handles.join(', ')})` }] }
+          return { content: [{ type: 'text', text: `MEMORY (durable, all sessions)\n${found.map(m => formatHit({ memory: m, score: 0 }, true)).join('\n\n')}` }] }
         }
 
         // Durable knowledge, unless the caller asked only for operational.
@@ -5066,6 +5118,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       case 'reload': {
         if (process.env.OTTO_SUPERVISED !== '1') {
           return { content: [{ type: 'text', text: 'not running under the supervisor — this once it takes /mcp → otto → Reconnect' }], isError: true }
+        }
+        // Restarting is how code gets live; a turn steered by an email does not get to do it.
+        if (effectiveOrigin(origin) === 'external-content') {
+          return { content: [{ type: 'text', text: `not reloading — ${describeOrigin(origin)}. Ask the user to say "reload" themselves.` }], isError: true }
         }
         const build = await Bun.build({ entrypoints: [import.meta.path], target: 'bun', packages: 'external' })
         if (!build.success) {
@@ -5808,7 +5864,10 @@ async function handleInbound(ctx: Context, inbound: Inbound): Promise<void> {
   // what makes "inbound means user-typed" true rather than hopeful.
   stampOrigin({ kind: 'inbound' })
   factSurface = 'telegram'
-  origin = recordTyped(origin, text)
+  // A forward is someone else's words, even in the user's chat: never their request or their phrase.
+  const forwarded = Boolean((ctx.message as { forward_origin?: unknown } | undefined)?.forward_origin)
+  if (forwarded) { taintOrigin('a forwarded message is someone else\'s words'); extraMeta.forwarded = '1' }
+  else origin = recordTyped(origin, text)
 
   // Does what they just said brush against something Otto can already do and they
   // has never used? The state is written BEFORE the hint is shown: a crash
@@ -6511,6 +6570,7 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   }
   markRead(h.transcript_path)
   if (h.hook_event_name === 'Stop') {
+    closeTurn()
     liveSteps.finish()
     if (!unreadApp.size) setAppTyping(false)
     return new Response(null, { status: 204 })
@@ -6544,6 +6604,14 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   }
   process.stderr.write(`otto channel: status ${text ? `"${text}" to ${appSockets.size} socket(s)` : 'skipped'}\n`)
   return new Response(null, { status: 204 })
+}
+
+/**
+ * A trigger's action is replayed as an instruction every time it fires, so one written
+ * while reading a stranger's text would keep that text's authority forever.
+ */
+function triggerWriteRefused() {
+  return { content: [{ type: 'text' as const, text: `not writing a trigger — ${describeOrigin(origin)}. Offer it to the user with a button instead; a tap from them is a fresh request.` }], isError: true }
 }
 
 /** Bumped per status line, so a late Haiku label only lands if it's still the newest. */
@@ -6610,7 +6678,7 @@ function extraReleases(): ExtraRelease[] {
   })
 }
 
-function appRelease(): { version: string; build: string; date: string; size: number; key: string } | null {
+function appRelease(): { version: string; build: string; date: string; size: number; notes?: string; key: string } | null {
   try {
     const r = JSON.parse(readFileSync(join(RELEASE_DIR, 'release.json'), 'utf8'))
     const key = readFileSync(join(RELEASE_DIR, 'key'), 'utf8').trim()
@@ -6656,10 +6724,12 @@ function handleRelease(req: Request, path: string): Response | undefined {
   if (m[2] === 'icon.png') return new Response(Bun.file(join(RELEASE_DIR, 'icon.png')))
   const { ipa, source } = releaseLinks(req, r.key)
   const version = { version: r.version, buildVersion: r.build, date: r.date, downloadURL: ipa, size: r.size }
+  // The changelog: SideStore shows a version's localizedDescription as What's New, and older builds read versionDescription.
+  const notes = r.notes ? { localizedDescription: r.notes } : {}
   return Response.json({
     name: 'Otto', identifier: 'dev.otto.source', news: [],
     apps: [{ name: 'Otto', bundleIdentifier: 'dev.otto.app', developerName: 'Otto',
-      localizedDescription: 'Your assistant, in one chat.', iconURL: source.replace(/source\.json$/, 'icon.png'), versions: [version], ...version, versionDate: r.date },
+      localizedDescription: 'Your assistant, in one chat.', iconURL: source.replace(/source\.json$/, 'icon.png'), versions: [{ ...version, ...notes }], ...version, ...(r.notes ? { versionDescription: r.notes } : {}), versionDate: r.date },
       ...extraReleases().map(e => {
         const base = source.replace(/source\.json$/, `${e.slug}/`)
         const v = { version: e.version, buildVersion: e.build, date: e.date, downloadURL: `${base}App.ipa`, size: e.size }
@@ -6698,7 +6768,7 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
       return server.upgrade(req, { data: { tokenId } }) ? undefined : new Response('websocket upgrade expected', { status: 426 })
     case '/app/update': {
       const r = appRelease()
-      return r ? Response.json({ version: r.version, build: r.build, ...releaseLinks(req, r.key) }) : new Response(null, { status: 404 })
+      return r ? Response.json({ version: r.version, build: r.build, ...(r.notes ? { notes: r.notes } : {}), ...releaseLinks(req, r.key) }) : new Response(null, { status: 404 })
     }
     case '/app/brief':
       return briefCache ? Response.json(briefCache.data) : new Response(null, { status: 503 })
@@ -6786,7 +6856,9 @@ async function appUpload(req: Request, url: URL): Promise<Response> {
   const msgId = url.searchParams.get('id') ?? undefined
 
   if (photo) {
-    appInbound(caption || '(photo)', { image_path: path }, 'photo', msgId)
+    const shared = url.searchParams.get('shared') === '1'
+    appInbound(caption || '(photo)', { image_path: path, ...(shared ? { shared: '1' } : {}) }, 'photo', msgId,
+      shared ? 'shared into the app from another app' : undefined)
     return new Response(null, { status: 204 })
   }
   lastVoiceInbound.set(APP_CHAT, Date.now())
@@ -6801,11 +6873,13 @@ async function appUpload(req: Request, url: URL): Promise<Response> {
 }
 
 function appFrame(raw: string): void {
-  let f: { type?: unknown; text?: unknown; data?: unknown; label?: unknown; id?: unknown; reply_to?: unknown; emoji?: unknown }
+  let f: { type?: unknown; text?: unknown; data?: unknown; label?: unknown; id?: unknown; reply_to?: unknown; emoji?: unknown; shared?: unknown }
   try { f = JSON.parse(raw) } catch { return }
   const id = typeof f.id === 'string' && f.id ? f.id.slice(0, 64) : undefined
   if (f.type === 'message' && typeof f.text === 'string' && f.text.trim()) {
-    appInbound(f.text.trim(), appReplyMeta(f.reply_to), 'text', id)
+    const shared = f.shared === true
+    appInbound(f.text.trim(), { ...appReplyMeta(f.reply_to), ...(shared ? { shared: '1' } : {}) }, 'text', id,
+      shared ? 'shared into the app from another app' : undefined)
   } else if (f.type === 'react' && typeof f.emoji === 'string' && f.emoji.trim()) {
     // A tapback reads like a one-emoji reply to that message — a 👍 under a draft is a yes.
     appInbound(f.emoji.trim().slice(0, 8), { reaction: '1', ...appReplyMeta(f.id) }, 'reaction')
@@ -6856,13 +6930,19 @@ function deskMeta(): Record<string, string> {
   return d ? { desk: d } : {}
 }
 
-async function appInbound(text: string, extraMeta: Record<string, string> = {}, kind = 'text', message_id?: string): Promise<void> {
-  if (kind === 'text' && await pairingCommand(text, (t, b) => appSend(t, b))) return
+/**
+ * `untrusted`: text that reached the app thread but was not typed there — shared from another
+ * app, or sent from the dashboard (whose token lives in a browser). It still reads as the user's
+ * thread, but it cannot carry their authority: it taints the turn and never counts as the phrase.
+ */
+async function appInbound(text: string, extraMeta: Record<string, string> = {}, kind = 'text', message_id?: string, untrusted?: string): Promise<void> {
+  if (kind === 'text' && !untrusted && await pairingCommand(text, (t, b) => appSend(t, b))) return
   lastInbound.set(APP_CHAT, Date.now())
   currentSrc = null
   stampOrigin({ kind: 'inbound' })
   factSurface = 'app'
-  origin = recordTyped(origin, text)
+  if (untrusted) taintOrigin(untrusted)
+  else origin = recordTyped(origin, text)
   recordHistory({ dir: 'in', chat_id: APP_CHAT, kind, text, ...(message_id ? { message_id } : {}) })
   if (message_id) unreadApp.add(message_id)
   setAppTyping(true)
@@ -6878,7 +6958,7 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
 
 /** A message typed on the dashboard: into the app thread exactly as the phone's would be, plus an echo so an open phone can show it as the user's. */
 async function dashSend(text: string, id: string): Promise<void> {
-  await appInbound(text, {}, 'text', id)
+  await appInbound(text, { from_dashboard: '1' }, 'text', id, 'sent from the dashboard, whose token lives in a browser')
   const frame = JSON.stringify({ type: 'echo', id, text, ts: new Date().toISOString() })
   for (const ws of appSockets) ws.send(frame) // live only: /app/history carries it for the next connect
 }

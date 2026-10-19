@@ -259,3 +259,14 @@ test('formatJob shows the budget burn and the partial flag', () => {
   expect(line).toContain('12k/150k tok')
   expect(line).toContain('partial')
 })
+
+test('a job gets only its built-ins, and none of otto\'s writes it did not name', async () => {
+  const { jobToolArgs } = await import('../jobs.ts')
+  const a = jobToolArgs(['Read', 'WebSearch', 'mcp__plugin_otto_otto__recall', 'mcp__plugin_otto_otto__remember'])
+  expect(a.slice(0, 2)).toEqual(['--tools', 'Read,WebSearch'])
+  const denied = a[a.indexOf('--disallowedTools') + 1].split(',')
+  expect(denied).toContain('mcp__plugin_otto_otto__reply')
+  expect(denied).toContain('mcp__plugin_otto_otto__forge')
+  expect(denied).not.toContain('mcp__plugin_otto_otto__remember')
+  expect(jobToolArgs(['mcp__plugin_otto_otto__recall']).slice(0, 2)).toEqual(['--tools', ''])
+})

@@ -35,9 +35,18 @@ test('the send path and the rails are guarded', () => {
 })
 
 test('recipes, prose and ordinary modules need one tap', () => {
-  for (const p of ['otto/skills/recipes/SKILL.md', 'CLAUDE.md', 'README.md', 'otto/forge.ts', 'scripts/triage.js']) {
+  for (const p of ['otto/skills/recipes/SKILL.md', 'CLAUDE.md', 'README.md', 'otto/memory.ts', 'scripts/triage.js']) {
     expect(tierForPath(p).tier).toBe('confirmed')
   }
+})
+
+test('the rails, hooks and anything outside the repo need the typed phrase', () => {
+  for (const p of ['otto/origin.ts', 'otto/forge.ts', 'otto/apptokens.ts', 'otto/dash.ts', 'otto/hooks/hooks.json', 'hooks/hooks.json',
+    'otto/node_modules/x/index.js', '~/.claude/agents/a.md', '~/.claude/CLAUDE.md', '/home/x/.claude/plugins/cache/otto/hooks/hooks.json',
+    '~/.claude/skills/s/SKILL.md']) {
+    expect(tierForPath(p).tier).toBe('guarded')
+  }
+  expect(tierForPath('~/.claude/memory/global/x.md').tier).toBe('confirmed')
 })
 
 test('trigger and recipe parameters change unattended', () => {

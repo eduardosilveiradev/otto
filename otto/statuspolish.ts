@@ -69,6 +69,6 @@ export async function polishStatus(
     }
   } catch {}
   if (cache.size > 300) cache.clear() // ponytail: crude cap; an LRU only if the hit rate matters
-  cache.set(id, out)
+  if (out) cache.set(id, out) // a timeout or 429 gets another try next time
   return out
 }

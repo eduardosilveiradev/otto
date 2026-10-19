@@ -43,7 +43,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from '
 import { randomBytes } from 'crypto'
 import { homedir } from 'os'
 import { join } from 'path'
-import { claudeBin, headlessMcpArgs } from './headless.ts'
+import { claudeBin, headlessMcpArgs, HEADLESS_SERVER_NAME } from './headless.ts'
 
 export type JobState = 'queued' | 'running' | 'parked' | 'done' | 'failed' | 'killed'
 
@@ -566,6 +566,20 @@ export async function postResult(job: Job, o: { port: number; token: string }): 
   }
 }
 
+/**
+ * `--allowedTools` only pre-approves; under auto mode everything else still runs. So the
+ * built-ins are cut to the list with `--tools`, and otto's tools that act for the user are
+ * refused unless the job named them.
+ */
+const OTTO_WRITES = ['reply', 'react', 'edit_message', 'create_trigger', 'update_trigger', 'delete_trigger', 'remember', 'forget',
+  'burn', 'forge', 'revert_capability', 'reload', 'self_test', 'delegate', 'set_email_state', 'settings', 'snooze', 'note_contact',
+  'note_place', 'record_money', 'record_trip', 'record_document', 'mine_sent', 'consolidate_memory']
+export function jobToolArgs(tools: string[]): string[] {
+  const builtins = tools.filter(t => !t.startsWith('mcp__'))
+  const denied = OTTO_WRITES.map(t => `mcp__${HEADLESS_SERVER_NAME}__${t}`).filter(t => !tools.includes(t))
+  return ['--tools', builtins.join(','), '--allowedTools', tools.join(','), '--disallowedTools', denied.join(',')]
+}
+
 /** The supervisor. One job, from spawn to webhook, in its own process. */
 async function runJob(id: string): Promise<void> {
   const file = process.env.OTTO_JOBS_FILE ?? JOBS_FILE
@@ -578,12 +592,13 @@ async function runJob(id: string): Promise<void> {
     return
   }
 
-  const env = { ...process.env }
+  // Its otto refuses self-edits and trigger writes: the task text may carry an email's words.
+  const env: Record<string, string | undefined> = { ...process.env, OTTO_ORIGIN_PIN: 'external-content' }
   delete env.OTTO_CHANNEL_HOST
 
   const proc = Bun.spawn(
     [claude, '-p', job.task, '--output-format', 'stream-json', '--verbose',
-      '--permission-mode', 'auto', '--allowedTools', job.tools.join(','), ...headlessMcpArgs({ otto: true })],
+      '--permission-mode', 'auto', ...jobToolArgs(job.tools), ...headlessMcpArgs({ otto: true })],
     { env, cwd: job.scratchDir, stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' },
   )
   updateJob(file, id, j => applyEvent(j, { type: 'start', at: Date.now(), pid: proc.pid }))
