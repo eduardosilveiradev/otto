@@ -361,3 +361,51 @@ export function formatHit(h: SearchHit, full = false): string {
   const body = full ? h.memory.body : h.memory.description || h.memory.body.slice(0, 200)
   return `${head}\n  ${body.replace(/\n/g, '\n  ')}`
 }
+
+// ---------------------------------------------------------------------------
+// Hints: a few memory handles on each inbound message
+// ---------------------------------------------------------------------------
+
+/**
+ * A short, stable handle for a memory: "m" + 4 base36 chars from its path.
+ * About 3 tokens, against 10–15 for a long slug; recall resolves it back.
+ */
+export function memHandle(m: Pick<Memory, 'path'>): string {
+  let h = 2166136261
+  for (let i = 0; i < m.path.length; i++) h = Math.imul(h ^ m.path.charCodeAt(i), 16777619)
+  return 'm' + ((h >>> 0) % 36 ** 4).toString(36).padStart(4, '0')
+}
+
+export const HANDLE_RE = /^m[0-9a-z]{4}$/
+
+const HINT_MIN_TERMS = 3
+const HINT_MIN_SCORE = 14
+const HINT_LIMIT = 3
+const HINT_STALE_DAYS = 30
+
+/**
+ * The line that rides on an inbound message as mem="…", or "" — which is most
+ * messages. It sits at the end of the context so the prompt cache survives, and
+ * each memory is offered once per process (`seen`), so hints never pile up.
+ * ponytail: thresholds are hand-picked on one day of messages; tune them from
+ * memhints.jsonl (offered vs opened).
+ */
+export function memHints(memories: Memory[], text: string, seen: Set<string>, now = Date.now(), minScore = HINT_MIN_SCORE): string {
+  if (new Set(tokenize(text)).size < HINT_MIN_TERMS) return ''
+  const hits = searchMemories(memories, text, { limit: 8 })
+  if (!hits.length || hits[0].score < minScore) return ''
+  const top = hits[0].score
+  const out: string[] = []
+  for (const h of hits) {
+    if (out.length >= HINT_LIMIT || h.score < top * 0.7) break
+    const id = memHandle(h.memory)
+    // The same memory is sometimes filed in two project dirs: offer it once.
+    if (seen.has(id) || seen.has(h.memory.name)) continue
+    seen.add(id).add(h.memory.name)
+    const words = (h.memory.description || h.memory.name.replace(/-/g, ' ')).split(/\s+/)
+    const desc = words.slice(0, 8).join(' ').replace(/[\s,;:.—–-]+$/, '') + (words.length > 8 ? '…' : '')
+    const days = Math.floor((now - h.memory.mtimeMs) / 86_400_000)
+    out.push(`${id} ${desc}${days > HINT_STALE_DAYS ? ` (${days}d)` : ''}`)
+  }
+  return out.join(' | ')
+}

@@ -73,6 +73,7 @@ import {
 import { checkAppToken, isLiveAppToken, loadAppTokens, touchAppToken } from './apptokens.ts'
 import {
   loadMemories, searchMemories, writeMemory, deleteMemory, formatHit,
+  memHints, memHandle, HANDLE_RE,
   type MemoryType, type SearchHit,
 } from './memory.ts'
 import {
@@ -216,6 +217,8 @@ const liveSteps = new LiveSteps(frame => { for (const ws of appSockets) ws.send(
 const NOTES_FILE = join(STATE_DIR, 'notes.json')
 /** Recall misses and per-memory hit counts — what was asked for, what gets used. */
 const RECALL_STATS_FILE = join(STATE_DIR, 'recall-stats.json')
+/** One line per mem="…" offered and per handle recalled — the open rate decides whether hints stay. */
+const MEMHINTS_FILE = join(STATE_DIR, 'memhints.jsonl')
 /** What the loop-hygiene pass has already proposed or named, so it never repeats. */
 const HYGIENE_FILE = join(STATE_DIR, 'hygiene.json')
 /** Last-known certificate and registration expiry per domain, and which warnings went out. */
@@ -3403,7 +3406,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         'Search everything remembered — the operational notes, the durable markdown memories, and the places the user told you about — in one call. This is the memory of every past session; reach for it before answering anything about their history, their preferences, or a decision already made, and before asking the user something the user may already have told you. A fired trigger or scan that names a person or project you have no context on should start here.\n' +
         'Ranked by relevance, so a short distinctive query beats a sentence: search "landlord" not "what do I know about the user’s landlord situation". Nothing found is not evidence it never happened — only that it was never written down.\n' +
-        'A fact about something that moves (where they live or work, a phone, a school, a plan) said long ago comes back marked "(said 7 months ago, may have changed)" — confirm it before leaning on it. Facts a newer one replaced are hidden unless include_superseded is true.',
+        'A fact about something that moves (where they live or work, a phone, a school, a plan) said long ago comes back marked "(said 7 months ago, may have changed)" — confirm it before leaning on it. Facts a newer one replaced are hidden unless include_superseded is true.\n' +
+        'mem="m7f2a … | …" on an inbound message lists memories that matched it, as handle + gist: pass the handles you want (query "m7f2a m0pbu") to read them whole. Ignore the rest.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -4472,6 +4476,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const staleDays = resolveStaleDays(loadAccess().staleness)
           const now = Date.now()
           if (notes.length) sections.push(`NOTES (channel state)\n${notes.map(n => formatNote(n) + factAgeNote(n, now, staleDays)).join('\n')}`)
+        }
+
+        // mem="…" handles from an inbound message: those memories, whole.
+        const handles = query.split(/[\s,]+/).filter(Boolean)
+        if (handles.length && handles.every(h => HANDLE_RE.test(h))) {
+          const wanted = new Set(handles)
+          const found = loadMemories().filter(m => wanted.has(memHandle(m)))
+          try { appendFileSync(MEMHINTS_FILE, JSON.stringify({ ts: new Date().toISOString(), opened: handles }) + '\n', { mode: 0o600 }) } catch {}
+          return { content: [{ type: 'text', text: found.length
+            ? `MEMORY (durable, all sessions)\n${found.map(m => formatHit({ memory: m, score: 0 }, true)).join('\n\n')}`
+            : `(no memory with handle ${handles.join(', ')})` }] }
         }
 
         // Durable knowledge, unless the caller asked only for operational.
@@ -5831,6 +5846,7 @@ async function handleInbound(ctx: Context, inbound: Inbound): Promise<void> {
     ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
     ...(imagePath ? { image_path: imagePath } : {}),
     ...deskMeta(),
+    ...memMeta(text),
     ...(attachment ? {
       attachment_kind: attachment.kind,
       attachment_file_id: attachment.file_id,
@@ -6782,6 +6798,21 @@ function appFrame(raw: string): void {
 
 /** handleInbound's bookkeeping, minus everything Telegram-specific. */
 /** desk="at desk 12m" / "away 1h05" on what they send, when a presence watcher runs on this Mac. */
+/** Memories offered once per process, so a long session never sees the same hint twice. */
+const hintSeen = new Set<string>()
+/** mem="m7f2a lights via SmartThings CLI | …" on what they send, when anything clears the bar. */
+function memMeta(text: string): Record<string, string> {
+  try {
+    const mem = memHints(loadMemories(), text, hintSeen)
+    if (!mem) return {}
+    appendFileSync(MEMHINTS_FILE, JSON.stringify({ ts: new Date().toISOString(), offered: mem.split(' | ').map(h => h.split(' ')[0]), chars: mem.length }) + '\n', { mode: 0o600 })
+    return { mem }
+  } catch (err) {
+    process.stderr.write(`otto channel: mem hints failed: ${err}\n`)
+    return {}
+  }
+}
+
 function deskMeta(): Record<string, string> {
   const d = deskNow()
   return d ? { desk: d } : {}
@@ -6797,7 +6828,7 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
   recordHistory({ dir: 'in', chat_id: APP_CHAT, kind, text, ...(message_id ? { message_id } : {}) })
   if (message_id) unreadApp.add(message_id)
   setAppTyping(true)
-  const meta = { chat_id: APP_CHAT, user: APP_CHAT, user_id: APP_CHAT, ts: new Date().toISOString(), ...(message_id ? { message_id } : {}), ...deskMeta(), ...extraMeta }
+  const meta = { chat_id: APP_CHAT, user: APP_CHAT, user_id: APP_CHAT, ts: new Date().toISOString(), ...(message_id ? { message_id } : {}), ...deskMeta(), ...(kind === 'reaction' ? {} : memMeta(text)), ...extraMeta }
   if (message_id && kind !== 'reaction') updateJournal(j => recordInbound(j, { chat_id: APP_CHAT, message_id, text, meta }, Date.now()))
   mcp.notification({
     method: 'notifications/claude/channel',
