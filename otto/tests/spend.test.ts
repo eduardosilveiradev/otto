@@ -116,3 +116,60 @@ test('durations read like a person wrote them', () => {
   expect(humanDuration(5 * HOUR)).toBe('5h')
   expect(humanDuration(72 * HOUR)).toBe('3d')
 })
+
+// --- plan windows from the status line -------------------------------------
+import { parsePlanUsage, liveWindows, projectPlan, assessPlan, planSummary, PLAN_WINDOWS, PLAN_FRESH_MS } from '../spend'
+
+const NOW_P = Date.parse('2026-10-21T18:00:00Z')
+const sec = (ms: number) => Math.round(ms / 1000)
+
+test('a status line reading is validated and clamped', () => {
+  expect(parsePlanUsage(null, NOW_P)).toBeNull()
+  expect(parsePlanUsage({ five_hour: { used_percentage: 'x', resets_at: 1 } }, NOW_P)).toBeNull()
+  const u = parsePlanUsage({ five_hour: { used_percentage: 140, resets_at: sec(NOW_P) + 3600 } }, NOW_P)!
+  expect(u.five_hour!.used_percentage).toBe(100)
+  expect(u.seven_day).toBeUndefined()
+})
+
+test('stale readings and windows past their reset say nothing', () => {
+  const u = parsePlanUsage({
+    five_hour: { used_percentage: 50, resets_at: sec(NOW_P) - 60 },
+    seven_day: { used_percentage: 10, resets_at: sec(NOW_P) + 86400 },
+  }, NOW_P)!
+  expect(liveWindows(u, NOW_P)).toEqual(['seven_day'])
+  expect(liveWindows(u, NOW_P + PLAN_FRESH_MS + 1)).toEqual([])
+})
+
+test('a percentage projects like the token log: half used at half time lands at 100%', () => {
+  const len = PLAN_WINDOWS.five_hour.lengthMs
+  const { p } = projectPlan({ used_percentage: 50, resets_at: sec(NOW_P + len / 2) }, len, NOW_P)
+  expect(p.elapsedFraction).toBeCloseTo(0.5, 2)
+  expect(p.projectedFraction).toBeCloseTo(1, 2)
+})
+
+test('the 5-hour window speaks only when it will run out, and only once', () => {
+  const len = PLAN_WINDOWS.five_hour.lengthMs
+  // 45% used at half time: projects 90%, the weekly rules would warn, the 5-hour ones don't.
+  const calm = parsePlanUsage({ five_hour: { used_percentage: 45, resets_at: sec(NOW_P + len / 2) } }, NOW_P)
+  expect(assessPlan(calm, {}, NOW_P).text).toBeUndefined()
+  // 80% at half time: runs out early.
+  const hot = parsePlanUsage({ five_hour: { used_percentage: 80, resets_at: sec(NOW_P + len / 2) } }, NOW_P)
+  const first = assessPlan(hot, {}, NOW_P)
+  expect(first.text).toContain('5-hour limit')
+  expect(assessPlan(hot, first.state, NOW_P).text).toBeUndefined()
+})
+
+test('the weekly window warns at the usual thresholds', () => {
+  const len = PLAN_WINDOWS.seven_day.lengthMs
+  const u = parsePlanUsage({ seven_day: { used_percentage: 45, resets_at: sec(NOW_P + len / 2) } }, NOW_P)
+  expect(assessPlan(u, {}, NOW_P).text).toContain('weekly limit')
+})
+
+test('the summary names both windows', () => {
+  const u = parsePlanUsage({
+    five_hour: { used_percentage: 31, resets_at: sec(NOW_P + 2 * 3600_000) },
+    seven_day: { used_percentage: 8, resets_at: sec(NOW_P + 6 * 86400_000) },
+  }, NOW_P)
+  expect(planSummary(u, NOW_P)).toBe('5-hour 31% (resets in 2h) · weekly 8% (resets in 6d)')
+  expect(planSummary(null, NOW_P)).toBeUndefined()
+})

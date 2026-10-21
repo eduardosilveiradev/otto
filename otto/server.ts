@@ -52,7 +52,7 @@ import { preflight, type PreflightReport } from './preflight.ts'
 import {
   parseLastCommit, parseShortstat, parseDiffNotes, formatResume, type RepoState,
 } from './resume.ts'
-import { parseUsageLines, project, assess as assessBurn, recordTold } from './spend.ts'
+import { parseUsageLines, project, assess as assessBurn, recordTold, parsePlanUsage, assessPlan, type PlanUsage, type PlanKey, type BurnState } from './spend.ts'
 import {
   dueForInterruption, recordStage, pruneEscalation, loadEscalation, saveEscalation,
   formatEscalation,
@@ -230,6 +230,8 @@ const QUEUE_FILE = join(STATE_DIR, 'queue.json')
 const JOURNAL_FILE = join(STATE_DIR, 'inbound-journal.json')
 /** sha256 of every burned message's text, so consolidation can skip it. See burn.ts. */
 const BURNED_FILE = join(STATE_DIR, 'burned.json')
+/** Latest Claude plan usage from the status line. See handlePlanUsage. */
+const PLAN_USAGE_FILE = join(STATE_DIR, 'plan-usage.json')
 const TOPICS_FILE = join(STATE_DIR, 'topics.json')
 /** How loudly each due-dated loop has already spoken. Two interruptions, ever. */
 const ESCALATION_FILE = join(STATE_DIR, 'escalation.json')
@@ -1248,6 +1250,15 @@ async function resumeLine(): Promise<string> {
  * runtime.json so a restart does not re-announce what it already said.
  */
 function spendLine(): string | undefined {
+  // The plan's own numbers, when the status line has posted a live reading: they
+  // replace the token-log guess below entirely.
+  try {
+    const plan = JSON.parse(readFileSync(PLAN_USAGE_FILE, 'utf8')) as PlanUsage
+    const rt = loadRuntimeState()
+    const r = assessPlan(plan, rt.planBurn ?? {}, Date.now())
+    if (r.text) saveRuntimeState({ ...rt, planBurn: r.state })
+    if (Date.now() - plan.at < 30 * 60_000) return r.text
+  } catch {}
   try {
     const dir = join(homedir(), '.claude', 'projects')
     const files: string[] = []
@@ -1965,6 +1976,8 @@ function maybeRunBackup(): void {
 
 type RuntimeState = {
   lastTz?: string
+  /** Which plan-window warnings were already given, per window (spend.ts assessPlan). */
+  planBurn?: Partial<Record<PlanKey, BurnState>>
   /** Start of the usage window the burn-rate warnings are counted against. */
   usageWindowStartedAt?: number
   /** Which burn-rate thresholds have already been reported this window. */
@@ -5213,7 +5226,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         approvals.set(a.id, a)
         const frame = approvalFrame(a)
         for (const ws of appSockets) ws.send(frame)
-        barkPush(`approve? ${title}`)
+        // Forced: the app is almost always connected (keep-awake), which would otherwise
+        // skip the push, and an approval nobody sees just sits there blocking the work.
+        barkPush(`approve? ${title}`, true, { level: 'timeSensitive', group: 'approval' })
         return text(`approval screen is up in the app (${a.id}). Their answer arrives as a button event; the typed phrase still works too.`)
       }
 
@@ -6267,6 +6282,7 @@ function startWebhook(retry = true): void {
       fetch: (req, server) => {
         const path = new URL(req.url).pathname
         if (path === '/status') return handleStatus(req, server)
+        if (path === '/plan-usage') return handlePlanUsage(req, server)
         // Funnel may hand this over as /telegram/ — it joins its mount path onto the target's.
         if (path.startsWith('/telegram')) return handleRelayPush(req)
         return path.startsWith('/app') ? handleApp(req, server) : handleWebhook(req)
@@ -6634,6 +6650,24 @@ const sessionPid = process.env.OTTO_SUPERVISED === '1'
   // Under supervisor.ts our parent is the supervisor; the session the hooks name is its parent.
   ? Bun.spawnSync(['ps', '-o', 'ppid=', '-p', String(process.ppid)]).stdout.toString().trim() || String(process.ppid)
   : String(process.ppid)
+
+/**
+ * The Claude plan's real usage windows, posted by a Claude Code status line on this
+ * machine from any session: the status line's JSON input carries `rate_limits`, and
+ * POSTing that object (`five_hour`, `seven_day`) here is enough. Loopback only: the
+ * port can be bound LAN-wide for webhooks. The latest reading wins; spendLine() and
+ * otto_status read it back.
+ */
+async function handlePlanUsage(req: Request, server: Bun.Server<{ tokenId: string }>): Promise<Response> {
+  const ip = server.requestIP(req)?.address ?? ''
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip) || req.method !== 'POST') return new Response(null, { status: 403 })
+  let body: unknown
+  try { body = await req.json() } catch { return new Response(null, { status: 400 }) }
+  const u = parsePlanUsage(body, Date.now())
+  if (!u) return new Response(null, { status: 400 })
+  try { writeFileSync(PLAN_USAGE_FILE, JSON.stringify(u) + '\n', { mode: 0o600 }) } catch {}
+  return new Response(null, { status: 204 })
+}
 
 /**
  * Live status for the app's typing bubble. The plugin's PreToolUse hook posts each

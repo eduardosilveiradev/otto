@@ -24,6 +24,7 @@ import { readHeartbeat, STALE_MS } from './heartbeat.ts'
 import { omittedSections, OMITTED_REBUILDS, type BriefRebuild, type ProbeName, type ProbeResult } from './watchdog.ts'
 import { readEnvKey } from './deadman.ts'
 import { domainStatus, peekDomains } from './domains.ts'
+import { planSummary, type PlanUsage } from './spend.ts'
 
 export type Verdict = 'up' | 'degraded' | 'down' | 'off' | 'unknown'
 
@@ -245,6 +246,14 @@ export async function collectStatus(d: StatusDeps): Promise<StatusRow[]> {
     now,
   )
   rows.push({ id: 'domains', label: 'Domain expiry', verdict: dom.verdict, ...(dom.at ? { at: dom.at } : {}), detail: dom.detail })
+
+  // --- Claude plan usage (posted by the Claude Code status line) ----------
+  const plan = readJson<PlanUsage>(join(stateDir, 'plan-usage.json'))
+  const summary = planSummary(plan, now)
+  rows.push(summary
+    ? { id: 'plan-usage', label: 'Claude plan usage', verdict: 'up', at: plan!.at, detail: summary }
+    : { id: 'plan-usage', label: 'Claude plan usage', verdict: 'unknown', ...(plan ? { at: plan.at } : {}),
+        detail: plan ? `last reading ${ago(now - plan.at)} ago; it updates only while a Claude Code session is running` : 'no reading yet: the status line posts one after the first response of a session' })
 
   return rows
 }
