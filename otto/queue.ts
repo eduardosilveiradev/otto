@@ -115,30 +115,32 @@ const COALESCE_LIMIT = 3500
  *
  * Held messages were written minutes or hours apart and each one opens with its
  * own context, so they are joined with a rule rather than run together. The
- * header names the delay: arriving silently late reads like Otto sat on
- * something, and saying so costs one line.
+ * first message leads, because the lock screen shows only the opening line and
+ * "held while you were away (4):" tells the user nothing worth unlocking for.
+ * The delay is still named, in a footer: arriving silently late reads like Otto
+ * sat on something, and saying so costs one line.
  */
 export function coalesce(messages: QueuedMessage[]): string[] {
   if (!messages.length) return []
   // Anything held for a flight makes the whole flush a landing digest — it is
   // one send either way, and "while you were in the air" says why it waited.
   const place = messages.some(m => m.reason === 'inflight') ? 'in the air' : 'away'
-  const header =
+  const footer =
     messages.length === 1
-      ? `held while you were ${place}:`
-      : `held while you were ${place} (${messages.length}):`
+      ? `\n\n(held while you were ${place})`
+      : `\n\n(${messages.length} held while you were ${place})`
   const out: string[] = []
-  let current = header
+  let current = ''
 
   for (const m of messages) {
-    const piece = `\n\n— ${m.text}`
-    if (current.length + piece.length > COALESCE_LIMIT) {
+    const piece = messages.length === 1 ? m.text : `— ${m.text}`
+    if (current && current.length + piece.length + 2 + footer.length > COALESCE_LIMIT) {
       out.push(current)
-      current = piece.trimStart()
+      current = piece
     } else {
-      current += piece
+      current = current ? `${current}\n\n${piece}` : piece
     }
   }
-  if (current.trim()) out.push(current)
+  out.push(current + footer)
   return out
 }

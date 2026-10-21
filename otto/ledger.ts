@@ -12,8 +12,10 @@
  * per source, how many sends, how many drew a reply, and how long the current
  * silent streak is.
  *
- * Engagement is "the user replied within the window". Reactions would be a better
- * signal but the Bot API only delivers them if the poller subscribes to
+ * Engagement is "the user responded within the window": a message, an app
+ * reaction or a button tap (logged as kind "tap"). A brief or an FYI rarely
+ * earns a reply, but a tap on it is a real answer. Telegram reactions still don't
+ * count: the Bot API only delivers them if the poller subscribes to
  * message_reaction updates, which this channel does not.
  *
  * The report is evidence, not a verdict. Deciding to retire a trigger stays a
@@ -34,7 +36,7 @@ export type SourceStats = {
   src: string
   sent: number
   engaged: number
-  /** Sends since the last one that drew a reply. */
+  /** Sends since the last one that drew a response. */
   silentStreak: number
   lastSent?: string
   lastEngaged?: string
@@ -104,7 +106,7 @@ export function formatReport(stats: SourceStats[]): string {
   const lines = stats.map(s => {
     const rate = s.sent ? Math.round((s.engaged / s.sent) * 100) : 0
     const streak = s.silentStreak >= 3 ? `  <- ${s.silentStreak} in a row ignored` : ''
-    return `${s.src}: ${s.sent} sent, ${s.engaged} drew a reply (${rate}%)${streak}`
+    return `${s.src}: ${s.sent} sent, ${s.engaged} drew a response (${rate}%)${streak}`
   })
   const dead = stats.filter(s => s.sent >= 3 && s.engaged === 0)
   if (dead.length) {

@@ -54,7 +54,7 @@ export type DashDeps = {
   appSnooze: (req: Request) => Promise<Response>
   appLoop: (req: Request) => Promise<Response>
   loadTriggers: () => DashTrigger[]
-  readHistory: (chat_id: string | undefined, limit: number) => ChatEntry[]
+  readHistory: (chat_id: string | undefined, limit: number, taps?: boolean) => ChatEntry[]
   /** Defaults to memviewer's searchMemory; tests stub it. */
   search?: (q: string) => Promise<{ results: [number, number][] } | { error: string }>
   /** Defaults to a detached `bun memviewer.ts --refresh`; tests and dash-dev stub it. */
@@ -578,7 +578,7 @@ const routes: Record<string, Route> = {
   'GET proactivity': {
     scope: 'read', run: c => {
       const since = Date.now() - days(c.url.searchParams.get('days'), 30) * 86_400_000
-      return { stats: proactivityReport(c.deps.readHistory(undefined, 2000), { since }).map(s => pick(s, ['src', 'sent', 'engaged', 'silentStreak', 'lastSent', 'lastEngaged'])) } satisfies D.Proactivity
+      return { stats: proactivityReport(c.deps.readHistory(undefined, 2000, true), { since }).map(s => pick(s, ['src', 'sent', 'engaged', 'silentStreak', 'lastSent', 'lastEngaged'])) } satisfies D.Proactivity
     },
   },
 

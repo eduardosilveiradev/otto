@@ -52,13 +52,14 @@ test('holdUntil reports the lift time, and nothing for quiet hours', () => {
 test('coalescing folds messages into one send with a count', () => {
   const out = coalesce([msg('bill due friday'), msg('flight on time'), msg('marco replied')])
   expect(out).toHaveLength(1)
-  expect(out[0]).toStartWith('held while you were away (3):')
-  expect(out[0]).toContain('bill due friday')
+  // The lock screen shows the opening line, so real content leads.
+  expect(out[0]).toStartWith('— bill due friday')
+  expect(out[0]).toEndWith('(3 held while you were away)')
   expect(out[0]).toContain('marco replied')
 })
 
-test('a single held message does not get a count', () => {
-  expect(coalesce([msg('only one')])[0]).toStartWith('held while you were away:')
+test('a single held message leads with itself and gets no count', () => {
+  expect(coalesce([msg('only one')])[0]).toBe('only one\n\n(held while you were away)')
 })
 
 test('coalescing splits rather than exceeding the Telegram limit', () => {
@@ -94,6 +95,12 @@ test('a flight in the air holds normal messages until it lands', () => {
 
 test('a flush that includes in-flight holds is a landing digest', () => {
   const [digest] = coalesce([msg('one', { reason: 'inflight' }), msg('two', { reason: 'quiet' })])
-  expect(digest.startsWith('held while you were in the air (2):')).toBe(true)
-  expect(coalesce([msg('one', { reason: 'quiet' })])[0].startsWith('held while you were away:')).toBe(true)
+  expect(digest.endsWith('(2 held while you were in the air)')).toBe(true)
+  expect(coalesce([msg('one', { reason: 'quiet' })])[0].endsWith('(held while you were away)')).toBe(true)
+})
+
+test('a split digest names the delay once, on its last part', () => {
+  const out = coalesce(Array.from({ length: 12 }, (_, i) => msg('x'.repeat(400) + i)))
+  expect(out.filter(p => p.includes('held while you were away'))).toHaveLength(1)
+  expect(out.at(-1)).toEndWith('(12 held while you were away)')
 })

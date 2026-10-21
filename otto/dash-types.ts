@@ -285,7 +285,7 @@ export type SourceStats = {
   src: string
   sent: number
   engaged: number
-  /** Sends since the last one that drew a reply. */
+  /** Sends since the last one that drew a response. */
   silentStreak: number
   lastSent?: string
   lastEngaged?: string

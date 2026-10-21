@@ -87,3 +87,9 @@ test('never-answered sources are called out once there are enough of them', () =
 test('an empty report says so rather than inventing a number', () => {
   expect(formatReport([])).toContain('no attributed proactive sends')
 })
+
+test('a button tap counts as a response', () => {
+  const [s] = proactivityReport([out(0, 'trigger:brief'), { ...inb(5), kind: 'tap' }])
+  expect(s.engaged).toBe(1)
+  expect(formatReport([s])).toContain('drew a response')
+})

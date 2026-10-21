@@ -1040,7 +1040,7 @@ function recordHistory(e: Omit<HistoryEntry, 'ts'>): string {
     // mode only applies at creation — same reason the .env gets a chmod.
     try { chmodSync(HISTORY_FILE, 0o600) } catch {}
     // The dashboard's live feed sees exactly what was written, and only once it is on disk.
-    chatFeed.push({ ts: entry.ts, dir: entry.dir, chat_id: entry.chat_id, ...(entry.message_id ? { message_id: entry.message_id } : {}), kind: entry.kind, text: entry.text, ...(entry.src ? { src: entry.src } : {}) })
+    if (entry.kind !== 'tap') chatFeed.push({ ts: entry.ts, dir: entry.dir, chat_id: entry.chat_id, ...(entry.message_id ? { message_id: entry.message_id } : {}), kind: entry.kind, text: entry.text, ...(entry.src ? { src: entry.src } : {}) })
   } catch (err) {
     process.stderr.write(`otto channel: history append failed: ${err}\n`)
   }
@@ -1151,7 +1151,9 @@ async function burnMessage(args: Record<string, unknown>): Promise<string> {
   return `burned ${target.message_id}${chat_id ? ` in ${chat_id}` : ''}: ${where}; ${telegram}${broke}`
 }
 
-function readHistory(chat_id: string | undefined, limit: number): HistoryEntry[] {
+/** Taps are logged only so the proactivity report can count them as a response;
+ * every other reader (the app thread, repetition mining, style samples) skips them. */
+function readHistory(chat_id: string | undefined, limit: number, taps = false): HistoryEntry[] {
   const entries: HistoryEntry[] = []
   for (const f of [HISTORY_PREV_FILE, HISTORY_FILE]) {
     let raw: string
@@ -1162,7 +1164,7 @@ function readHistory(chat_id: string | undefined, limit: number): HistoryEntry[]
       if (!line) continue
       try {
         const e = JSON.parse(line) as HistoryEntry
-        if (!chat_id || e.chat_id === chat_id) entries.push(e)
+        if ((!chat_id || e.chat_id === chat_id) && (taps || e.kind !== 'tap')) entries.push(e)
       } catch {}
     }
   }
@@ -1663,9 +1665,22 @@ function enqueue(
   return msg
 }
 
+/** A flushed message bound for the app: the same socket and history path as reply,
+ * so a phone that is offline at flush time picks it up on reconnect. */
+function appFlush(text: string, buttons: ReplyButton[] = [], files: string[] = []): void {
+  const ok = files.filter(f => { try { assertSendable(f); return true } catch { return false } })
+  const extra = ok.length ? { files: ok.map(appFile) } : {}
+  const id = appSend(text, buttons, extra)
+  recordHistory({
+    dir: 'out', chat_id: APP_CHAT, kind: 'text', text, message_id: id, src: 'queue-flush',
+    ...(ok.length || buttons.length ? { extra: { ...extra, ...(buttons.length ? { buttons } : {}) } } : {}),
+  })
+}
+
 /** A held message with buttons or files, sent intact. No voice: a spoken note
  * arriving out of a queue hours later is startling rather than helpful. */
 async function deliverQueued(m: QueuedMessage): Promise<void> {
+  if (routeReply(m.chat_id) === APP_CHAT) return appFlush(m.text, m.buttons, m.files)
   const sentIds: number[] = []
   const sent = await bot.api.sendMessage(m.chat_id, m.text)
   sentIds.push(sent.message_id)
@@ -1746,6 +1761,7 @@ async function flushQueue(force = false): Promise<number> {
     // double-sending what already landed.
     try {
       for (const text of coalesce(plain)) {
+        if (routeReply(chat_id) === APP_CHAT) { appFlush(text); sent++; continue }
         const m = await bot.api.sendMessage(chat_id, text)
         recordHistory({ dir: 'out', chat_id, kind: 'text', text, message_id: String(m.message_id), src: 'queue-flush' })
         sent++
@@ -3258,7 +3274,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             enum: ['urgent', 'normal'],
             description:
-              'urgent (default) sends immediately. normal lets the channel hold it while they have snoozed you, while the calendar says they are in something, or during quiet hours — held messages are coalesced and delivered when the hold lifts, never dropped. Use normal for anything the user did not ask for by name: digests, observations, nudges, FYIs. Keep urgent for replies to them, explicit reminders they set, OTPs and security alerts, and anything time-critical enough to be useless late. Answering something the user just said is always sent immediately regardless.',
+              'urgent (default; normal when sent while handling an email scan or a webhook, so a security alert from one must say urgent) sends immediately. normal lets the channel hold it while they have snoozed you, while the calendar says they are in something, or during quiet hours — held messages are coalesced and delivered when the hold lifts, never dropped. Use normal for anything the user did not ask for by name: digests, observations, nudges, FYIs. Keep urgent for replies to them, explicit reminders they set, OTPs and security alerts, and anything time-critical enough to be useless late. Answering something the user just said is always sent immediately regardless.',
           },
           bark: {
             type: 'boolean',
@@ -4097,7 +4113,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         // Should this wait? Anything answering something the user just said goes
         // straight out; only unprompted messages are subject to a hold.
-        const priority: Priority = args.priority === 'normal' ? 'normal' : 'urgent'
+        // Mail and webhooks are other people's timing, not the user's: unless the send says
+        // urgent, it waits out holds like any FYI. Everything else keeps the urgent default.
+        const unprompted = currentSrc === 'email-scan' || currentSrc === 'webhook'
+        const priority: Priority =
+          args.priority === 'normal' || (args.priority == null && unprompted) ? 'normal' : 'urgent'
         const conversational = isConversational(chat_id)
 
         // The voice rules, checked by something that cannot get tired at 03:00.
@@ -4172,8 +4192,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           conversational,
         })
         if (hold) {
-          // The queue flushes through Telegram, so a held app message waits there.
-          const queued = enqueue(chat_id === APP_CHAT ? loadAccess().allowFrom[0] ?? chat_id : chat_id, text, hold, buttons, files)
+          const queued = enqueue(chat_id, text, hold, buttons, files)
           // Recorded on commit, not on delivery: once it is in the queue the user is
           // going to be told, so a duplicate arriving while it waits is still a
           // duplicate.
@@ -5213,7 +5232,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
       case 'proactivity_report': {
         const days = Math.min(Math.max(1, Number(args.days) || 30), 365)
-        const entries = readHistory(undefined, 2000) as LedgerEntry[]
+        const entries = readHistory(undefined, 2000, true) as LedgerEntry[]
         const stats = proactivityReport(entries, { since: Date.now() - days * 24 * 60 * 60 * 1000 })
         return { content: [{ type: 'text', text: `Last ${days} days:\n${formatReport(stats)}` }] }
       }
@@ -5756,6 +5775,7 @@ bot.on('callback_query:data', async ctx => {
     }
 
     settleCancelTap(instruction)
+    recordHistory({ dir: 'in', chat_id: String(ctx.chat?.id ?? ctx.from.id), kind: 'tap', text: label || instruction })
     injectEvent('button', instruction, {
       chat_id: String(ctx.chat?.id ?? ctx.from.id),
       ...(msg ? { message_id: String(msg.message_id) } : {}),
@@ -7069,6 +7089,7 @@ async function appTap(data: string, label: string): Promise<void> {
     return
   }
   settleCancelTap(data)
+  recordHistory({ dir: 'in', chat_id: APP_CHAT, kind: 'tap', text: label || data })
   injectEvent('button', data, { chat_id: APP_CHAT, ...(label ? { button_label: label } : {}) })
 }
 
