@@ -9,7 +9,7 @@ import { readFileSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
-const STATE = join(homedir(), '.config', 'desk-presence', 'state')
+export const STATE = join(homedir(), '.config', 'desk-presence', 'state')
 const STALE_MS = 5 * 60_000
 
 function ago(ms: number): string {

@@ -318,9 +318,15 @@ export type AirportTable = Record<string, {
   zone?: string
   country?: string
   city?: string
-  /** ISO 4217 used there. Optional; only the trip expense roll-up reads it. */
+  /** ISO 4217 used there. Optional; the trip expense roll-up and the arrival exchange line read it. */
   currency?: string
+  /** WGS84, for the arrival weather lookup. */
+  lat?: number
+  lon?: number
+  /** The user's own note on getting from this airport into town; shown verbatim on arrival, never generated. */
+  transport?: string
 }>
+export type AirportEntry = AirportTable[string]
 
 // ---------------------------------------------------------------------------
 // Parsing booking mail

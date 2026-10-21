@@ -258,6 +258,8 @@ export type BriefParts = {
   birthdays?: string
   /** Return windows closing in the next few days, already rendered (returns.ts). */
   returns?: string
+  /** Inputs silent past their own usual gap (inputwatch.ts), already rendered. */
+  quiet?: string
 }
 
 /**
@@ -391,6 +393,7 @@ export function formatBrief(p: BriefParts): string {
   if (p.workspace) out.push(`Machine: ${truncate(p.workspace, 160)}`)
   if (p.playing) out.push(`Playing: ${truncate(p.playing, 60)}`)
   if (p.desk) out.push(`Desk: ${p.desk}`)
+  if (p.quiet) out.push(truncate(p.quiet, 200))
   // What was in flight when they stopped. Renders as nothing on a morning with
   // nothing to resume, which is most of them.
   if (p.resume) out.push(p.resume)
@@ -454,6 +457,7 @@ export type GatherOpts = {
   trip?: string
   birthdays?: string
   returns?: string
+  quiet?: string
   notes: Note[]
   triggers: TriggerGist[]
   history: HistoryLine[]
@@ -491,6 +495,7 @@ export async function gatherBrief(o: GatherOpts): Promise<{ text: string; busyUn
     ...(o.trip ? { trip: o.trip } : {}),
     ...(o.birthdays ? { birthdays: o.birthdays } : {}),
     ...(o.returns ? { returns: o.returns } : {}),
+    ...(o.quiet ? { quiet: o.quiet } : {}),
   }
   const text = formatBrief(parts)
 

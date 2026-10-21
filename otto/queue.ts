@@ -34,8 +34,11 @@ export type QueuedMessage = {
   /** Held messages carrying buttons or files are delivered on their own rather
    * than folded into the digest — coalescing would strip the very thing that
    * makes them actionable. */
-  buttons?: { label: string; data: string }[]
+  buttons?: { label: string; data?: string; url?: string }[]
   files?: string[]
+  /** Attribution at enqueue time, so the flushed message can still answer "Why this?" (why.ts). */
+  src?: string
+  why?: string
 }
 
 export function isRich(m: QueuedMessage): boolean {

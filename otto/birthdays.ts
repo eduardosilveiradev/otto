@@ -232,7 +232,7 @@ export function pruneBirthdayState(state: BirthdayState, liveIds: string[]): boo
 /** callback_data leaves 60 bytes for the instruction. */
 const BUTTON_DATA_MAX = 60
 
-function fitButton(make: (name: string) => string, name: string): string {
+export function fitButton(make: (name: string) => string, name: string): string {
   for (const candidate of [name, name.split(/\s+/)[0]]) {
     if (Buffer.byteLength(make(candidate), 'utf8') <= BUTTON_DATA_MAX) return make(candidate)
   }

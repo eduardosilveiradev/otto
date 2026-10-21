@@ -73,8 +73,8 @@ const checks: true[] = [
   same<NonNullable<D.DashTrips['current']>['mode'], NonNullable<ReturnType<typeof currentOrNextTrip>>['mode']>(true),
   same<D.DashTrips['problems'][string], ReturnType<typeof tripProblems>>(true),
   same<D.PackageStatus, PackageStatus>(true),
-  // carrierName and trackingUrl are derived for display; sources and createdAt stay home.
-  same<Omit<D.PackageRow, 'carrierName' | 'trackingUrl' | 'events'>, Omit<PackageRecord, 'events' | 'sources' | 'createdAt' | 'orderRef'>>(true),
+  // carrierName and trackingUrl are derived for display; sources, createdAt and the pickup deadline (it only feeds a button) stay home.
+  same<Omit<D.PackageRow, 'carrierName' | 'trackingUrl' | 'events'>, Omit<PackageRecord, 'events' | 'sources' | 'createdAt' | 'orderRef' | 'holdUntil'>>(true),
   same<D.PackageRow['events'][number], Omit<PackageEvent, 'source'>>(true),
 ]
 

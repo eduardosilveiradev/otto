@@ -528,3 +528,37 @@ test('mail never sets a birthday', () => {
   })
   expect(people[0].birthday).toBeUndefined()
 })
+
+test('a stated cadence starts the clock only when none is running', () => {
+  const people: Person[] = []
+  const p = recordPerson(people, { name: 'Marco', cadenceDays: 30, at: '2026-08-01T10:00:00Z' })
+  expect(p.cadenceDays).toBe(30)
+  expect(p.lastTouch).toBe('2026-08-01T10:00:00Z')
+  recordPerson(people, { name: 'Marco', cadenceDays: 7, at: '2026-08-20T10:00:00Z' })
+  expect(p.cadenceDays).toBe(7)
+  expect(p.lastTouch).toBe('2026-08-01T10:00:00Z')
+  expect(p.notes!.map(n => n.text)).toContain('cadence was every 30d')
+})
+
+test('cadence null turns check-ins off and says so', () => {
+  const people: Person[] = []
+  recordPerson(people, { name: 'Marco', cadenceDays: 30, at: '2026-08-01T10:00:00Z' })
+  const p = recordPerson(people, { name: 'Marco', cadenceDays: null, at: '2026-08-05T10:00:00Z' })
+  expect(p.cadenceDays).toBeUndefined()
+  expect(p.notes!.map(n => n.text)).toContain('check-ins stopped (was every 30d)')
+})
+
+test('touched moves lastTouch forward and never backward', () => {
+  const people: Person[] = []
+  recordPerson(people, { name: 'Marco', cadenceDays: 30, at: '2026-08-10T10:00:00Z' })
+  const p = recordPerson(people, { name: 'Marco', touched: true, at: '2026-08-20T10:00:00Z' })
+  expect(p.lastTouch).toBe('2026-08-20T10:00:00Z')
+  recordPerson(people, { name: 'Marco', touched: true, at: '2026-08-15T10:00:00Z' })
+  expect(p.lastTouch).toBe('2026-08-20T10:00:00Z')
+})
+
+test('who shows the check-in cadence', () => {
+  const people: Person[] = []
+  const p = recordPerson(people, { name: 'Marco', cadenceDays: 30, at: '2026-08-01T10:00:00Z' })
+  expect(formatPerson(p, Date.parse('2026-08-11T10:00:00Z'))).toContain('check in every 30d, last spoke 10d ago')
+})

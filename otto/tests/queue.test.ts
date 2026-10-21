@@ -1,5 +1,8 @@
 import { test, expect } from 'bun:test'
-import { holdReason, holdUntil, coalesce, isRich, type HoldState, type QueuedMessage } from '../queue.ts'
+import { mkdtempSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { holdReason, holdUntil, coalesce, isRich, loadQueue, saveQueue, type HoldState, type QueuedMessage } from '../queue.ts'
 
 const NOW = Date.parse('2026-08-11T20:00:00Z')
 const later = (mins: number) => new Date(NOW + mins * 60_000).toISOString()
@@ -103,4 +106,12 @@ test('a split digest names the delay once, on its last part', () => {
   const out = coalesce(Array.from({ length: 12 }, (_, i) => msg('x'.repeat(400) + i)))
   expect(out.filter(p => p.includes('held while you were away'))).toHaveLength(1)
   expect(out.at(-1)).toEndWith('(12 held while you were away)')
+})
+
+test('a held message keeps its attribution through the queue file', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'queue-')), 'queue.json')
+  const m = msg('held', { src: 'trigger:ab12', why: 'Your trigger "x", every day at 08:57' })
+  saveQueue(file, [m])
+  expect(loadQueue(file)).toEqual([m])
+  expect(isRich(m)).toBe(false)
 })

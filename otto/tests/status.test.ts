@@ -59,6 +59,12 @@ test('no heartbeat is unknown, not down', async () => {
   expect(row(rows, 'mcp-server').verdict).toBe('unknown')
 })
 
+test('dependency advisories: unknown until the first run, up after a clean one', async () => {
+  expect(row(await collectStatus(setup({}).deps), 'depwatch').verdict).toBe('unknown')
+  const clean = { lastRunAt: new Date(NOW - min(60)).toISOString(), told: {}, open: [], deps: 10 }
+  expect(row(await collectStatus(setup({ 'depwatch.json': clean }).deps), 'depwatch').verdict).toBe('up')
+})
+
 test('email scan: last error newer than last run degrades; overdue is down; disabled is off', async () => {
   const errored = await collectStatus(setup({
     'access.json': { emailScanMinutes: 60 },
@@ -137,6 +143,17 @@ test('helpers', () => {
   expect(rowToProbe({ id: 'webhook', label: 'w', verdict: 'off', detail: 'x' }, 'webhook')).toEqual({ name: 'webhook', ok: true })
 })
 
+test('disk space: unknown until sampled, down when a volume is critical', async () => {
+  expect(row(await collectStatus(setup({}).deps), 'disk').verdict).toBe('unknown')
+  const checkedAt = new Date(NOW - min(10)).toISOString()
+  const { deps } = setup({
+    'disk.json': { lastCheckedAt: checkedAt, volumes: { '/': { role: 'boot', totalBytes: 1e12, freeBytes: 4e9, checkedAt, level: 'critical' } } },
+  })
+  const r = row(await collectStatus(deps), 'disk')
+  expect(r.verdict).toBe('down')
+  expect(r.detail).toContain('4.0 GB free')
+})
+
 test('domain expiry: off without domains, failures shown here and nowhere else', async () => {
   expect(row(await collectStatus(setup({}).deps), 'domains').verdict).toBe('off')
   const { deps } = setup({
@@ -155,4 +172,30 @@ test('domain expiry: off without domains, failures shown here and nowhere else',
   expect(r.at).toBe(NOW - min(60))
   expect(r.detail).toContain('HTTP 503')
   expect(r.detail).toContain('2026-12-01 UTC')
+})
+
+const iso = (ms: number) => new Date(ms).toISOString()
+
+test('inputs row is unknown with nothing learned', async () => {
+  expect(row(await collectStatus(setup({}).deps), 'inputs').verdict).toBe('unknown')
+})
+
+test('an input quiet past its rhythm degrades the inputs row', async () => {
+  const silences = Array.from({ length: 6 }, (_, i) => ({ ms: 8 * 3_600_000, at: NOW - (40 + i) * 3_600_000 }))
+  const { deps } = setup({ 'inputs.json': { v: 1, inputs: { desk: { lastSeen: NOW - 30 * 3_600_000, silences } } } })
+  const r = row(await collectStatus(deps), 'inputs')
+  expect(r.verdict).toBe('degraded')
+  expect(r.detail).toContain('desk watcher')
+  expect(r.detail).toContain('QUIET')
+})
+
+test('the phone row appears only once a device has reported', async () => {
+  expect((await collectStatus(setup({}).deps)).some(r => r.id.startsWith('phone:'))).toBe(false)
+  const { deps } = setup({
+    'app-health.json': { abc: { at: iso(NOW - min(5)), notifications: 'denied', backgroundRefresh: 'available', keepAwake: true, shareConfigured: true, build: '1', version: '0.1', ios: '26.0' } },
+    'app-tokens.json': { tokens: [{ id: 'abc', name: 'phone', hash: '', created: '' }] },
+  })
+  const rows = await collectStatus(deps)
+  expect(row(rows, 'phone:abc')).toMatchObject({ verdict: 'down', label: 'Phone (phone)' })
+  expect(formatStatus(rows, NOW)).toMatch(/DOWN\s+Phone \(phone\)/)
 })

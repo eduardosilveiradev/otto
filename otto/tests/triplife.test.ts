@@ -154,6 +154,7 @@ test('arrival: local time there, the stay next, once, and only near landing', ()
   const a = dueLifecycleEvents(trips, now, { airports: AIRPORTS }).find(e => e.kind === 'arrival')!
   const text = a.lines.join('\n')
   expect(text).toContain('local time there now: 2026-10-03 06:20 Europe/Berlin')
+  expect([a.airport, a.zone, a.day]).toEqual(['BER', 'Europe/Berlin', '2026-10-03'])
   expect(text).toContain('next: Hotel Aurora, check-in 2026-10-03 — Via Example 1')
   expect(a.priority).toBe('normal')
   markFired(trips[0], a.key)
@@ -172,6 +173,7 @@ test('arrival with an unknown zone does not state a local time', () => {
   out.arrive = { local: '2026-10-03T06:10', offsetMinutes: 120, utc: '2026-10-03T04:10:00.000Z' }
   const a = dueLifecycleEvents([t], at('2026-10-03T04:20:00Z')).find(e => e.kind === 'arrival')!
   expect(a.lines.join('\n')).toContain('do not state a local time')
+  expect(a.day).toBeUndefined()
 })
 
 test('the flight-status stub answers nothing, so everything runs on the schedule', async () => {

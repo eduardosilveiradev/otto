@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   recordPackage, markDelivered, activePackages, loadPackages, trackingUrl, carrierName, carrierKey,
-  formatPackage, parsePackageMail, splitMail, findDate, type PackageRecord,
+  formatPackage, parsePackageMail, splitMail, findDate, manageUrl, packageButtons, type PackageRecord,
 } from '../packages.ts'
 
 const tmp = mkdtempSync(join(tmpdir(), 'otto-packages-'))
@@ -262,4 +262,79 @@ test('the order mail and the courier mail with the same order number are one pac
   expect(b.record.id).toBe(a.record.id)
   expect(loadPackages(f)).toHaveLength(1)
   expect(loadPackages(f)[0]).toMatchObject({ tracking: 'TBA123456789012', orderRef: '123-4567890-1234567', status: 'shipped' })
+})
+
+// ---------------------------------------------------------------------------
+// Reschedule buttons: the carrier's own page, and a reminder for a pickup hold
+// ---------------------------------------------------------------------------
+
+test('manageUrl: the tracking page unless the carrier has a better one', () => {
+  for (const c of ['gls', 'brt', 'poste', 'dhl', 'ups', 'fedex', 'inpost']) expect(manageUrl(c, '123456789012')).toBe(trackingUrl(c, '123456789012'))
+  expect(manageUrl('USPS', '9400')).toBe('https://tools.usps.com/redelivery.htm')
+  expect(manageUrl('amazon', undefined, { orderRef: '123-4567890-1234567', amazonDomain: 'amazon.it' }))
+    .toBe('https://www.amazon.it/gp/your-account/order-details?orderID=123-4567890-1234567')
+  expect(manageUrl('amazon', undefined, { orderRef: 'A B' })).toContain('orderID=A%20B')
+  expect(manageUrl('amazon', 'TBA000000000000')).toBeUndefined()
+  expect(manageUrl('Some Courier', '0')).toBeUndefined()
+})
+
+test('a pickup hold keeps its deadline: a date, or "within N days" from the mail', () => {
+  expect(parse('Poste Italiane <noreply@poste.it>', 'Pacco RA123456789IT in giacenza',
+    'Il pacco RA123456789IT è in giacenza e può essere ritirato entro il 25/10/2026.\n')?.holdUntil).toBe('2026-10-25')
+  expect(parsePackageMail({ from: 'Poste Italiane <noreply@poste.it>', subject: 'Pacco RA123456789IT in giacenza', text: 'Pacco da ritirare entro 10 giorni.\n' }, new Date('2026-10-14T09:00:00Z'))?.holdUntil)
+    .toBe('2026-10-24')
+  expect(parse('SDA Express Courier <servizioclienti@sda.it>', 'SDA: tentativo di consegna non riuscito',
+    'Tentativo di consegna per la spedizione n. 123456789013, destinatario assente. Riprovare entro il 30/10/2026.\n')?.holdUntil).toBeUndefined()
+  const f = fresh()
+  const r = recordPackage(f, { carrier: 'poste', tracking: 'RA123456789IT', status: 'exception', text: 'Ready for pickup', holdUntil: '2026-10-25', source: 'email:p1' }, NOW).record
+  expect(loadPackages(f)[0].holdUntil).toBe('2026-10-25')
+  expect(r.holdUntil).toBe('2026-10-25')
+  expect(() => recordPackage(fresh(), { carrier: 'poste', tracking: 'RA1IT', holdUntil: 'soon' }, NOW)).toThrow('holdUntil')
+})
+
+test('buttons: out for delivery opens the carrier page', () => {
+  const res = recordPackage(fresh(), { carrier: 'gls', tracking: '123456789012', status: 'out_for_delivery', source: 'email:b1' }, NOW)
+  expect(packageButtons(res.record, res)).toEqual([{ label: 'pick another day', url: trackingUrl('gls', '123456789012') }])
+})
+
+test('buttons: a failed attempt reschedules; a pickup hold also gets a reminder the day before', () => {
+  const f = fresh()
+  const base = { carrier: 'poste', tracking: 'RA123456789IT', status: 'exception' as const }
+  const fail = recordPackage(f, { ...base, text: 'Delivery attempt failed', source: 'email:b1', at: '2026-10-14T08:00:00Z' }, NOW)
+  expect(packageButtons(fail.record, fail)).toEqual([{ label: 'reschedule', url: trackingUrl('poste', 'RA123456789IT') }])
+  const hold = recordPackage(f, { ...base, text: 'Ready for pickup at Ufficio Torino 12', holdUntil: '2026-10-25', source: 'email:b2', at: '2026-10-15T08:00:00Z' }, NOW)
+  const out = packageButtons(hold.record, hold, { today: '2026-10-15' })
+  expect(out).toEqual([
+    { label: 'reschedule', url: trackingUrl('poste', 'RA123456789IT') },
+    { label: 'remind me', data: 'remind me on 24 Oct: pick up Poste Italiane parcel' },
+  ])
+  expect(Buffer.byteLength(out[1]!.data!)).toBeLessThanOrEqual(60)
+  // Deadline tomorrow: the eve is today, so remind on the deadline itself.
+  expect(packageButtons(hold.record, hold, { today: '2026-10-24' })[1]!.data).toBe('remind me on 25 Oct: pick up Poste Italiane parcel')
+  // Deadline already gone: nothing to remind about.
+  expect(packageButtons(hold.record, hold, { today: '2026-10-26' }).map(b => b.label)).toEqual(['reschedule'])
+  // No deadline stated: no reminder to make up.
+  const bare = recordPackage(fresh(), { ...base, text: 'Ready for pickup', source: 'email:b3' }, NOW)
+  expect(packageButtons(bare.record, bare).map(b => b.label)).toEqual(['reschedule'])
+})
+
+test('buttons: nothing unless the step is worth a message, a delivered parcel, or a parcel with no page', () => {
+  const f = fresh()
+  const d = recordPackage(f, { carrier: 'gls', tracking: '123456789012', status: 'delivered', source: 'email:d1' }, NOW)
+  expect(packageButtons(d.record, d)).toEqual([])
+  expect(packageButtons(d.record, { notify: false })).toEqual([])
+  const c = recordPackage(fresh(), { carrier: 'dhl', tracking: 'JD000000000000000000', status: 'exception', text: 'Held at customs', source: 'email:c1' }, NOW)
+  expect(packageButtons(c.record, c)).toEqual([])
+  const a = recordPackage(fresh(), { carrier: 'amazon', merchant: 'Amazon', status: 'out_for_delivery', source: 'email:a1' }, NOW)
+  expect(packageButtons(a.record, a)).toEqual([])
+  expect(packageButtons({ ...a.record, orderRef: '123-4567890-1234567' }, a, { amazonDomain: 'amazon.it' })[0]!.url).toContain('amazon.it')
+})
+
+test('CLI: record prints the buttons line after notify', () => {
+  const dir = mkdtempSync(join(tmp, 'cli-'))
+  const json = JSON.stringify({ carrier: 'gls', tracking: '123456789012', status: 'out_for_delivery', source: 'email:cli1' })
+  const run = Bun.spawnSync(['bun', join(import.meta.dir, '..', 'packages.ts'), 'record', json], { env: { ...process.env, OTTO_STATE_DIR: dir } })
+  const lines = run.stdout.toString().trim().split('\n')
+  expect(lines[1]).toStartWith('notify:')
+  expect(lines[2]).toStartWith('buttons: [')
 })

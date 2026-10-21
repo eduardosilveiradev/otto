@@ -237,3 +237,11 @@ test('trip mode sits right after the calendar and is a labelled section', () => 
   expect(sectionLabels(text)).toContain('Trip')
   expect(formatBrief(parts())).not.toContain('Trip')
 })
+
+test('the quiet line renders after Desk and is not a section', () => {
+  const quiet = 'Quiet — desk watcher silent 2 d (usual gap under 12 h)'
+  const text = formatBrief(parts({ desk: 'at desk 5m', quiet }))
+  expect(text).toContain(quiet)
+  expect(text.indexOf(quiet)).toBeGreaterThan(text.indexOf('Desk: at desk 5m'))
+  expect(sectionLabels(text)).not.toContain('Quiet')
+})

@@ -23,8 +23,12 @@ import { join } from 'path'
 import { readHeartbeat, STALE_MS } from './heartbeat.ts'
 import { omittedSections, OMITTED_REBUILDS, type BriefRebuild, type ProbeName, type ProbeResult } from './watchdog.ts'
 import { readEnvKey } from './deadman.ts'
+import { depwatchStatus, type DepwatchState } from './depwatch.ts'
 import { domainStatus, peekDomains } from './domains.ts'
+import { diskStatus, peekDiskState } from './disk.ts'
 import { planSummary, type PlanUsage } from './spend.ts'
+import { loadInputs, inputsStatus } from './inputwatch.ts'
+import { appHealthStatus, peekAppHealth, tokenNames } from './apphealth.ts'
 
 export type Verdict = 'up' | 'degraded' | 'down' | 'off' | 'unknown'
 
@@ -247,6 +251,15 @@ export async function collectStatus(d: StatusDeps): Promise<StatusRow[]> {
   )
   rows.push({ id: 'domains', label: 'Domain expiry', verdict: dom.verdict, ...(dom.at ? { at: dom.at } : {}), detail: dom.detail })
 
+  // --- Dependency advisories ----------------------------------------------
+  // A failed OSV lookup is shown here and retried tomorrow; only malicious and high/critical
+  // findings are ever messaged, once per installed version.
+  const dw = depwatchStatus(readJson<DepwatchState>(join(stateDir, 'depwatch.json')), now)
+  rows.push({ id: 'depwatch', label: 'Dependency advisories', verdict: dw.verdict, ...(dw.at ? { at: dw.at } : {}), detail: dw.detail })
+  // --- Disk space ----------------------------------------------------------
+  const disk = diskStatus(peekDiskState(join(stateDir, 'disk.json')), now)
+  rows.push({ id: 'disk', label: 'Disk space', verdict: disk.verdict, ...(disk.at ? { at: disk.at } : {}), detail: disk.detail })
+
   // --- Claude plan usage (posted by the Claude Code status line) ----------
   const plan = readJson<PlanUsage>(join(stateDir, 'plan-usage.json'))
   const summary = planSummary(plan, now)
@@ -254,6 +267,14 @@ export async function collectStatus(d: StatusDeps): Promise<StatusRow[]> {
     ? { id: 'plan-usage', label: 'Claude plan usage', verdict: 'up', at: plan!.at, detail: summary }
     : { id: 'plan-usage', label: 'Claude plan usage', verdict: 'unknown', ...(plan ? { at: plan.at } : {}),
         detail: plan ? `last reading ${ago(now - plan.at)} ago; it updates only while a Claude Code session is running` : 'no reading yet: the status line posts one after the first response of a session' })
+
+  // --- Inputs that went quiet (inputwatch.ts) ---------------------------------
+  const inp = inputsStatus(loadInputs(join(stateDir, 'inputs.json'), true), now)
+  rows.push({ id: 'inputs', label: 'Inputs', verdict: inp.verdict, ...(inp.at ? { at: inp.at } : {}), detail: inp.detail })
+
+  // --- The phone ------------------------------------------------------------
+  // Reported by the iOS app itself (POST /app/health); no row until a device has reported.
+  rows.push(...appHealthStatus(peekAppHealth(join(stateDir, 'app-health.json')), tokenNames(stateDir), now, ago))
 
   return rows
 }

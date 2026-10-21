@@ -19,7 +19,8 @@
  * user belongs in this file.
  */
 
-import { deskNow } from './desk.ts'
+import { deskNow, STATE as DESK_STATE } from './desk.ts'
+import { recordInput, observeInputs, briefLine as quietInputsLine } from './inputwatch.ts'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -45,6 +46,8 @@ import { proactivityReport, formatReport, type LedgerEntry } from './ledger.ts'
 import {
   loadTopics, saveTopics, decideSend, recordSend, recordSuppressed, pruneTopics, explain,
 } from './topics.ts'
+import { srcOf, whyFor } from './why.ts'
+import { linkMetaFor } from './linkmeta.ts'
 import { lintOutbound, blocking, warnings, formatFindings, medianLength } from './lint.ts'
 import { lintReply } from './replylint.ts'
 import { redactSecrets } from './redact.ts'
@@ -71,6 +74,7 @@ import {
   recordBurned, BURNED_TEXT, DELETE_WINDOW_MS, type BurnTarget,
 } from './burn.ts'
 import { checkAppToken, isLiveAppToken, loadAppTokens, touchAppToken } from './apptokens.ts'
+import { parseAppHealth, recordAppHealth } from './apphealth.ts'
 import {
   loadMemories, searchMemories, writeMemory, deleteMemory, formatHit,
   memHints, memHandle, HANDLE_RE, seenFromLog,
@@ -116,7 +120,7 @@ import { minePromises, commitmentLoops, type Lang } from './commitments.ts'
 import { loadPackages } from './packages.ts'
 import {
   ingestAttendees, mentionPerson, recordPerson, matchPeople, cadenceDrift,
-  describePerson, displayName, formatDrift, loadPeople, savePeople, PEOPLE_FILE,
+  describePerson, displayName, findPerson, formatDrift, loadPeople, savePeople, PEOPLE_FILE,
 } from './people.ts'
 import {
   recordPlace, resolveRecommender, queryPlaces, searchPlaces, formatPlace, loadPlaces, savePlaces,
@@ -126,6 +130,10 @@ import {
   birthdaysToNudge, upcomingBirthdays, markNudged, pruneBirthdayState, formatNudge, formatBirthdayLine,
   loadBirthdayState, saveBirthdayState, BIRTHDAYS_FILE, DEFAULT_LEAD_DAYS,
 } from './birthdays.ts'
+import {
+  parseCadence, keepInTouchDue, markKitNudged, formatKitNudge, parseKitTap, applyKitTap,
+  loadKitState, saveKitState, KEEPINTOUCH_FILE,
+} from './keepintouch.ts'
 import {
   parseBookingEmail, makeStay, parseFreeCancellation, mergeFragment,
   tripProblems, formatTrip, loadTrips, saveTrips, loadAirports,
@@ -139,6 +147,8 @@ import {
   tripExpenses, formatTripExpenses, segmentKey, flightsOf, departureAt, arrivalAt,
   noFlightStatus, type FlightStatus, type FlightStatusProvider,
 } from './triplife.ts'
+import { arrivalExtras } from './arrival.ts'
+import { FLIGHTS_FILE, aeroDataBox, loadFlightsState, saveFlightsState, rollMonth, pruneFlights, pollDue, applyPoll, flightsConfig } from './flightstatus.ts'
 import {
   ingestHealthPayload, assess as assessHealth, formatAssessment, formatBody, loadHealth, saveHealth, HEALTH_FILE,
 } from './health.ts'
@@ -166,8 +176,10 @@ import {
 import { writeHeartbeat, BEAT_MS } from './heartbeat.ts'
 import { collectStatus, formatStatus, defaultStatusDeps, recentRepairLines, rowToProbe } from './status.ts'
 import { loadDomains, saveDomains, checkDomains, groupAlerts, readCertExpiry } from './domains.ts'
+import { collectInstalled, runDepwatch, loadDepwatch, saveDepwatch, formatDepAlerts, STATE_FILE_NAME as DEPWATCH_STATE_NAME } from './depwatch.ts'
+import { readVolumes, assessDisk, reclaimables, duBytes, formatDiskAlert, resolveDiskConfig, loadDiskState, saveDiskState } from './disk.ts'
 import { formatOutcome } from './canary.ts'
-import { backupDue, formatBackupAlert, loadBackupState, STATE_FILE_NAME as BACKUP_STATE_NAME } from './backup.ts'
+import { backupDue, formatBackupAlert, loadBackupState, resolveBackupConfig, STATE_FILE_NAME as BACKUP_STATE_NAME } from './backup.ts'
 import { selfTestPlan, runSelfTest, cleanup as cleanupSelfTest } from './selftest.ts'
 import { escalationPlan, type TriageItem } from './triage.ts'
 import {
@@ -194,6 +206,7 @@ import { defaultProjectsRoot } from './workspace.ts'
 import {
   findNights, planProposal, markProposed, formatOffer, applyTap, loadSleep, saveSleep, TAP_RE,
 } from './sleep.ts'
+import { planOffer, startRun, applyTap as applyBackoffTap, TAP_RE as BACKOFF_TAP_RE, type BackoffFields } from './backoff.ts'
 
 const STATE_DIR = process.env.OTTO_STATE_DIR ?? join(homedir(), '.otto', 'state')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -224,6 +237,7 @@ const MEMHINTS_FILE = join(STATE_DIR, 'memhints.jsonl')
 const HYGIENE_FILE = join(STATE_DIR, 'hygiene.json')
 /** Last-known certificate and registration expiry per domain, and which warnings went out. */
 const DOMAINS_FILE = join(STATE_DIR, 'domains.json')
+const DISK_FILE = join(STATE_DIR, 'disk.json')
 /** Proactive messages held by snooze / busy / quiet hours, awaiting a flush. */
 const QUEUE_FILE = join(STATE_DIR, 'queue.json')
 /** Inbound messages until answered, so a restart cannot swallow one. See redeliver.ts. */
@@ -256,6 +270,7 @@ const RUNTIME_FILE = join(STATE_DIR, 'runtime.json')
 const VOICE_SCRIPT = join(import.meta.dir, 'voice', 'voiced.py')
 const VOICE_HOME = join(STATE_DIR, 'voice')
 const VOICE_INFO_FILE = join(STATE_DIR, 'voice-daemon.json')
+const INPUTS_FILE = join(STATE_DIR, 'inputs.json')
 /** Quiet-hours offers inferred from sleep: what was offered, what is pending, the mute. */
 const SLEEP_FILE = join(STATE_DIR, 'sleep.json')
 /** The ts.net origin the app last reached us on (tailscale serve); dash.ts checks Host against it. */
@@ -407,6 +422,8 @@ type Access = {
   redeliverHours?: number
   /** Days-in-country limits. Off unless the user enables it: citizenship decides whether Schengen applies. */
   stayLimits?: { schengen?: boolean; taxCountries?: string[] }
+  /** Flight-day watcher (otto/flightstatus.ts): delay tolerance in minutes and the monthly call budget of the AeroDataBox plan. Defaults 15 and 150. */
+  flights?: { delayMinutes?: number; monthlyCalls?: number }
   /** Money display. `home` is the ISO 4217 code amounts are annotated into —
    * "R$ 120,00 (≈ €19.40, ECB 10 Oct)" — when shown in any other currency.
    * Default "EUR". Annotation only: totals stay per currency. */
@@ -414,10 +431,14 @@ type Access = {
   /** Birthday runway. leadDays: how far ahead the one nudge goes, in the person's
    * own calendar. Default 3; 0 turns nudges off (the day still shows in the brief). */
   birthdays?: { leadDays?: number }
+  /** Keep-in-touch nudges (otto/keepintouch.ts): at most this many across everyone in any 7 days. Default 2; 0 turns them off. */
+  keepInTouch?: { weeklyCap?: number }
   /** Return-window and warranty tracking. `minAmount` is in the money ledger's
    * home currency (`money.home`, default EUR); smaller purchases are ignored.
    * Default 30. */
   returns?: { minAmount?: number }
+  /** Parcel buttons. amazonDomain: the shop whose order page [reschedule] opens for Amazon parcels ("amazon.it"). Default "amazon.com". Read by otto/packages.ts. */
+  packages?: { amazonDomain?: string }
   /** Thresholds for the nightly loop-hygiene and memory-audit passes. Every field
    * is optional; anything missing or unusable falls back to its default. */
   hygiene?: {
@@ -439,6 +460,8 @@ type Access = {
   }
   /** Domains whose TLS certificate and registration expiry are checked daily. */
   domains?: string[]
+  /** Free-space lines for the disk watch (otto/disk.ts). Defaults 15 GB or 10% (normal), 5 GB or 3% (urgent). */
+  disk?: { warnGb?: number; warnPercent?: number; criticalGb?: number; criticalPercent?: number }
   /** Facts about things that move (city, job, phone, plans) older than this come
    * back from recall with their age. Default 180. */
   staleness?: { days?: number }
@@ -638,7 +661,7 @@ type Trigger = {
   lastFired?: string
   /** epoch ms of next due time (cron triggers only, recomputed on load/fire). */
   nextRun?: number
-}
+} & BackoffFields
 
 function loadTriggers(): Trigger[] {
   try {
@@ -1361,6 +1384,32 @@ function formatHistory(e: HistoryEntry): string {
 // it cannot rot the way a "please log your sends" instruction would.
 
 let currentSrc: string | null = null
+
+/**
+ * A send made for a trigger ends that trigger's silent streak — held or not (backoff.ts).
+ * Suppressed duplicate-topic sends return before this, so they count as silent on purpose.
+ * ponytail: one false silent per user interruption (currentSrc is nulled on inbound); attribute by turn id if it ever matters
+ * Two triggers fired in one tick share the last one's src, so the first one's sends count for the second; same fix.
+ */
+function noteTriggerSpoke(): void {
+  if (!currentSrc?.startsWith('trigger:')) return
+  const id = currentSrc.slice('trigger:'.length)
+  const ts = loadTriggers()
+  const t = ts.find(x => x.id === id)
+  if (t?.silentRuns) { t.silentRuns = 0; saveTriggers(ts) }
+}
+
+let currentMeta: Record<string, string> = {}
+
+/** The plain-words origin of the current turn's sends, from server data only. null when it is a reply. */
+function whyNow(src: string): string | null {
+  const id = src.startsWith('trigger:') ? src.slice('trigger:'.length) : null
+  return whyFor(src, {
+    now: Date.now(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone, meta: currentMeta,
+    ...(id ? { trigger: loadTriggers().find(t => t.id === id) ?? null } : {}),
+    scanMinutes: loadAccess().emailScanMinutes ?? 60,
+  })
+}
 const lastInbound = new Map<string, number>()
 const CONVERSATION_WINDOW_MS = 15 * 60_000
 
@@ -1516,6 +1565,7 @@ async function refreshBrief(): Promise<void> {
     const trip = tripModeLine()
     const birthdays = birthdayLine()
     const returns = returnsLine()
+    const quiet = quietInputsLine(INPUTS_FILE)
     const built = await gatherBrief({
       account: googleAccount(access),
       notes: readNotes(),
@@ -1529,6 +1579,7 @@ async function refreshBrief(): Promise<void> {
       ...(trip ? { trip } : {}),
       ...(birthdays ? { birthdays } : {}),
       ...(returns ? { returns } : {}),
+      ...(quiet ? { quiet } : {}),
     })
     briefCache = { text: built.text, data: built.data, ...(built.busyUntil ? { busyUntil: built.busyUntil } : {}), at: Date.now() }
 
@@ -1660,6 +1711,7 @@ function enqueue(
   reason: HoldReason,
   buttons: ReplyButton[] = [],
   files: string[] = [],
+  origin?: { src: string; why: string | null },
 ): QueuedMessage {
   const q = loadQueue(QUEUE_FILE)
   const msg: QueuedMessage = {
@@ -1670,6 +1722,8 @@ function enqueue(
     reason,
     ...(buttons.length ? { buttons } : {}),
     ...(files.length ? { files } : {}),
+    ...(origin?.src ? { src: origin.src } : {}),
+    ...(origin?.why ? { why: origin.why } : {}),
   }
   q.push(msg)
   saveQueue(QUEUE_FILE, q)
@@ -1678,20 +1732,26 @@ function enqueue(
 
 /** A flushed message bound for the app: the same socket and history path as reply,
  * so a phone that is offline at flush time picks it up on reconnect. */
-function appFlush(text: string, buttons: ReplyButton[] = [], files: string[] = []): void {
+function appFlush(text: string, buttons: ReplyButton[] = [], files: string[] = [], why: string | null = null): void {
   const ok = files.filter(f => { try { assertSendable(f); return true } catch { return false } })
   const extra = ok.length ? { files: ok.map(appFile) } : {}
-  const id = appSend(text, buttons, extra)
+  const id = appSend(text, buttons, extra, { src: 'queue-flush', ...(why ? { why } : {}) })
   recordHistory({
     dir: 'out', chat_id: APP_CHAT, kind: 'text', text, message_id: id, src: 'queue-flush',
-    ...(ok.length || buttons.length ? { extra: { ...extra, ...(buttons.length ? { buttons } : {}) } } : {}),
+    extra: { ...extra, ...(buttons.length ? { buttons } : {}), src: 'queue-flush', ...(why ? { why } : {}) },
   })
 }
 
 /** A held message with buttons or files, sent intact. No voice: a spoken note
  * arriving out of a queue hours later is startling rather than helpful. */
-async function deliverQueued(m: QueuedMessage): Promise<void> {
-  if (routeReply(m.chat_id) === APP_CHAT) return appFlush(m.text, m.buttons, m.files)
+async function deliverQueued(m: QueuedMessage, held = true): Promise<void> {
+  if (routeReply(m.chat_id) === APP_CHAT) {
+    // A server message that was never held has no hold to explain; "held while you were asleep" would be false.
+    return appFlush(m.text, m.buttons, m.files, held ? whyFor('queue-flush', {
+      now: Date.now(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      hold: { reason: m.reason, count: 1, ...(m.why ? { inner: m.why } : {}) },
+    }) : null)
+  }
   const sentIds: number[] = []
   const sent = await bot.api.sendMessage(m.chat_id, m.text)
   sentIds.push(sent.message_id)
@@ -1755,6 +1815,7 @@ async function flushQueue(force = false): Promise<number> {
   const chats = [...new Set(q.map(m => m.chat_id))]
   let sent = 0
   const remaining: QueuedMessage[] = []
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
 
   const stillHeld = !force && holdReason(state, { priority: 'normal', conversational: false }) !== null
 
@@ -1772,7 +1833,15 @@ async function flushQueue(force = false): Promise<number> {
     // double-sending what already landed.
     try {
       for (const text of coalesce(plain)) {
-        if (routeReply(chat_id) === APP_CHAT) { appFlush(text); sent++; continue }
+        if (routeReply(chat_id) === APP_CHAT) {
+          appFlush(text, [], [], whyFor('queue-flush', {
+            now: Date.now(), tz,
+            // Same rule as coalesce's footer: anything held for a flight names the whole batch.
+            hold: { reason: plain.some(m => m.reason === 'inflight') ? 'inflight' : plain[0].reason, count: plain.length, ...(plain.length === 1 && plain[0].why ? { inner: plain[0].why } : {}) },
+          }))
+          sent++
+          continue
+        }
         const m = await bot.api.sendMessage(chat_id, text)
         recordHistory({ dir: 'out', chat_id, kind: 'text', text, message_id: String(m.message_id), src: 'queue-flush' })
         sent++
@@ -1998,6 +2067,8 @@ type RuntimeState = {
   lastBackupDay?: string
   /** Local calendar day the domain and TLS expiry check last ran. */
   lastDomainCheckDay?: string
+  /** Local calendar day the dependency (OSV) check last ran. */
+  lastDepwatchDay?: string
   /** Boot timestamps, newest last. Crash-loop detection reads these. */
   recentStarts?: number[]
   /** Set by `reload` just before it exits: the next boot is planned, not a crash. */
@@ -2193,7 +2264,7 @@ async function sendServerMessage(
     queuedAt: new Date().toISOString(),
     reason: 'quiet',
     ...(buttons.length ? { buttons } : {}),
-  })
+  }, false)
 }
 
 /**
@@ -2266,6 +2337,14 @@ async function handleCapabilityButton(instruction: string, chat_id: string): Pro
   if (paired) return paired
   const slept = handleSleepButton(instruction)
   if (slept) return slept
+  const slowedDown = handleBackoffButton(instruction)
+  if (slowedDown) return slowedDown
+  const kitTap = parseKitTap(instruction)
+  if (kitTap) {
+    const people = loadPeople(PEOPLE_FILE); const state = loadKitState(KEEPINTOUCH_FILE)
+    const r = applyKitTap(people, state, kitTap, Date.now(), n => findPerson(people, n))
+    if (r) { if (r.peopleChanged) savePeople(PEOPLE_FILE, people); if (r.stateChanged) saveKitState(KEEPINTOUCH_FILE, state); return r.line }
+  }
   const m = /^(install|tweak|drop) forge ([a-f0-9]+)$/.exec(instruction)
     // The drop button spells out "; never offer it again" after the id, so this
     // cannot anchor on the id: anchoring is what made every no fall through to
@@ -2487,6 +2566,53 @@ async function maybeCheckDomains(): Promise<void> {
   }
 }
 
+const DEPWATCH_HOUR = 6   // after backup at 05:30; a normal-priority finding then lands in waking hours
+let depwatchInFlight = false
+/** Once a day: are any of the packages otto itself runs known-malicious or badly vulnerable? (depwatch.ts) */
+async function maybeCheckDeps(): Promise<void> {
+  if (depwatchInFlight) return
+  const now = new Date()
+  if (now.getHours() < DEPWATCH_HOUR) return
+  const rt = loadRuntimeState()
+  if (rt.lastDepwatchDay === todayStamp(now)) return
+  saveRuntimeState({ ...rt, lastDepwatchDay: todayStamp(now) })   // stamp first: a pass that throws waits for tomorrow
+  depwatchInFlight = true
+  try {
+    const file = join(STATE_DIR, DEPWATCH_STATE_NAME)
+    const deps = collectInstalled(import.meta.dir, STATE_DIR)
+    const { alerts, state } = await runDepwatch(deps, loadDepwatch(file), { fetch: (u, i) => fetch(u, i), now: Date.now() })
+    saveDepwatch(file, state)   // persist before sending: a crash in between loses one warning, never repeats one
+    process.stderr.write(`otto channel: depwatch ${deps.length} package(s), ${state.open.length} advisories, ${alerts.length} new${state.lastError ? ` — ${state.lastError}` : ''}\n`)
+    const chat = loadAccess().allowFrom[0]
+    if (!chat) return
+    for (const m of formatDepAlerts(alerts)) await sendServerMessage(chat, m.text, { urgent: m.urgent })
+  } finally { depwatchInFlight = false }
+}
+
+// ---------------------------------------------------------------------------
+// Disk space (otto/disk.ts)
+// ---------------------------------------------------------------------------
+
+const DISK_CHECK_MS = 60 * 60_000
+let lastDiskCheck = 0
+let diskCheckInFlight = false
+/** Hourly statfs; du only before a message; nothing is ever deleted. Text is final — no model. */
+async function maybeCheckDisk(): Promise<void> {
+  if (diskCheckInFlight) return
+  diskCheckInFlight = true
+  try {
+    const access = loadAccess()
+    const backupDir = resolveBackupConfig(access.backup).dir
+    const state = loadDiskState(DISK_FILE)
+    const alerts = assessDisk(readVolumes({ boot: '/', backupDir }), state, resolveDiskConfig(access.disk), Date.now())
+    saveDiskState(DISK_FILE, state) // persist before sending, as domains does: a crash loses one warning, never repeats one
+    const chat = access.allowFrom[0]
+    if (!alerts.length || !chat) return
+    const reclaim = await reclaimables(homedir(), backupDir, duBytes)
+    for (const a of alerts) await sendServerMessage(chat, formatDiskAlert(a, reclaim), { urgent: a.priority === 'urgent' })
+  } finally { diskCheckInFlight = false }
+}
+
 const CALFEED_MS = 15 * 60_000
 let lastCalPoll = 0
 
@@ -2542,36 +2668,48 @@ async function runCalFeed(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Live flight status by segmentKey. Always empty today: the provider below is
- * a stub, so everything runs on the booked schedule.
+ * Live flight status by segmentKey. Seeded from flights.json so a restart
+ * mid-flight keeps the estimate the in-flight hold is built on.
  */
-const flightStatuses = new Map<string, FlightStatus>()
+const flightStatuses = new Map<string, FlightStatus>(
+  Object.entries(loadFlightsState(FLIGHTS_FILE).flights).flatMap(([k, w]) => w?.status ? [[k, w.status] as const] : []),
+)
 
 /**
- * STUB — live flight status. Needs a paid flight-data API and a key in
- * ~/.otto/state/.env; swap `noFlightStatus` for a real FlightStatusProvider
- * (interface in triplife.ts) and pollFlightStatus starts filling the map. The
- * in-flight hold, the arrival event and the brief already read estimates from
- * it when present.
+ * Live flight status (otto/flightstatus.ts). Off, and silent, without
+ * AERODATABOX_KEY in ~/.otto/state/.env; add the key, then `reload`. The
+ * in-flight hold, the arrival event and the brief read estimates from the map
+ * pollFlightStatus fills.
  */
-const flightStatusProvider: FlightStatusProvider = noFlightStatus
+const flightStatusProvider: FlightStatusProvider = aeroDataBox(process.env.AERODATABOX_KEY) ?? noFlightStatus
 
-const FLIGHT_STATUS_MS = 10 * 60_000
+const FLIGHT_STATUS_MS = 5 * 60_000
 let lastFlightStatusPoll = 0
 
-/** Only flights departing within a day or still in the air are worth asking about. */
+/** pollDue decides which flights are worth a call this tick; most ticks make none. */
 async function pollFlightStatus(): Promise<void> {
+  if (flightStatusProvider === noFlightStatus) return
   const now = Date.now()
-  for (const trip of loadTrips(TRIPS_FILE)) {
-    for (const f of flightsOf(trip)) {
-      const dep = departureAt(f, flightStatuses)
-      const arr = arrivalAt(f, flightStatuses)
-      if (dep === undefined || dep - now > 24 * 60 * 60_000) continue
-      if (arr !== undefined && now > arr + 3 * 60 * 60_000) continue
-      const st = await flightStatusProvider.status(f).catch(() => undefined)
-      if (st) flightStatuses.set(segmentKey(f), st)
-    }
+  const access = loadAccess()
+  const state = loadFlightsState(FLIGHTS_FILE)
+  rollMonth(state, now)
+  const cfg = flightsConfig(access)
+  const chat = access.allowFrom[0] ?? ''
+  let changed = false
+  const live: string[] = []
+  for (const trip of loadTrips(TRIPS_FILE)) for (const f of flightsOf(trip)) {
+    const key = segmentKey(f); live.push(key)
+    const watch = state.flights[key]
+    if (!pollDue(f, watch, now, { monthlyCalls: cfg.monthlyCalls, monthCalls: state.calls })) continue
+    const st = await flightStatusProvider.status(f).catch(err => { process.stderr.write(`otto channel: flight status ${f.flight}: ${err}\n`); return undefined })
+    state.calls++; changed = true   // the plan charged for it either way
+    if (st) flightStatuses.set(key, st)
+    // told[] is appended synchronously inside applyPoll and saved below in the same tick:
+    // a crash in between loses one notice rather than doubling it, as checkTripLifecycle does.
+    for (const n of applyPoll(state, f, st, now, cfg)) if (chat) void sendServerMessage(chat, n.text, { urgent: n.urgent }).catch(err => process.stderr.write(`otto channel: flight notice failed: ${err}\n`))
   }
+  if (pruneFlights(state, live)) changed = true
+  if (changed) saveFlightsState(FLIGHTS_FILE, state)
 }
 
 const TRIP_LIFECYCLE_MS = 60_000
@@ -2616,6 +2754,24 @@ function checkBirthdays(): void {
   if (changed) saveBirthdayState(BIRTHDAYS_FILE, state)
 }
 
+function kitWeeklyCap(): number { const n = Number(loadAccess().keepInTouch?.weeklyCap); return Number.isInteger(n) && n >= 0 ? n : 2 }
+/** One nudge per person per cadence period, a small weekly cap overall. Same hourly slot as birthdays; stamped before send; priority normal. */
+function checkKeepInTouch(): void {
+  const chat = loadAccess().allowFrom[0]; if (!chat) return
+  const now = Date.now()
+  const people = loadPeople(PEOPLE_FILE)
+  const state = loadKitState(KEEPINTOUCH_FILE)
+  // Someone who just had a birthday nudge is not raised again for two weeks.
+  const skip = new Set(Object.entries(loadBirthdayState(BIRTHDAYS_FILE)).filter(([, v]) => now - Date.parse(v.at) < 14 * 86_400_000).map(([id]) => id))
+  const due = keepInTouchDue(people, state, now, { weeklyCap: kitWeeklyCap(), skip })
+  for (const hit of due) {
+    markKitNudged(state, hit.person.id)
+    const n = formatKitNudge(hit, displayName(hit.person))
+    void sendServerMessage(chat, n.text, { buttons: n.buttons }).catch(err => process.stderr.write(`otto channel: keep-in-touch nudge failed: ${err}\n`))
+  }
+  if (due.length) saveKitState(KEEPINTOUCH_FILE, state)
+}
+
 /**
  * Raise whatever trip moments are due: online check-in when it opens, and the
  * arrival note on landing. Free cancellation is checkCancelNudges' job.
@@ -2629,8 +2785,9 @@ async function checkTripLifecycle(): Promise<void> {
   const now = new Date()
   const trips = loadTrips(TRIPS_FILE)
   if (!trips.length) return
+  const airports = loadAirports()
   const due = dueLifecycleEvents(trips, now.getTime(), {
-    airports: loadAirports(),
+    airports,
     statuses: flightStatuses,
   })
   if (!due.length) return
@@ -2642,8 +2799,13 @@ async function checkTripLifecycle(): Promise<void> {
 
   const chat = loadAccess().allowFrom[0] ?? ''
   for (const e of due) {
-    // A weather source, when one exists, would add its line to arrival events here.
     const lines = [...e.lines]
+    if (e.kind === 'arrival') {
+      // Fetched after markFired/saveTrips: a timeout costs lines, never a second message.
+      const rates = (await refreshFx().catch(() => ({ rates: undefined }))).rates
+      const extras = await arrivalExtras({ code: e.airport, zone: e.zone, day: e.day, airports, home: homeCurrency(loadAccess().money), rates }).catch(() => [] as string[])
+      lines.splice(lines.lastIndexOf(''), 0, ...extras)
+    }
     if (chat) lines.push(`chat_id ${chat}, priority "${e.priority}".`)
     injectEvent('trigger', lines.join('\n'), { trip_event: e.kind, trip_id: e.tripId })
   }
@@ -2738,6 +2900,21 @@ function handleSleepButton(instruction: string): string | null {
     saveAccess(setQuietWindow(loadAccess(), r.quietHours))
   }
   saveSleep(SLEEP_FILE, r.state)
+  return r.line
+}
+
+/** A tap on a backoff offer. Only the offer the server has pending for the schedule the trigger still has is honoured; the rewrite goes through classify() like every other write.
+ *  No capability-log inverse: the reply line names the old schedule. */
+function handleBackoffButton(instruction: string): string | null {
+  if (!BACKOFF_TAP_RE.test(instruction)) return null
+  const r = applyBackoffTap(loadTriggers(), instruction, Date.now())
+  if (!r.ok) return r.line
+  if (r.schedule) {
+    const d = classify([`trigger:${r.trigger.id}/schedule`], 'user-typed', { kind: 'tapped', buttonData: instruction })
+    if (!d.allowed) throw new Error(d.reason)
+    r.trigger.nextRun = computeNextRun(r.schedule, Date.now(), r.trigger.tz)
+  }
+  saveTriggers(r.triggers)
   return r.line
 }
 
@@ -3272,11 +3449,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               properties: {
                 label: { type: 'string' },
                 data: { type: 'string' },
+                url: { type: 'string' },
               },
-              required: ['label', 'data'],
+              required: ['label'],
             },
             description:
-              'One-tap inline buttons under the message (max 6, rows of 3). A tap injects an event="button" whose content is the tapped data — write data like trigger action text: a self-contained instruction a future agent can execute with no other context ("send the drafted reply to Marco", "snooze this reminder 1h", "delete trigger abc123"). Max 60 UTF-8 bytes per data; the tap survives restarts, so never reference conversation state. Use for draft send/discard, reminder snooze, yes/no confirms.',
+              'One-tap inline buttons under the message (max 6, rows of 3). A tap injects an event="button" whose content is the tapped data — write data like trigger action text: a self-contained instruction a future agent can execute with no other context ("send the drafted reply to Marco", "snooze this reminder 1h", "delete trigger abc123"). Max 60 UTF-8 bytes per data; the tap survives restarts, so never reference conversation state. Use for draft send/discard, reminder snooze, yes/no confirms. url (https) instead of data makes the button open that page — a carrier\'s manage-delivery page, a booking — and never comes back as an event.',
           },
           topic: {
             type: 'string',
@@ -3798,7 +3976,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Keep what the user just told you about someone. Whenever they explain who a person is, where they are, or something about them worth having next time — "Marco is my lawyer in Munich", "Ana just moved to Lisbon", "her kid is sick this week" — that is this tool. Record it as they said it and do not embellish; a note is their words, not your summary of them.\n' +
         'timezone is how "when can I call her" gets answered, so set it whenever they place someone in a city, using the IANA zone for that city. A newer value replaces the old one and the old one is kept as a dated note, so record a move or a job change the same way you recorded the original.\n' +
         'Do not mine their mailbox for people. A name off a header is a sender, not someone they know, and the ones they know they will tell you about. mention is for a name they said in passing with nothing else attached.\n' +
-        'birthday only when they say it, never from mail: "MM-DD", or "YYYY-MM-DD" when they gave the year. Otto then nudges once a few days ahead and shows the day itself in the brief — do not arm a trigger for it as well.',
+        'birthday only when they say it, never from mail: "MM-DD", or "YYYY-MM-DD" when they gave the year. Otto then nudges once a few days ahead and shows the day itself in the brief — do not arm a trigger for it as well.' +
+        ' cadence only when they say they want to keep in touch with someone and how often — Otto then nudges once per period with buttons; touched when they say they spoke to someone, because nothing else resets that clock.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -3811,6 +3990,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           city: { type: 'string' },
           timezone: { type: 'string', description: 'IANA zone, e.g. "Europe/Berlin". Set it whenever the user names a city.' },
           birthday: { type: 'string', description: '"MM-DD" or "YYYY-MM-DD", as they said it — year only if they gave one.' },
+          cadence: { type: 'string', description: 'How often they want to stay in touch, in their words: "weekly", "monthly", "every 6 weeks", or "off". Only when they asked for it.' },
+          touched: { type: 'boolean', description: 'They just told you they spoke to this person. Resets the check-in clock.' },
           note: { type: 'string', description: 'One thing worth keeping, verbatim.' },
           mention: { type: 'string', description: 'Instead of the above: a name the user said in passing.' },
         },
@@ -3821,7 +4002,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       title: 'Look up a person',
       annotations: { title: 'Look up a person', readOnlyHint: true, openWorldHint: false },
       description:
-        'What the user has told you about someone: who they are to the user, where they are, how to reach them, the hours when both of them are awake, and every note the user has left about them, newest first. Reach for it before writing to or about someone, and before asking the user anything about a person — they may have explained them already, and asking twice is the thing they will notice. Pass drift true instead of a name for people who have gone quiet by their own standards — that list is evidence for a conversation, not a reason to message anyone.',
+        'What the user has told you about someone: who they are to the user, where they are, how to reach them, the hours when both of them are awake, and every note the user has left about them, newest first. Reach for it before writing to or about someone, and before asking the user anything about a person — they may have explained them already, and asking twice is the thing they will notice. Pass drift true instead of a name for people who have gone quiet by their own standards — that list is evidence for a conversation, not a reason to message anyone — check-in nudges come only from a cadence the user set with note_contact, and the channel sends those itself.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -3889,7 +4070,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               confirmation: { type: 'string' }, free_cancel_until: { type: 'string' }, zone: { type: 'string' },
             },
           },
-          airport_zones: { type: 'object', description: '{"JFK":{"zone":"America/New_York","country":"US","city":"New York","currency":"USD"}} — merged into airports.json. city and currency let trip expenses be attributed.' },
+          airport_zones: { type: 'object', description: '{"JFK":{"zone":"America/New_York","country":"US","city":"New York","currency":"USD","lat":40.64,"lon":-73.78,"transport":"…"}} — merged into airports.json. city and currency let trip expenses be attributed; lat/lon (or city) give the arrival weather; transport is the user\'s own note on getting into town — only ever their words, never your knowledge.' },
           checkin_opens_hours: { type: 'number', description: 'Hours before departure online check-in opens, only if the booking states it (default 24 is assumed otherwise). Applies to this booking’s flights.' },
           source: { type: 'string', description: '"email:<messageId>". Also links the trip to a record_money entry with the same source.' },
         },
@@ -4059,10 +4240,10 @@ function describeTrigger(t: Trigger): string {
   const when = t.type === 'cron'
     ? `schedule=${t.schedule}${t.tz ? ` tz=${t.tz}` : ''}${t.nextRun ? ` next=${new Date(t.nextRun).toISOString()}` : ''}`
     : `condition=${t.condition}`
-  return `[${t.id}] ${t.type} ${t.enabled ? '' : '(disabled) '}${when} repeating=${t.repeating}${t.lastFired ? ` lastFired=${t.lastFired}` : ''}\n  action: ${t.action}`
+  return `[${t.id}] ${t.type} ${t.enabled ? '' : '(disabled) '}${when} repeating=${t.repeating}${t.lastFired ? ` lastFired=${t.lastFired}` : ''}${t.silentRuns ? ` silentRuns=${t.silentRuns}` : ''}\n  action: ${t.action}`
 }
 
-type ReplyButton = { label: string; data: string }
+type ReplyButton = { label: string; data?: string; url?: string }
 
 // callback_data hard limit is 64 bytes and "btn:" takes 4, so data gets 60.
 // Riding the instruction inside callback_data keeps taps stateless: they
@@ -4073,12 +4254,15 @@ function validateButtons(raw: unknown): ReplyButton[] {
   const buttons = (raw as ReplyButton[] | undefined) ?? []
   if (buttons.length > 6) throw new Error('too many buttons (max 6)')
   for (const b of buttons) {
-    if (!b?.label?.trim() || !b?.data?.trim()) throw new Error('each button needs a label and data')
-    // appTap trims before dispatch, so " pair ok …" would still reach pairingButton.
-    if (/^\s*pair\s/i.test(b.data)) throw new Error('reserved button')
-    const bytes = Buffer.byteLength(b.data, 'utf8')
-    if (bytes > BUTTON_DATA_MAX) {
-      throw new Error(`button data is ${bytes} bytes (max ${BUTTON_DATA_MAX}): "${b.data}" — shorten it into a self-contained instruction`)
+    if (!b?.label?.trim() || (b.data?.trim() ? 1 : 0) + (b.url ? 1 : 0) !== 1) throw new Error('each button needs a label and exactly one of data or url')
+    if (b.url != null && !(/^https:\/\//.test(b.url) && b.url.length <= 1024)) throw new Error('button url must be https:// (max 1024 chars)')
+    if (b.data != null) {
+      // appTap trims before dispatch, so " pair ok …" would still reach pairingButton.
+      if (/^\s*pair\s/i.test(b.data)) throw new Error('reserved button')
+      const bytes = Buffer.byteLength(b.data, 'utf8')
+      if (bytes > BUTTON_DATA_MAX) {
+        throw new Error(`button data is ${bytes} bytes (max ${BUTTON_DATA_MAX}): "${b.data}" — shorten it into a self-contained instruction`)
+      }
     }
   }
   return buttons
@@ -4093,7 +4277,8 @@ function buttonKeyboard(buttons: ReplyButton[]): InlineKeyboard {
   const kb = new InlineKeyboard()
   buttons.forEach((b, i) => {
     if (i > 0 && i % 3 === 0) kb.row()
-    kb.text(b.label, `btn:${b.data}`)
+    if (b.url) kb.url(b.label, b.url)
+    else kb.text(b.label, `btn:${b.data}`)
   })
   return kb
 }
@@ -4200,12 +4385,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           }
         }
 
+        noteTriggerSpoke()
         const hold = holdReason(holdState(), {
           priority,
           conversational,
         })
         if (hold) {
-          const queued = enqueue(chat_id, text, hold, buttons, files)
+          const queued = enqueue(chat_id, text, hold, buttons, files, { src: currentSrc ?? 'chat', why: whyNow(currentSrc ?? 'chat') })
           // Recorded on commit, not on delivery: once it is in the queue the user is
           // going to be told, so a duplicate arriving while it waits is still a
           // duplicate.
@@ -4240,12 +4426,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           }
           // A reply is part of the chat; anything unprompted gets its own stack per topic,
           // and an urgent one (a reminder they set, an OTP, a security alert) breaks through.
+          const src = conversational ? 'chat' : currentSrc ?? 'chat'
+          const why = conversational ? null : whyNow(src)
           const notice: Notice = conversational
             ? { thread: 'chat' }
-            : { thread: topicDecision.key, ...(priority === 'urgent' ? { level: 'timeSensitive' as const } : {}) }
+            : { thread: topicDecision.key, src, ...(why ? { why } : {}), ...(priority === 'urgent' ? { level: 'timeSensitive' as const } : {}) }
           const id = appSend(text, buttons, extra, notice)
           recordHistory({
-            dir: 'out', chat_id, kind: 'text', text, message_id: id, src: conversational ? 'chat' : currentSrc ?? 'chat',
+            dir: 'out', chat_id, kind: 'text', text, message_id: id, src,
             // The notice rides along so a message the app catches up on later files the same way.
             extra: { ...extra, ...(buttons.length ? { buttons } : {}), ...notice },
           })
@@ -4474,6 +4662,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           validateSchedule(String(args.schedule), t.tz)
           t.schedule = String(args.schedule)
           t.nextRun = computeNextRun(t.schedule, Date.now(), t.tz)
+          t.silentRuns = 0   // a hand-changed schedule starts the count over; a stale offer is refused by applyTap (offeredFor no longer matches)
         }
         if (args.condition != null) t.condition = String(args.condition)
         if (args.action != null) t.action = String(args.action)
@@ -4871,12 +5060,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       case 'note_contact': {
         const people = loadPeople(PEOPLE_FILE)
         const str = (k: string) => (args[k] === undefined ? undefined : String(args[k]))
+        const rawCadence = str('cadence'); const parsed = rawCadence ? parseCadence(rawCadence) : undefined
+        if (rawCadence && parsed === undefined) throw new Error(`cadence "${rawCadence}" — say weekly, monthly, every N weeks, or off`)
+        const cadence = parsed === 'off' ? null : parsed
         const p = args.mention
           ? mentionPerson(people, String(args.mention))
           : recordPerson(people, {
               name: str('name'), email: str('email'), phone: str('phone'), handle: str('handle'),
               relationship: str('relationship'), org: str('org'), city: str('city'),
               timezone: str('timezone'), birthday: str('birthday'), note: str('note'),
+              cadenceDays: cadence, touched: args.touched === true,
             })
         savePeople(PEOPLE_FILE, people)
         let soon = ''
@@ -5317,7 +5510,8 @@ const COLD_EVENTS = new Set(['trigger', 'email-scan'])
 function injectEvent(event: string, content: string, extraMeta: Record<string, string> = {}): void {
   // Remember what the session is being woken for, so whatever it sends back can
   // be attributed without asking it to self-report.
-  currentSrc = extraMeta.trigger_id ? `trigger:${extraMeta.trigger_id}` : event
+  currentSrc = srcOf(event, extraMeta)
+  currentMeta = extraMeta
   stampOrigin({ kind: 'event', event })
 
   const brief = COLD_EVENTS.has(event) ? cachedBrief() : null
@@ -5445,6 +5639,8 @@ function schedulerTick(): void {
     try { checkStayLimits() } catch (err) {
       process.stderr.write(`otto channel: stay limits check failed: ${err}\n`)
     }
+    // Is the desk watcher still rewriting its file? Cheap stat, five-minute cadence is plenty.
+    observeInputs(INPUTS_FILE, DESK_STATE, now)
   }
 
   // Distil yesterday's sessions into memory, once, overnight.
@@ -5457,6 +5653,16 @@ function schedulerTick(): void {
   void maybeCheckDomains().catch(err => {
     process.stderr.write(`otto channel: domain check failed: ${err}\n`)
   })
+
+  // Once a day: are any of the packages otto itself runs known-malicious or badly vulnerable?
+  void maybeCheckDeps().catch(err => {
+    process.stderr.write(`otto channel: depwatch failed: ${err}\n`)
+  })
+  // Hourly: is the disk filling up? Cheap statfs; du only runs before a message.
+  if (now - lastDiskCheck >= DISK_CHECK_MS) {
+    lastDiskCheck = now
+    void maybeCheckDisk().catch(err => { process.stderr.write(`otto channel: disk check failed: ${err}\n`) })
+  }
 
   // After consolidation: close loops the evidence closed, compile house rules.
   try { maybeRunHygiene() } catch (err) {
@@ -5493,6 +5699,9 @@ function schedulerTick(): void {
     lastBirthdayCheck = now
     try { checkBirthdays() } catch (err) {
       process.stderr.write(`otto channel: birthday check failed: ${err}\n`)
+    }
+    try { checkKeepInTouch() } catch (err) {
+      process.stderr.write(`otto channel: keep-in-touch check failed: ${err}\n`)
     }
   }
 
@@ -5535,6 +5744,16 @@ function schedulerTick(): void {
   for (const t of ts) {
     if (!t.enabled || t.type !== 'cron' || t.nextRun === undefined) continue
     if (t.nextRun > now) continue
+    // Six wakes in a row with nothing to say earns one offer to slow down; the tap does the slowing (handleBackoffButton).
+    const offer = planOffer(t, now)
+    if (offer) {
+      Object.assign(t, offer.trigger)
+      const chat = loadAccess().allowFrom[0]
+      if (chat) void sendServerMessage(chat, offer.text, { buttons: offer.buttons }).catch(err => {
+        process.stderr.write(`otto channel: backoff offer failed: ${err}\n`)
+      })
+    }
+    Object.assign(t, startRun(t))
     t.lastFired = new Date(now).toISOString()
     if (t.repeating && t.schedule) {
       t.nextRun = computeNextRun(t.schedule, now, t.tz)
@@ -5952,6 +6171,11 @@ async function handleInbound(ctx: Context, inbound: Inbound): Promise<void> {
     }
   }
 
+  // Open Graph of the first link, when a site answers inside the budget — see CLAUDE.md 'Links'.
+  // Awaited before the stamps below: an event injected during the fetch must not land between
+  // this message's origin stamp and its delivery.
+  const link = await linkMetaFor(text)
+
   // The user spoke: what follows is conversation, not the trigger we last woke for.
   lastInbound.set(chat_id, Date.now())
   currentSrc = null
@@ -6004,6 +6228,7 @@ async function handleInbound(ctx: Context, inbound: Inbound): Promise<void> {
     ...(imagePath ? { image_path: imagePath } : {}),
     ...deskMeta(),
     ...memMeta(text),
+    ...link,
     ...(attachment ? {
       attachment_kind: attachment.kind,
       attachment_file_id: attachment.file_id,
@@ -6291,6 +6516,7 @@ function startWebhook(retry = true): void {
         maxPayloadLength: 64 * 1024,
         open: ws => {
           appSockets.add(ws)
+          recordInput(INPUTS_FILE, 'app.socket')
           for (const frame of appPending.splice(0)) ws.send(frame)
           for (const a of liveApprovals()) ws.send(approvalFrame(a))
           const steps = liveSteps.snapshot()
@@ -6372,6 +6598,7 @@ async function handleWebhook(req: Request): Promise<Response> {
   // data-framing prefix travels in-band because the capped instructions
   // block has no room to document this event type.
   const src = (safeName(source) ?? '').slice(0, 64)
+  recordInput(INPUTS_FILE, src ? `webhook.${src.toLowerCase()}` : 'webhook')
   // A code in a Gmail push goes out before the session hears about it; the
   // session still gets the mail, told the code is already with the user.
   const delivered = src.toLowerCase() === 'gmail' ? await otpSerial(() => otpFastLane(text), []) : []
@@ -6489,12 +6716,15 @@ async function sweepOtpDeletes(): Promise<void> {
 // loopback, so /status below is guarded only by that and the X-Claude-Pid check.
 //
 //   GET /app/brief    the brief as JSON (BriefData in brief.ts); 503 until built
-//   GET /app/history  [{ dir: "in" | "out", text, ts }], the last 50 app messages;
+//   GET /app/history  [{ dir: "in" | "out", text, ts, and on Otto's: src?, why? }], the last 50 app messages;
 //                     kind: "terminal" on a prompt typed into Otto's terminal (see below)
 //   POST /app/photo   raw image bytes, optional ?text= caption -> 204; arrives
 //                     like a Telegram photo (image_path meta)
 //   POST /app/voice   raw audio bytes (m4a) -> { text } transcript; arrives
 //                     like a Telegram voice note (voice="1", Whisper text)
+//   POST /app/health  { notifications, backgroundRefresh, keepAwake, shareConfigured, lastRefresh?, build, version, ios, reason } -> 204;
+//                     the phone's own state, latest per device, shown by otto_status (apphealth.ts)
+//   GET /app/history also accepts X-Otto-Background: 1 when fetched by the app's background refresh (inputwatch.ts records it)
 //   GET /app/snooze   { until, since, held: [{ text, at }] }; until/since null
 //                     when not snoozed
 //   POST /app/snooze  { minutes } snoozes, or extends a live snooze by that much
@@ -6508,7 +6738,9 @@ async function sweepOtpDeletes(): Promise<void> {
 //     app -> otto  { "type": "message", "text": "..." }
 //                  { "type": "tap", "data": "<button data>", "label": "send ✓" }
 //     otto -> app  { "type": "message", "id": "...", "text": "...", "ts": "<ISO>",
-//                    "buttons": [{ "label": "...", "data": "..." }] }
+//                    "buttons": [{ "label": "...", "data": "..." } | { "label": "...", "url": "https://..." }],  (a url button only opens the page)
+//                    "src"?: "trigger:<id>" | "email-scan" | "webhook" | "nudge:<kind>" | "queue-flush",
+//                    "why"?: "<plain words>" }  — src/why only on unprompted messages
 //                  { "type": "steps", "taskId", "steps": [{ "label", "ts" }], "screenshot"?, "done" }
 //                    the reply in the works, step by step (livesteps.ts); live only
 //                  { "type": "typing", "on": true | false }
@@ -6632,9 +6864,11 @@ function barkPush(raw: string, force = false, extra: Record<string, unknown> = {
  * unrelated subjects together. `timeSensitive` breaks through Focus and the scheduled summary;
  * Bark honours it, the app can't (a free team has no Time Sensitive entitlement) and sends
  * it as a top relevance score instead. Apple offers no way to steer the AI rewrite or its
- * priority ranking beyond this; the rest is the text itself.
+ * priority ranking beyond this; the rest is the text itself. `src`/`why` are the message's
+ * attribution for the app's "Why this?" (why.ts); they ride the frame and the history extra
+ * exactly like `thread`.
  */
-type Notice = { thread?: string; level?: 'timeSensitive' }
+type Notice = { thread?: string; level?: 'timeSensitive'; src?: string; why?: string }
 
 function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; reply_to?: string } = {}, notice: Notice = {}): string {
   barkPush(text, false, { ...(notice.thread ? { group: notice.thread } : {}), ...(notice.level ? { level: notice.level } : {}) })
@@ -6920,6 +7154,7 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
   if (url.pathname === '/app/snooze') return appSnooze(req)
   if (url.pathname === '/app/settings') return appSettings(req)
   if (req.method === 'POST' && url.pathname === '/app/loop') return appLoop(req)
+  if (req.method === 'POST' && url.pathname === '/app/health') return appHealth(req, tokenId)
   if (req.method !== 'GET') return new Response(null, { status: 405 })
   if (url.pathname.startsWith('/app/file/')) {
     const path = appFiles.get(url.pathname.slice('/app/file/'.length))
@@ -6934,9 +7169,11 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
     }
     case '/app/brief':
       return briefCache ? Response.json(briefCache.data) : new Response(null, { status: 503 })
-    case '/app/history':
+    case '/app/history': {
+      if (req.headers.get('x-otto-background') === '1') recordInput(INPUTS_FILE, 'app.refresh')
       return Response.json(readHistory(APP_CHAT, 50).filter(e => e.kind !== 'reaction')
         .map(e => ({ dir: e.dir, text: e.text, ts: e.ts, ...(e.message_id ? { id: e.message_id } : {}), ...(e.kind === 'terminal' ? { kind: e.kind } : {}), ...(e.extra ?? {}) })))
+    }
   }
   return new Response(null, { status: 404 })
 }
@@ -7001,6 +7238,16 @@ async function appLoop(req: Request): Promise<Response> {
   // So the card and the brief stop listing it.
   void refreshBrief().catch(() => {})
   return Response.json({ id: body.id, done: body.done })
+}
+
+const APP_HEALTH_FILE = join(STATE_DIR, 'app-health.json')
+/** The phone's own state (notifications, background refresh, …) for otto_status; latest report per device token. */
+async function appHealth(req: Request, tokenId: string): Promise<Response> {
+  if ((Number(req.headers.get('content-length')) || 0) > 4096) return new Response(null, { status: 413 })
+  const h = parseAppHealth(await req.json().catch(() => null), Date.now())
+  if (!h) return new Response(null, { status: 400 })
+  recordAppHealth(APP_HEALTH_FILE, tokenId, h)
+  return new Response(null, { status: 204 })
 }
 
 const APP_UPLOAD_MAX = 25 * 1024 * 1024
@@ -7096,6 +7343,9 @@ function deskMeta(): Record<string, string> {
   return d ? { desk: d } : {}
 }
 
+/** The last app message's delivery, so the next one queues behind it. */
+let appInboundTail: Promise<unknown> = Promise.resolve()
+
 /**
  * `untrusted`: text that reached the app thread but was not typed there — shared from another
  * app, or sent from the dashboard (whose token lives in a browser). It still reads as the user's
@@ -7104,22 +7354,33 @@ function deskMeta(): Record<string, string> {
 async function appInbound(text: string, extraMeta: Record<string, string> = {}, kind = 'text', message_id?: string, untrusted?: string): Promise<void> {
   if (kind === 'text' && !untrusted && await pairingCommand(text, (t, b) => appSend(t, b))) return
   lastInbound.set(APP_CHAT, Date.now())
-  currentSrc = null
-  stampOrigin({ kind: 'inbound' })
-  factSurface = 'app'
-  if (untrusted) taintOrigin(untrusted)
-  else origin = recordTyped(origin, text)
+  if (extraMeta.shared === '1') recordInput(INPUTS_FILE, 'share')
   recordHistory({ dir: 'in', chat_id: APP_CHAT, kind, text, ...(message_id ? { message_id } : {}) })
   if (message_id) unreadApp.add(message_id)
   setAppTyping(true)
-  const meta = { chat_id: APP_CHAT, user: APP_CHAT, user_id: APP_CHAT, ts: new Date().toISOString(), ...(message_id ? { message_id } : {}), ...deskMeta(), ...(kind === 'reaction' ? {} : memMeta(text)), ...extraMeta }
-  if (message_id && kind !== 'reaction') updateJournal(j => recordInbound(j, { chat_id: APP_CHAT, message_id, text, meta }, Date.now()))
-  mcp.notification({
-    method: 'notifications/claude/channel',
-    params: { content: text, meta },
-  }).catch(err => {
-    process.stderr.write(`otto channel: failed to deliver app inbound: ${err}\n`)
+  // The link fetch starts now, but delivery keeps arrival order: a message waiting on a slow
+  // site must not be overtaken by the one sent after it.
+  const link = kind === 'reaction' ? {} : linkMetaFor(text)
+  const turn = appInboundTail.then(async () => {
+    const fields = await link
+    // Stamped right before delivery, not on arrival: otherwise a later message (or an event
+    // injected during the fetch) would decide the origin this one is delivered under.
+    currentSrc = null
+    stampOrigin({ kind: 'inbound' })
+    factSurface = 'app'
+    if (untrusted) taintOrigin(untrusted)
+    else origin = recordTyped(origin, text)
+    const meta = { chat_id: APP_CHAT, user: APP_CHAT, user_id: APP_CHAT, ts: new Date().toISOString(), ...(message_id ? { message_id } : {}), ...deskMeta(), ...(kind === 'reaction' ? {} : memMeta(text)), ...fields, ...extraMeta }
+    if (message_id && kind !== 'reaction') updateJournal(j => recordInbound(j, { chat_id: APP_CHAT, message_id, text, meta }, Date.now()))
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: { content: text, meta },
+    }).catch(err => {
+      process.stderr.write(`otto channel: failed to deliver app inbound: ${err}\n`)
+    })
   })
+  appInboundTail = turn.catch(() => {})
+  await turn
 }
 
 /** A message typed on the dashboard: into the app thread exactly as the phone's would be, plus an echo so an open phone can show it as the user's. */

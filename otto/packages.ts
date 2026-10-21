@@ -25,7 +25,8 @@
  * dashboard reads):
  *   bun otto/packages.ts parse --source email:<messageId> < mail.txt   # From:/Subject: lines, blank line, body → PackageInput JSON
  *   bun otto/packages.ts record '{"carrier":"DHL","tracking":"JD000000000000000000","status":"shipped","source":"email:<messageId>"}'
- *     prints "notify: <why>" on a second line only when the step is worth a message
+ *     prints "notify: <why>" on a second line only when the step is worth a message, and then
+ *     "buttons: [...]" on a third when there are any to offer (the carrier's manage page, a pickup reminder)
  *   bun otto/packages.ts list [--json]
  *   bun otto/packages.ts done <id>
  */
@@ -33,8 +34,9 @@
 import { readFileSync, writeFileSync, renameSync } from 'fs'
 import { randomBytes } from 'crypto'
 import { homedir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { toDateKey } from './money.ts'
+import { localDay } from './triplife.ts'
 
 export type PackageStatus = 'ordered' | 'shipped' | 'in_transit' | 'out_for_delivery' | 'delivered' | 'exception'
 
@@ -62,6 +64,8 @@ export type PackageRecord = {
   /** YYYY-MM-DD. With etaLatest, the window's first day. */
   eta?: string
   etaLatest?: string
+  /** YYYY-MM-DD. A pickup hold's deadline, as the mail stated it. */
+  holdUntil?: string
   /** Oldest first. */
   events: PackageEvent[]
   /** Every source already applied: the dedupe set. */
@@ -80,6 +84,7 @@ export type PackageInput = {
   status?: PackageStatus
   eta?: string
   etaLatest?: string
+  holdUntil?: string
   /** One line for the event list; defaults to the status. */
   text?: string
   /** When the step happened, per the mail. Defaults to now. */
@@ -151,6 +156,21 @@ export function carrierName(carrier: string): string {
 export function trackingUrl(carrier: string, tracking?: string): string | undefined {
   const url = URLS[carrierKey(carrier)]
   return url && tracking ? url(encodeURIComponent(normTracking(tracking))) : undefined
+}
+
+/** Where a carrier lets the recipient move or redirect a delivery; only the verified ones differ from tracking. */
+const MANAGE: Partial<Record<string, (tracking: string | undefined, o: { orderRef?: string; amazonDomain?: string }) => string | undefined>> = {
+  usps: () => 'https://tools.usps.com/redelivery.htm',
+  amazon: (_, o) => o.orderRef ? `https://www.${o.amazonDomain ?? 'amazon.com'}/gp/your-account/order-details?orderID=${encodeURIComponent(o.orderRef)}` : undefined,
+}
+
+/**
+ * The carrier's own page for rescheduling or redirecting a delivery. The
+ * recipient reschedules there; Otto only opens it, and never talks to a carrier.
+ */
+export function manageUrl(carrier: string, tracking?: string, o: { orderRef?: string; amazonDomain?: string } = {}): string | undefined {
+  const own = MANAGE[carrierKey(carrier)]
+  return own ? own(tracking, o) : trackingUrl(carrier, tracking)
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +337,20 @@ function merchantOf(carrier: string, s: string): string | undefined {
   return name && !/^n\/?a\b/i.test(name) ? name : undefined
 }
 
+const HOLD_CUE = /(?:ritir\w+ entro|entro il|entro e non oltre|fino al|collect(?:ed)? by|pick(?:ed)? up by|before|until|até(?: o dia)?|hasta el)/gi
+
+/** The day a pickup hold runs out: a date after a deadline cue, else "within N days" counted from the mail. */
+function findHoldUntil(text: string, now: Date): string | undefined {
+  for (const cue of text.matchAll(HOLD_CUE)) {
+    const from = cue.index! + cue[0].length
+    const hit = findDate(text.slice(from, from + 60), now)
+    if (hit) return hit.date
+  }
+  const rel = /(?:entro|within|em|dentro de)\s+(\d{1,2})\s*(?:giorni|days|dias)/i.exec(text)
+  // ponytail: calendar days; carriers often mean working days, so this errs early
+  return rel ? new Date(now.getTime() + Number(rel[1]) * DAY_MS).toISOString().slice(0, 10) : undefined
+}
+
 const PROBLEM_TEXT: Record<'attempted' | 'customs' | 'ready_for_pickup' | 'returned', string> = {
   attempted: 'Delivery attempt failed', customs: 'Held at customs', ready_for_pickup: 'Ready for pickup', returned: 'Returned to sender',
 }
@@ -344,6 +378,7 @@ export function parsePackageMail(
 
   const eta = state === 'delivered' || state === 'returned' ? undefined : findEta(all, now)
   const pickup = state === 'ready_for_pickup' ? pickupOf(all) : undefined
+  const holdUntil = state === 'ready_for_pickup' ? findHoldUntil(all, now) : undefined
   const status: PackageStatus = state in PROBLEM_TEXT ? 'exception' : (state as PackageStatus)
   let line = state in PROBLEM_TEXT ? PROBLEM_TEXT[state as keyof typeof PROBLEM_TEXT] : LABEL[status]
   if (pickup) line += ` at ${pickup}`
@@ -355,6 +390,7 @@ export function parsePackageMail(
     ...(orderRef ? { orderRef } : {}),
     ...(merchant ? { merchant } : {}),
     ...(eta ? { eta: eta.date } : {}),
+    ...(holdUntil ? { holdUntil } : {}),
     text: line,
   }
 }
@@ -454,6 +490,8 @@ export function recordPackage(
   const eta = input.eta ? toDateKey(input.eta) : undefined
   const etaLatest = input.etaLatest ? toDateKey(input.etaLatest) : undefined
   if ((input.eta && !eta) || (input.etaLatest && !etaLatest)) throw new Error('eta and etaLatest must be dates (YYYY-MM-DD)')
+  const holdUntil = input.holdUntil ? toDateKey(input.holdUntil) : undefined
+  if (input.holdUntil && !holdUntil) throw new Error('holdUntil must be a date (YYYY-MM-DD)')
   const at = input.at && !Number.isNaN(Date.parse(input.at)) ? new Date(input.at).toISOString() : now.toISOString()
 
   const records = loadPackages(file)
@@ -475,6 +513,8 @@ export function recordPackage(
   // Only from a mail at least as new as the newest step: an old mail's estimate is old news.
   const newest = record.events.at(-1)?.at
   if (eta && (!newest || at >= newest)) { record.eta = eta; if (etaLatest) record.etaLatest = etaLatest; else delete record.etaLatest }
+
+  if (holdUntil && (!newest || at >= newest)) record.holdUntil = holdUntil
 
   applyEvent(record, { at, status, text: input.text?.trim() || LABEL[status], ...(input.source ? { source: input.source } : {}) }, now)
   savePackages(file, records)
@@ -520,6 +560,35 @@ export function formatPackage(r: PackageRecord): string {
   return bits.join(' · ')
 }
 
+export type PackageButton = { label: string; data?: string; url?: string }
+
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const dmon = (key: string) => `${Number(key.slice(8, 10))} ${MON[Number(key.slice(5, 7)) - 1]}`
+
+/**
+ * The buttons that go with a "notify:" parcel message: the carrier's manage page
+ * where the parcel can be moved (out for delivery, a failed attempt, a pickup
+ * hold), and for a hold with a deadline a [remind me] the day before it runs out.
+ * Empty unless the step is worth a message. Data buttons stay under the 60-byte cap.
+ */
+export function packageButtons(r: PackageRecord, res: { notify: boolean }, o: { amazonDomain?: string; today?: string } = {}): PackageButton[] {
+  if (!res.notify) return []
+  const last = r.events.at(-1)?.text ?? ''
+  const hold = r.status === 'exception' && last.startsWith('Ready for pickup')
+  const label = r.status === 'out_for_delivery' ? 'pick another day'
+    : r.status === 'exception' && (hold || last.startsWith('Delivery attempt failed')) ? 'reschedule' : undefined
+  const out: PackageButton[] = []
+  const url = label && manageUrl(r.carrier, r.tracking, { orderRef: r.orderRef, amazonDomain: o.amazonDomain })
+  if (label && url) out.push({ label, url })
+  const today = o.today ?? localDay(Date.now())
+  // A deadline already gone has nothing left to remind about.
+  if (hold && r.holdUntil && r.holdUntil >= today) {
+    const eve = new Date(Date.parse(r.holdUntil) - DAY_MS).toISOString().slice(0, 10)
+    out.push({ label: 'remind me', data: `remind me on ${dmon(eve <= today ? r.holdUntil : eve)}: pick up ${carrierName(r.carrier) || 'the'} parcel` })
+  }
+  return out
+}
+
 export const PACKAGES_FILE = join(
   process.env.OTTO_STATE_DIR ?? join(homedir(), '.otto', 'state'),
   'packages.json',
@@ -540,6 +609,10 @@ if (import.meta.main) {
     } else if (cmd === 'record' && arg) {
       const { record, created, applied, notify, why } = recordPackage(PACKAGES_FILE, JSON.parse(arg))
       console.log(`${created ? 'new' : applied ? 'updated' : 'already recorded'}: ${formatPackage(record)}${notify ? `\nnotify: ${why}` : ''}`)
+      let amazonDomain: string | undefined
+      try { amazonDomain = JSON.parse(readFileSync(join(dirname(PACKAGES_FILE), 'access.json'), 'utf8')).packages?.amazonDomain } catch {}
+      const buttons = packageButtons(record, { notify }, { amazonDomain })
+      if (buttons.length) console.log(`buttons: ${JSON.stringify(buttons)}`)
     } else if (cmd === 'list') {
       const rows = activePackages(loadPackages(PACKAGES_FILE))
       console.log(process.argv.includes('--json') ? JSON.stringify(rows, null, 2) : rows.map(formatPackage).join('\n') || 'no packages')

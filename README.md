@@ -346,6 +346,34 @@ off a TLS handshake and the registration expiry from RDAP (rdap.org). One
 warning at 30 days, one at 7 and one on expiry, per domain per expiry date; a
 failed lookup is retried the next day and shown only in `otto_status`.
 
+**Dependency advisories.** Once a day from 06:00
+[otto/depwatch.ts](otto/depwatch.ts) reads the packages Otto itself runs
+(`otto/bun.lock`, and the Python venvs under `~/.otto/state` if you have them)
+and asks OSV.dev about every exact version. A release marked malicious is one
+urgent message, a high or critical advisory one normal-priority message, each
+once per installed version; everything else only shows in `otto_status`.
+`bun otto/depwatch.ts` runs the check by hand without saving or messaging.
+
+**Disk space.** Free space on the boot volume (and the backup volume, if it is
+a different one) is sampled hourly by [otto/disk.ts](otto/disk.ts). `disk` in
+`access.json` sets the lines: `warnGb` / `warnPercent` (defaults 15 GB or 10%,
+one normal message) and `criticalGb` / `criticalPercent` (5 GB or 3%, one
+urgent message). The message names what could be cleared (caches, the Trash,
+old Otto backups); Otto never deletes any of it.
+
+**Inputs and the phone.** `otto_status` also lists inputs that have gone quiet
+past their own learned rhythm (desk watcher, share sheet, the app, webhook
+sources; [otto/inputwatch.ts](otto/inputwatch.ts)) and what the iPhone app last
+reported about itself — `DOWN` when notifications are denied.
+
+**Live flight status.** Off until `AERODATABOX_KEY` (AeroDataBox via RapidAPI,
+free tier) is in `~/.otto/state/.env`; then
+[otto/flightstatus.ts](otto/flightstatus.ts) watches each booked flight from 6 h
+before departure and tells you once about a delay, gate change, diversion or
+cancellation. `flights.delayMinutes` (default 15) and `flights.monthlyCalls`
+(default 150) in `access.json` bound it. Arrival notes add the day's weather
+(Open-Meteo, no key) and a one-unit exchange line.
+
 ## Upgrading, and going back
 
 Upgrading from 1.x: `git -C ~/.otto pull`, then

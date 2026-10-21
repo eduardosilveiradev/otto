@@ -1,0 +1,22 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "fixture",
+      "dependencies": {
+        "croner": "^9.0.0",
+      },
+    },
+  },
+  "packages": {
+    "@grammyjs/types": ["@grammyjs/types@4.0.0", "", {}, "sha512-x"],
+
+    "croner": ["croner@9.1.0", "", {}, "sha512-x"],
+
+    "content-type": ["content-type@1.0.5", "", {}, "sha512-x"],
+
+    "body-parser/content-type": ["content-type@2.0.0", "", {}, "sha512-x"],
+
+    "type-is/content-type": ["content-type@2.0.0", "", {}, "sha512-x"],
+  }
+}

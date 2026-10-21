@@ -71,6 +71,10 @@ export type Person = {
   relationship?: string
   /** "MM-DD" or "YYYY-MM-DD", exactly as the user gave it. Never read off mail. */
   birthday?: string
+  /** Days between check-ins the user asked for. Only ever set by them; the only thing that makes someone nudge-able. */
+  cadenceDays?: number
+  /** ISO — the last time the user said they spoke to them. Never read off mail. */
+  lastTouch?: string
   /** Recent UTC offsets in minutes, newest last. Sampled, not averaged. */
   offsetSamples: number[]
   inbound: { first?: string; last?: string; count: number }
@@ -499,6 +503,10 @@ export type StatedFacts = {
   timezone?: string
   /** "MM-DD" or "YYYY-MM-DD" — only what the user said, with the year only if they gave it. */
   birthday?: string
+  /** Days between check-ins they asked for; null turns them off. */
+  cadenceDays?: number | null
+  /** They said they just spoke to this person: resets the check-in clock. */
+  touched?: boolean
   /** One thing worth keeping, in the user's words. */
   note?: string
   /** When it was said. Defaults to now. */
@@ -598,6 +606,13 @@ export function recordPerson(people: Person[], f: StatedFacts): Person {
   stateScalar(p, 'city', f.city, at)
   stateScalar(p, 'timezone', f.timezone, at)
   stateScalar(p, 'birthday', birthday, at)
+  if (f.cadenceDays === null && p.cadenceDays !== undefined) { pushNote(p, at, `check-ins stopped (was every ${p.cadenceDays}d)`); delete p.cadenceDays }
+  else if (typeof f.cadenceDays === 'number' && f.cadenceDays >= 1 && f.cadenceDays !== p.cadenceDays) {
+    if (p.cadenceDays) pushNote(p, at, `cadence was every ${p.cadenceDays}d`)
+    p.cadenceDays = f.cadenceDays
+    p.lastTouch ??= at   // the clock starts the day they asked
+  }
+  if (f.touched && (!p.lastTouch || p.lastTouch < at)) p.lastTouch = at
   if (f.note) pushNote(p, at, f.note)
 
   p.updatedAt = at
@@ -779,6 +794,7 @@ export function formatPerson(p: Person, now = Date.now()): string {
   if (last !== undefined) bits.push(`last ${Math.round((now - last) / DAY_MS)}d ago`)
   const median = medianGapDays(p.contacts)
   if (median !== undefined) bits.push(`usually every ${median < 1 ? '<1' : Math.round(median)}d`)
+  if (p.cadenceDays) bits.push(`check in every ${p.cadenceDays}d${p.lastTouch ? `, last spoke ${Math.round((now - Date.parse(p.lastTouch)) / DAY_MS)}d ago` : ''}`)
   return bits.join(' · ')
 }
 
