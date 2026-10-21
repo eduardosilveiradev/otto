@@ -4225,10 +4225,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             ...(wav ? { voice: appFile(wav) } : {}),
             ...(args.reply_to != null ? { reply_to: String(args.reply_to) } : {}),
           }
-          const id = appSend(text, buttons, extra)
+          // A reply is part of the chat; anything unprompted gets its own stack per topic,
+          // and an urgent one (a reminder they set, an OTP, a security alert) breaks through.
+          const notice: Notice = conversational
+            ? { thread: 'chat' }
+            : { thread: topicDecision.key, ...(priority === 'urgent' ? { level: 'timeSensitive' as const } : {}) }
+          const id = appSend(text, buttons, extra, notice)
           recordHistory({
             dir: 'out', chat_id, kind: 'text', text, message_id: id, src: conversational ? 'chat' : currentSrc ?? 'chat',
-            ...(Object.keys(extra).length || buttons.length ? { extra: { ...extra, ...(buttons.length ? { buttons } : {}) } } : {}),
+            // The notice rides along so a message the app catches up on later files the same way.
+            extra: { ...extra, ...(buttons.length ? { buttons } : {}), ...notice },
           })
           recordSend(topics, topicDecision.key, text)
           saveTopics(TOPICS_FILE, topics)
@@ -6604,11 +6610,21 @@ function barkPush(raw: string, force = false, extra: Record<string, unknown> = {
   }).catch(err => process.stderr.write(`otto channel: bark push failed: ${err}\n`))
 }
 
-function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; reply_to?: string } = {}): string {
-  barkPush(text)
+/**
+ * How a notification files itself on the phone. `thread` keeps one subject per stack, so
+ * when Apple Intelligence summarises a stack it summarises one thing instead of stitching
+ * unrelated subjects together. `timeSensitive` breaks through Focus and the scheduled summary;
+ * Bark honours it, the app can't (a free team has no Time Sensitive entitlement) and sends
+ * it as a top relevance score instead. Apple offers no way to steer the AI rewrite or its
+ * priority ranking beyond this; the rest is the text itself.
+ */
+type Notice = { thread?: string; level?: 'timeSensitive' }
+
+function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; reply_to?: string } = {}, notice: Notice = {}): string {
+  barkPush(text, false, { ...(notice.thread ? { group: notice.thread } : {}), ...(notice.level ? { level: notice.level } : {}) })
   lastAppOut = Date.now()
   const id = randomBytes(4).toString('hex')
-  appBroadcast(JSON.stringify({ type: 'message', id, text, ts: new Date().toISOString(), buttons, ...extra }))
+  appBroadcast(JSON.stringify({ type: 'message', id, text, ts: new Date().toISOString(), buttons, ...extra, ...notice }))
   liveSteps.finish()
   return id
 }
