@@ -149,6 +149,7 @@ import {
 } from './triplife.ts'
 import { arrivalExtras } from './arrival.ts'
 import { FLIGHTS_FILE, aeroDataBox, loadFlightsState, saveFlightsState, rollMonth, pruneFlights, pollDue, applyPoll, flightsConfig } from './flightstatus.ts'
+import { stamps } from './stamps.ts'
 import {
   ingestHealthPayload, assess as assessHealth, formatAssessment, formatBody, loadHealth, saveHealth, HEALTH_FILE,
 } from './health.ts'
@@ -6716,6 +6717,7 @@ async function sweepOtpDeletes(): Promise<void> {
 // loopback, so /status below is guarded only by that and the X-Claude-Pid check.
 //
 //   GET /app/brief    the brief as JSON (BriefData in brief.ts); 503 until built
+//   GET /app/stamps   { stamps: Stamp[] } — one per city visited, with places saved there (stamps.ts)
 //   GET /app/history  [{ dir: "in" | "out", text, ts, and on Otto's: src?, why? }], the last 50 app messages;
 //                     kind: "terminal" on a prompt typed into Otto's terminal (see below)
 //   POST /app/photo   raw image bytes, optional ?text= caption -> 204; arrives
@@ -7169,6 +7171,9 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
     }
     case '/app/brief':
       return briefCache ? Response.json(briefCache.data) : new Response(null, { status: 503 })
+    case '/app/stamps':
+      // App tokens only: place notes are the user's own words.
+      return Response.json({ stamps: stamps(loadTrips(TRIPS_FILE), loadAirports(AIRPORTS_FILE), loadPlaces(PLACES_FILE)) })
     case '/app/history': {
       if (req.headers.get('x-otto-background') === '1') recordInput(INPUTS_FILE, 'app.refresh')
       return Response.json(readHistory(APP_CHAT, 50).filter(e => e.kind !== 'reaction')
