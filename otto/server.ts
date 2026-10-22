@@ -4419,7 +4419,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const auto = appAccess.appSpeakReplies !== false && shouldSpeak(APP_CHAT, vcfg)
           const line = (args.voice != null ? Boolean(args.voice) : auto) && voiceEnabled(vcfg)
             ? speakable(text, vcfg.maxSpeakChars ?? 900) : ''
-          const wav = line ? await synthesize(line, 'wav') : null
+          // Text first when every open app can take its voice afterwards: synthesis is the slow part.
+          const later = !!line && appSockets.size > 0 && [...appSockets].every(ws => voiceLaterTokens.has(ws.data.tokenId))
+          const wav = line && !later ? await synthesize(line, 'wav') : null
           const extra = {
             ...(files.length ? { files: files.map(appFile) } : {}),
             ...(wav ? { voice: appFile(wav) } : {}),
@@ -4432,7 +4434,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const notice: Notice = conversational
             ? { thread: 'chat' }
             : { thread: topicDecision.key, src, ...(why ? { why } : {}), ...(priority === 'urgent' ? { level: 'timeSensitive' as const } : {}) }
-          const id = appSend(text, buttons, extra, notice)
+          const id = appSend(text, buttons, later ? { ...extra, voicePending: true } : extra, notice)
+          if (later) void sendVoiceLater(id, line)
           recordHistory({
             dir: 'out', chat_id, kind: 'text', text, message_id: id, src,
             // The notice rides along so a message the app catches up on later files the same way.
@@ -6736,13 +6739,15 @@ async function sweepOtpDeletes(): Promise<void> {
 //                     app replies as text (appSpeakReplies in access.json)
 //   POST /app/loop    { id, done } closes or reopens an open loop from the brief
 //                     -> { id, done }; 404 for an id that isn't a loop
-//   GET /app         websocket upgrade; JSON text frames:
+//   GET /app         websocket upgrade (?voiceLater=1: this app takes a reply's voice after its text); JSON text frames:
 //     app -> otto  { "type": "message", "text": "..." }
 //                  { "type": "tap", "data": "<button data>", "label": "send ✓" }
 //     otto -> app  { "type": "message", "id": "...", "text": "...", "ts": "<ISO>",
 //                    "buttons": [{ "label": "...", "data": "..." } | { "label": "...", "url": "https://..." }],  (a url button only opens the page)
 //                    "src"?: "trigger:<id>" | "email-scan" | "webhook" | "nudge:<kind>" | "queue-flush",
 //                    "why"?: "<plain words>" }  — src/why only on unprompted messages
+//                  { "type": "voice", "id", "voice": { id, name, kind } | null }  the spoken version of message id,
+//                    sent with "voicePending": true when every open app asked for ?voiceLater=1; null = none coming
 //                  { "type": "steps", "taskId", "steps": [{ "label", "ts" }], "screenshot"?, "done" }
 //                    the reply in the works, step by step (livesteps.ts); live only
 //                  { "type": "typing", "on": true | false }
@@ -6872,13 +6877,26 @@ function barkPush(raw: string, force = false, extra: Record<string, unknown> = {
  */
 type Notice = { thread?: string; level?: 'timeSensitive'; src?: string; why?: string }
 
-function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; reply_to?: string } = {}, notice: Notice = {}): string {
+function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; voicePending?: boolean; reply_to?: string } = {}, notice: Notice = {}): string {
   barkPush(text, false, { ...(notice.thread ? { group: notice.thread } : {}), ...(notice.level ? { level: notice.level } : {}) })
   lastAppOut = Date.now()
   const id = randomBytes(4).toString('hex')
   appBroadcast(JSON.stringify({ type: 'message', id, text, ts: new Date().toISOString(), buttons, ...extra, ...notice }))
   liveSteps.finish()
   return id
+}
+
+/** Devices whose app connected with ?voiceLater=1: they show a pending voice bar and take a "voice" frame after. */
+const voiceLaterTokens = new Set<string>()
+/** Voice that followed its text, for /app/history. ponytail: in memory, so a restart leaves those replies text-only there. */
+const lateVoice = new Map<string, AppFile>()
+
+/** The spoken half of a reply already on the phone as text. voice: null tells the app none is coming. */
+async function sendVoiceLater(id: string, line: string): Promise<void> {
+  const wav = await synthesize(line, 'wav').catch(() => null)
+  const voice = wav ? appFile(wav) : null
+  if (voice) lateVoice.set(id, voice)
+  appBroadcast(JSON.stringify({ type: 'voice', id, voice }))
 }
 
 /** The Claude Code session that owns this server, as the hooks name it in X-Claude-Pid. */
@@ -7164,6 +7182,8 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
   }
   switch (url.pathname) {
     case '/app':
+      if (url.searchParams.get('voiceLater') === '1') voiceLaterTokens.add(tokenId)
+      else voiceLaterTokens.delete(tokenId)
       return server.upgrade(req, { data: { tokenId } }) ? undefined : new Response('websocket upgrade expected', { status: 426 })
     case '/app/update': {
       const r = appRelease()
@@ -7177,7 +7197,7 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
     case '/app/history': {
       if (req.headers.get('x-otto-background') === '1') recordInput(INPUTS_FILE, 'app.refresh')
       return Response.json(readHistory(APP_CHAT, 50).filter(e => e.kind !== 'reaction')
-        .map(e => ({ dir: e.dir, text: e.text, ts: e.ts, ...(e.message_id ? { id: e.message_id } : {}), ...(e.kind === 'terminal' ? { kind: e.kind } : {}), ...(e.extra ?? {}) })))
+        .map(e => ({ dir: e.dir, text: e.text, ts: e.ts, ...(e.message_id ? { id: e.message_id } : {}), ...(e.kind === 'terminal' ? { kind: e.kind } : {}), ...(e.extra ?? {}), ...(e.message_id && lateVoice.has(e.message_id) ? { voice: lateVoice.get(e.message_id) } : {}) })))
     }
   }
   return new Response(null, { status: 404 })
