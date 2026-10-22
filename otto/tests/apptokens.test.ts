@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { checkAppToken, createAppToken, findAppToken, hasScope, isDashToken, isExpired, isLiveAppToken, listAppTokens, loadAppTokens, revokeAppToken } from '../apptokens.ts'
+import { checkAppToken, createAppToken, findAppToken, hasScope, isDashToken, isExpired, isLiveAppToken, listAppTokens, loadAppTokens, pairLink, revokeAppToken } from '../apptokens.ts'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'otto-apptokens-')); process.env.OTTO_STATE_DIR = dir })
@@ -162,4 +162,12 @@ test('a lock held by a live process is never taken over', () => {
   writeFileSync(join(dir, 'app-tokens.json.lock'), String(process.ppid))
   expect(() => createAppToken('phone')).toThrow(/locked by pid/)
   expect(readFileSync(join(dir, 'app-tokens.json.lock'), 'utf8')).toBe(String(process.ppid))
+})
+
+test('the pair link carries the server origin and the token, URL-encoded', () => {
+  const u = new URL(pairLink('https://mac.example.ts.net/some/path', 'a+b/c='))
+  expect(u.protocol).toBe('otto:')
+  expect(u.searchParams.get('server')).toBe('https://mac.example.ts.net')
+  expect(u.searchParams.get('token')).toBe('a+b/c=')
+  expect(() => pairLink('ftp://x', 't')).toThrow()
 })

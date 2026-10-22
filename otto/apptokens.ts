@@ -12,6 +12,8 @@
 // routes or the WebSocket. Expiry applies to both kinds; legacy tokens have none.
 //
 //   bun otto/apptokens.ts new <name> [--scope read|write --origin https://… ] [--hours N]
+//   bun otto/apptokens.ts new <name> --server https://… also prints an otto://pair link and,
+//                        on macOS, opens it as a QR code for the app's onboarding to scan
 //   bun otto/apptokens.ts list           id, name, kind, created, last used, expiry
 //   bun otto/apptokens.ts revoke <id>    the device is cut off within seconds
 //
@@ -19,8 +21,8 @@
 // removed the first time the file is read.
 
 import { createHash, randomBytes, timingSafeEqual } from 'crypto'
-import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs'
-import { homedir } from 'os'
+import { chmodSync, closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs'
+import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { parseArgs } from 'util'
 
@@ -194,10 +196,33 @@ export function touchAppToken(id: string): void {
   })
 }
 
+/** What the app's onboarding scans or pastes: the server and the token in one link. */
+export function pairLink(server: string, token: string): string {
+  const u = new URL(server)
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error(`not an http(s) server: ${server}`)
+  return `otto://pair?server=${encodeURIComponent(u.origin)}&token=${encodeURIComponent(token)}`
+}
+
+/** Draws the link as a QR code with CoreImage (no dependency), into a 0600 temp file, and opens it. */
+function showQR(link: string): boolean {
+  const out = join(tmpdir(), `otto-pair-${randomBytes(4).toString('hex')}.png`)
+  const js = `ObjC.import('CoreImage'); ObjC.import('AppKit');
+    const f = $.CIFilter.filterWithName('CIQRCodeGenerator');
+    f.setValueForKey($(${JSON.stringify(link)}).dataUsingEncoding($.NSUTF8StringEncoding), 'inputMessage');
+    const img = f.outputImage.imageByApplyingTransform($.CGAffineTransformMakeScale(12, 12));
+    const rep = $.NSBitmapImageRep.alloc.initWithCIImage(img);
+    rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $({})).writeToFileAtomically(${JSON.stringify(out)}, true);`
+  if (Bun.spawnSync(['osascript', '-l', 'JavaScript', '-e', js]).exitCode !== 0 || !existsSync(out)) return false
+  chmodSync(out, 0o600)
+  // Gone in ten minutes: it is a working token.
+  Bun.spawn(['sh', '-c', `open "$1"; sleep 600; rm -f "$1"`, 'sh', out]).unref()
+  return true
+}
+
 if (import.meta.main) {
   const { values: flags, positionals: [cmd, arg] } = parseArgs({
     args: process.argv.slice(2), allowPositionals: true, strict: false,
-    options: { scope: { type: 'string' }, origin: { type: 'string' }, hours: { type: 'string' } },
+    options: { scope: { type: 'string' }, origin: { type: 'string' }, hours: { type: 'string' }, server: { type: 'string' } },
   })
   if (cmd === 'new' && arg) {
     const scope = flags.scope as Scope | undefined, origin = flags.origin as string | undefined
@@ -208,6 +233,12 @@ if (import.meta.main) {
       const t = loadAppTokens().find(t => t.id === id)!
       const kind = t.scope ? `${t.scope} for ${t.origin}` : 'native'
       console.log(`${id}  ${arg}  ${kind}${t.expires ? `  expires ${t.expires.slice(0, 16).replace('T', ' ')}` : ''}\n\n${token}\n\nShown once. Paste it into the app; revoke with: bun otto/apptokens.ts revoke ${id}`)
+      const server = flags.server as string | undefined
+      if (server && !t.scope) {
+        const link = pairLink(server, token)
+        console.log(`\nPair link (holds the token, so treat it like one):\n${link}`)
+        if (process.platform === 'darwin') console.log(showQR(link) ? 'QR code opened in Preview; scan it from the app.' : 'Could not draw the QR code.')
+      }
     } catch (e) {
       console.error(String((e as Error).message ?? e))
       process.exitCode = 2
