@@ -287,6 +287,10 @@ try {
     if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
   }
 } catch {}
+// Held here, not in process.env: every `claude -p` Otto spawns inherits the env, and
+// with the key set Claude Code bills the API instead of the user's plan.
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY
+delete process.env.ANTHROPIC_API_KEY
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN
 const STATIC = process.env.OTTO_ACCESS_MODE === 'static'
@@ -6972,7 +6976,7 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   // A bare "Remembering" or a tool's own name: Haiku says what it's about, and the
   // better line replaces the bare one, in the bubble only if nothing newer took over.
   if (wantsPolish(tool, text)) {
-    void polishStatus(tool, redactSecrets(JSON.stringify(h.tool_input ?? {})).text).then(better => {
+    void polishStatus(tool, redactSecrets(JSON.stringify(h.tool_input ?? {})).text, ANTHROPIC_KEY).then(better => {
       if (!better) return
       liveSteps.relabel(text, better)
       if (seq !== statusSeq) return
