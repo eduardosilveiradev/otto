@@ -41,8 +41,9 @@ import type { Note } from './store.ts'
 
 /** The server's Trigger, as far as this file reads it. */
 export type DashTrigger = {
-  id: string; type: 'cron' | 'email'; schedule?: string; action: string
+  id: string; type: 'cron' | 'email'; schedule?: string; action: string; label?: string
   repeating: boolean; enabled: boolean; nextRun?: number; lastFired?: string
+  tz?: string; condition?: string; createdAt: string
 }
 
 /** What server.ts hands in. Writes go through its existing /app handlers, untouched. */
@@ -259,9 +260,9 @@ const loopRow = (n: Note): D.LoopRow => pick(n, LOOP_KEYS)
 const zoned = (t: ZonedTime): D.ZonedTime => pick(t, ZONED_KEYS)
 
 /** One line of the action, never the whole of it: actions carry context meant for a cold agent. */
-function triggerRows(ts: DashTrigger[]): D.TriggerRow[] {
+export function triggerRows(ts: DashTrigger[]): D.TriggerRow[] {
   return ts.map(t => {
-    const g = gistOf(t.action)
+    const g = t.label ?? gistOf(t.action)
     return { ...pick(t, ['id', 'type', 'schedule', 'repeating', 'enabled', 'nextRun', 'lastFired']), gist: g.length > 80 ? g.slice(0, 79).trimEnd() + '…' : g }
   })
 }
@@ -628,6 +629,14 @@ const routes: Record<string, Route> = {
   'GET jobs': { scope: 'read', run: c => ({ jobs: loadJobs(join(c.deps.stateDir, 'jobs.json')).map(j => pick(j, JOB_KEYS)) }) satisfies D.Jobs },
 
   'GET triggers': { scope: 'read', run: c => ({ triggers: triggerRows(c.deps.loadTriggers()) }) satisfies D.Triggers },
+
+  'GET triggers/item': {
+    scope: 'read', run: c => {
+      const t = c.deps.loadTriggers().find(x => x.id === c.url.searchParams.get('id'))
+      if (!t) return reply(c, { error: 'not_found' }, 404)
+      return { ...triggerRows([t])[0], ...pick(t, ['action', 'condition', 'tz', 'createdAt']) } satisfies D.TriggerDetail
+    },
+  },
 }
 
 /** Events newest first and without their source: a source can carry a mail id. */

@@ -214,6 +214,8 @@ export type TriggerRow = {
 }
 
 export type Triggers = { triggers: TriggerRow[] }
+/** The whole action, for the one trigger the user opened. */
+export type TriggerDetail = TriggerRow & { action: string; condition?: string; tz?: string; createdAt: string }
 
 export type DashSettings = { speakReplies: boolean; toggles: Toggle[]; triggers: TriggerRow[]; note?: string }
 export type SettingsRequest = { id: string } | { speakReplies: boolean }
@@ -483,6 +485,7 @@ export type DashRoutes = {
   'GET capabilities': { scope: 'read'; query: { days?: string }; res: Capabilities }
   'GET jobs': { scope: 'read'; res: Jobs }
   'GET triggers': { scope: 'read'; res: Triggers }
+  'GET triggers/item': { scope: 'read'; query: { id: string }; res: TriggerDetail }
   'GET chat': { scope: 'read'; query: { thread: ChatThread; after?: string }; res: DashChat }
   'POST chat': { scope: 'write'; req: ChatSendRequest; res: ChatSent }
   /** Without `id`, every call; with it, that call once `seq` passes `after` (long-poll, about 25 s). */

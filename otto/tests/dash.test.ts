@@ -19,8 +19,9 @@ const FIXTURES = join(import.meta.dir, 'fixtures', 'dash')
 const ALEX = 'm' + createHash('sha256').update('alex-in-lisbon').digest('hex').slice(0, 12)
 
 const TRIGGERS: DashTrigger[] = [
-  { id: 'trg1', type: 'cron', schedule: '57 8 * * *', action: 'Send the user (Telegram chat_id: 1234567890) the morning brief: calendar, inbox and loops, in under fifteen hundred characters, plain text, empty sections left out.', repeating: true, enabled: true, nextRun: NOW + 3600_000 },
-  { id: 'trg2', type: 'email', action: 'tell the user when the landlord replies', repeating: true, enabled: false },
+  { id: 'trg1', type: 'cron', schedule: '57 8 * * *', action: 'Send the user (Telegram chat_id: 1234567890) the morning brief: calendar, inbox and loops, in under fifteen hundred characters, plain text, empty sections left out.', repeating: true, enabled: true, nextRun: NOW + 3600_000, createdAt: '2026-03-01T10:00:00Z' },
+  { id: 'trg2', type: 'email', action: 'tell the user when the landlord replies', repeating: true, enabled: false, condition: 'the landlord replies', createdAt: '2026-03-01T10:00:00Z' },
+  { id: 'trg3', type: 'cron', schedule: '2026-03-17T03:00:00+01:00', action: 'Overnight check the user asked for (Telegram chat_id: 1234567890): look into the failing build.', label: 'overnight build check', repeating: false, enabled: true, nextRun: NOW + 7200_000, createdAt: '2026-03-16T12:00:00Z' },
 ]
 
 let dir: string
@@ -269,7 +270,7 @@ test('unknown route 404, wrong method 405, both after auth', async () => {
 // ---------------------------------------------------------------------------
 
 const GETS = ['me', 'devices', 'status', 'brief', 'memory', `memory/item?id=${ALEX}`, 'memory/search?q=lisbon', 'people', 'places', 'places?city=lisbon&status=loved',
-  'settings', 'snooze', 'loops', 'money', 'money?month=2026-03&currency=eur', 'proactivity?days=30', 'trips', 'packages', 'capabilities?days=30', 'jobs', 'triggers', 'chat?thread=app', 'chat?thread=telegram', 'calls', 'calls?id=call-0001&after=2']
+  'settings', 'snooze', 'loops', 'money', 'money?month=2026-03&currency=eur', 'proactivity?days=30', 'trips', 'packages', 'capabilities?days=30', 'jobs', 'triggers', 'triggers/item?id=trg1', 'chat?thread=app', 'chat?thread=telegram', 'calls', 'calls?id=call-0001&after=2']
 
 test('every GET answers 200 with security headers, and no response carries a key that must stay on the Mac', async () => {
   const { token } = dashToken('read')
@@ -492,6 +493,15 @@ test('triggers: a one-line gist with the chat id stripped, never the whole actio
   expect(triggers[0].gist).not.toContain('1234567890')
   expect(triggers[0].gist.startsWith('the morning brief')).toBe(true)
   expect(triggers[1]).toEqual({ id: 'trg2', type: 'email', repeating: true, enabled: false, gist: 'tell the user when the landlord replies' })
+})
+
+test('triggers: a label stands in for the gist; triggers/item has the whole action', async () => {
+  const { token } = dashToken('read')
+  const { triggers } = await (await call('triggers', { token })).json()
+  expect(triggers[2]).toMatchObject({ id: 'trg3', gist: 'overnight build check', repeating: false })
+  const t = await (await call('triggers/item?id=trg3', { token })).json()
+  expect(t).toMatchObject({ id: 'trg3', gist: 'overnight build check', action: TRIGGERS[2].action, createdAt: '2026-03-16T12:00:00Z' })
+  expect((await call('triggers/item?id=nope', { token })).status).toBe(404)
 })
 
 // ---------------------------------------------------------------------------

@@ -194,7 +194,8 @@ import { wantsPolish, polishStatus } from './statuspolish.ts'
 import { LiveSteps, findImage, shrinkScreenshot } from './livesteps.ts'
 import { promptSnippet } from './terminalprompt.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
-import { handleDash, type DashDeps } from './dash.ts'
+import { handleDash, triggerRows, type DashDeps } from './dash.ts'
+import type { TriggerRow } from './dash-types.ts'
 import { ChatFeed } from './chatfeed.ts'
 import { carriesPairingCode, pairingButton, pairingCommand } from './pairing.ts'
 import { checkMessage } from './phishingmail.ts'
@@ -660,6 +661,8 @@ type Trigger = {
   condition?: string
   /** Natural-language action an agent can carry out unambiguously on its own. */
   action: string
+  /** A few words for the user's schedule list; absent = a gist of the action. */
+  label?: string
   repeating: boolean
   enabled: boolean
   createdAt: string
@@ -3558,6 +3561,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           tz: { type: 'string', description: 'IANA zone (e.g. Europe/Berlin) the cron expression is evaluated in. Omit for machine-local. Ignored for one-shot ISO datetimes. Set this on any recurring trigger tied to a place rather than to wherever the laptop happens to be.' },
           condition: { type: 'string', description: 'email type only: e.g. "a reply from jony@x.com arrives on the Q3 thread"' },
           action: { type: 'string' },
+          label: { type: 'string', description: 'A few words the user sees on the schedule chip in the app and in their schedule list, e.g. "overnight build check", "bike service reminder". Their words, lowercase, no ids.' },
           repeating: { type: 'boolean', description: 'cron expressions default true; ISO datetimes are always one-shot.' },
           allow_quiet_hours: {
             type: 'boolean',
@@ -4307,6 +4311,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         assertAllowedChat(chat_id)
         const buttons = validateButtons(args.buttons)
+        const scheduled = takeScheduled()
         assertNoPairingCode(text, ...buttons.map(b => b.label))
         for (const f of files) {
           assertSendable(f)
@@ -4429,6 +4434,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const extra = {
             ...(files.length ? { files: files.map(appFile) } : {}),
             ...(wav ? { voice: appFile(wav) } : {}),
+            ...(scheduled.length ? { scheduled } : {}),
             ...(args.reply_to != null ? { reply_to: String(args.reply_to) } : {}),
           }
           // A reply is part of the chat; anything unprompted gets its own stack per topic,
@@ -4601,6 +4607,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           enabled: true,
           createdAt: new Date().toISOString(),
         }
+        const label = String(args.label ?? '').trim().slice(0, 60)
+        if (label) t.label = label
         if (type === 'cron') {
           const schedule = String(args.schedule ?? '').trim()
           if (!schedule) throw new Error('cron triggers require schedule')
@@ -4639,6 +4647,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         ts.push(t)
         saveTriggers(ts)
+        justScheduled.push({ id: t.id, at: Date.now() })
         const next = report.fires.length
           ? ` — next: ${report.fires.slice(0, 3).join(' · ')}`
           : t.nextRun ? ` — next fire ${new Date(t.nextRun).toISOString()}` : ''
@@ -6750,6 +6759,8 @@ async function sweepOtpDeletes(): Promise<void> {
 //                    "buttons": [{ "label": "...", "data": "..." } | { "label": "...", "url": "https://..." }],  (a url button only opens the page)
 //                    "src"?: "trigger:<id>" | "email-scan" | "webhook" | "nudge:<kind>" | "queue-flush",
 //                    "why"?: "<plain words>" }  — src/why only on unprompted messages
+//                    "scheduled"?: [TriggerRow]  triggers armed while writing it (dash-types.ts), shown as a chip;
+//                    GET /app/dash/triggers/item?id= has the whole of one
 //                  { "type": "voice", "id", "voice": { id, name, kind } | null }  the spoken version of message id,
 //                    sent with "voicePending": true when every open app asked for ?voiceLater=1; null = none coming
 //                  { "type": "steps", "taskId", "steps": [{ "label", "ts" }], "screenshot"?, "done" }
@@ -6881,7 +6892,16 @@ function barkPush(raw: string, force = false, extra: Record<string, unknown> = {
  */
 type Notice = { thread?: string; level?: 'timeSensitive'; src?: string; why?: string }
 
-function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; voicePending?: boolean; reply_to?: string } = {}, notice: Notice = {}): string {
+/** Triggers armed since the last reply, for a chip on the next app message.
+ * ponytail: one list for every chat, so one armed in a silent turn rides the next reply within 15 minutes. */
+let justScheduled: { id: string; at: number }[] = []
+function takeScheduled(): TriggerRow[] {
+  const ids = new Set(justScheduled.filter(s => Date.now() - s.at < 15 * 60_000).map(s => s.id))
+  justScheduled = []
+  return ids.size ? triggerRows(loadTriggers().filter(t => ids.has(t.id))) : []
+}
+
+function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; voicePending?: boolean; reply_to?: string; scheduled?: TriggerRow[] } = {}, notice: Notice = {}): string {
   barkPush(text, false, { ...(notice.thread ? { group: notice.thread } : {}), ...(notice.level ? { level: notice.level } : {}) })
   lastAppOut = Date.now()
   const id = randomBytes(4).toString('hex')
@@ -7384,7 +7404,8 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
   if (kind === 'text' && !untrusted && await pairingCommand(text, (t, b) => appSend(t, b))) return
   lastInbound.set(APP_CHAT, Date.now())
   if (extraMeta.shared === '1') recordInput(INPUTS_FILE, 'share')
-  recordHistory({ dir: 'in', chat_id: APP_CHAT, kind, text, ...(message_id ? { message_id } : {}) })
+  // Marked so the app can pull a share into its thread: the extension sends it straight here, not through the app.
+  recordHistory({ dir: 'in', chat_id: APP_CHAT, kind, text, ...(message_id ? { message_id } : {}), ...(extraMeta.shared === '1' ? { extra: { shared: true } } : {}) })
   if (message_id) unreadApp.add(message_id)
   setAppTyping(true)
   // The link fetch starts now, but delivery keeps arrival order: a message waiting on a slow
