@@ -3524,7 +3524,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'edit_message',
       title: 'Edit sent message',
       annotations: { title: 'Edit sent message', readOnlyHint: false, openWorldHint: true },
-      description: 'Edit a previously sent bot message (interim progress). Edits do not push-notify.',
+      description: 'Edit a previously sent message (interim progress), on Telegram or in the app. Edits do not push-notify.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -4571,6 +4571,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       }
 
       case 'edit_message': {
+        if (String(args.chat_id) === APP_CHAT) {
+          assertNoPairingCode(String(args.text))
+          appBroadcast(JSON.stringify({ type: 'edit', id: String(args.message_id), text: String(args.text) }))
+          recordHistory({ dir: 'out', chat_id: APP_CHAT, kind: 'edit', message_id: String(args.message_id), text: String(args.text) })
+          return { content: [{ type: 'text', text: 'edited' }] }
+        }
         assertAllowedChat(String(args.chat_id))
         const parseMode = args.format === 'markdownv2' ? ('MarkdownV2' as const) : undefined
         assertNoPairingCode(String(args.text))
@@ -6791,7 +6797,8 @@ async function sweepOtpDeletes(): Promise<void> {
 // ("files", "voice"), fetched with GET /app/file/<id>. Message ids work both ways:
 // the app sends its own "id" on messages and uploads (?id=), "reply_to" on a
 // swipe-reply, and { type: "react", id, emoji } for a tapback; otto sends
-// "reply_to" on a message and the same react frame back.
+// "reply_to" on a message, the same react frame back, and { type: "edit", id, text }
+// when it rewrites a message it sent (/app/history folds the edit in).
 
 // Revocation from the CLI has to reach sockets that are already open.
 setInterval(() => {
@@ -7220,8 +7227,11 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
       return Response.json({ stamps: stamps(loadTrips(TRIPS_FILE), loadAirports(AIRPORTS_FILE), loadPlaces(PLACES_FILE)) })
     case '/app/history': {
       if (req.headers.get('x-otto-background') === '1') recordInput(INPUTS_FILE, 'app.refresh')
-      return Response.json(readHistory(APP_CHAT, 50).filter(e => e.kind !== 'reaction')
-        .map(e => ({ dir: e.dir, text: e.text, ts: e.ts, ...(e.message_id ? { id: e.message_id } : {}), ...(e.kind === 'terminal' ? { kind: e.kind } : {}), ...(e.extra ?? {}), ...(e.message_id && lateVoice.has(e.message_id) ? { voice: lateVoice.get(e.message_id) } : {}) })))
+      const h = readHistory(APP_CHAT, 50)
+      // An edit is its own entry; fold the latest one onto the message it changed.
+      const edits = new Map(h.filter(e => e.kind === 'edit').map(e => [e.message_id, e.text]))
+      return Response.json(h.filter(e => e.kind !== 'reaction' && e.kind !== 'edit')
+        .map(e => ({ dir: e.dir, text: (e.message_id && edits.get(e.message_id)) || e.text, ts: e.ts, ...(e.message_id ? { id: e.message_id } : {}), ...(e.kind === 'terminal' ? { kind: e.kind } : {}), ...(e.extra ?? {}), ...(e.message_id && lateVoice.has(e.message_id) ? { voice: lateVoice.get(e.message_id) } : {}) })))
     }
   }
   return new Response(null, { status: 404 })
