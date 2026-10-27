@@ -6740,7 +6740,7 @@ async function sweepOtpDeletes(): Promise<void> {
 //                     like a Telegram photo (image_path meta)
 //   POST /app/voice   raw audio bytes (m4a) -> { text } transcript; arrives
 //                     like a Telegram voice note (voice="1", Whisper text)
-//   POST /app/health  { notifications, backgroundRefresh, keepAwake, shareConfigured, lastRefresh?, build, version, ios, reason } -> 204;
+//   POST /app/health  { notifications, backgroundRefresh, keepAwake, shareConfigured, lastRefresh?, announce?, build, version, ios, reason } -> 204;
 //                     the phone's own state, latest per device, shown by otto_status (apphealth.ts)
 //   GET /app/history also accepts X-Otto-Background: 1 when fetched by the app's background refresh (inputwatch.ts records it)
 //   GET /app/snooze   { until, since, held: [{ text, at }] }; until/since null

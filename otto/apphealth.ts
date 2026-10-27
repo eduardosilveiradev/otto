@@ -20,6 +20,7 @@ export type AppHealth = {
   keepAwake: boolean
   shareConfigured: boolean
   lastRefresh?: string       // ISO, phone clock; absent until the first BG refresh ran
+  announce?: string          // 'enabled' | 'disabled' | 'notSupported': iOS reading banners aloud in Siri's voice
   build: string; version: string; ios: string
 }
 export type AppHealthState = Record<string, AppHealth>   // tokenId -> latest report
@@ -30,7 +31,7 @@ const clip = (s: string) => s.slice(0, STR)
 export function parseAppHealth(body: unknown, now: number): AppHealth | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null
   const b = body as Record<string, unknown>
-  const { notifications, backgroundRefresh, build, version, ios, keepAwake, shareConfigured, lastRefresh, reason } = b
+  const { notifications, backgroundRefresh, build, version, ios, keepAwake, shareConfigured, lastRefresh, reason, announce } = b
   if (typeof notifications !== 'string' || typeof backgroundRefresh !== 'string' || typeof build !== 'string'
     || typeof version !== 'string' || typeof ios !== 'string') return null
   if (typeof keepAwake !== 'boolean' || typeof shareConfigured !== 'boolean') return null
@@ -41,6 +42,7 @@ export function parseAppHealth(body: unknown, now: number): AppHealth | null {
     keepAwake, shareConfigured,
     ...(typeof lastRefresh === 'string' && !Number.isNaN(Date.parse(lastRefresh)) ? { lastRefresh: clip(lastRefresh) } : {}),
     build: clip(build), version: clip(version), ios: clip(ios),
+    ...(typeof announce === 'string' ? { announce: clip(announce) } : {}),
   }
 }
 
@@ -64,7 +66,7 @@ const SILENT_MS = 36 * 3600_000, REFRESH_STALE_MS = 48 * 3600_000
 
 export function appHealthVerdict(h: AppHealth, now: number, ago: (ms: number) => string): { verdict: Verdict; detail: string } {
   const at = Date.parse(h.at)
-  const summary = `iOS ${h.ios}, build ${h.build} (${h.version}), notifications ${h.notifications}, background refresh ${h.backgroundRefresh}, keep-awake ${h.keepAwake ? 'on' : 'off'}, share sheet ${h.shareConfigured ? 'set up' : 'missing'}${h.lastRefresh ? `, last background refresh ${ago(now - Date.parse(h.lastRefresh))} ago` : ''}`
+  const summary = `iOS ${h.ios}, build ${h.build} (${h.version}), notifications ${h.notifications}, background refresh ${h.backgroundRefresh}, keep-awake ${h.keepAwake ? 'on' : 'off'}, share sheet ${h.shareConfigured ? 'set up' : 'missing'}${h.lastRefresh ? `, last background refresh ${ago(now - Date.parse(h.lastRefresh))} ago` : ''}${h.announce ? `, announce notifications ${h.announce}` : ''}`
   // keep-awake off is a choice, never a verdict.
   let verdict: Verdict = 'degraded', first: string
   if (h.notifications === 'denied') { verdict = 'down'; first = 'notifications denied — replies cannot reach the lock screen; Settings > Otto > Notifications' }

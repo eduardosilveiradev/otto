@@ -90,3 +90,10 @@ test('tokenNames reads app-tokens.json', () => {
   writeFileSync(join(dir, 'app-tokens.json'), JSON.stringify({ tokens: [{ id: 'abc', name: 'phone', hash: 'x', created: '2026-01-01' }] }))
   expect(tokenNames(dir)).toEqual({ abc: 'phone' })
 })
+
+test('announce is kept and shown when the phone reports it', () => {
+  const h = parseAppHealth(body({ announce: 'enabled' }), NOW)!
+  expect(h.announce).toBe('enabled')
+  expect(appHealthVerdict(h, NOW, () => '1m').detail).toContain('announce notifications enabled')
+  expect(parseAppHealth(body({}), NOW)!.announce).toBeUndefined()
+})
