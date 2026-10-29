@@ -135,3 +135,27 @@ export async function shrinkScreenshot(b64: string, maxPx = 480): Promise<string
     rmSync(out, { force: true })
   }
 }
+
+/** One line of the to-do list the model keeps while it works (Claude Code's TodoWrite). */
+export type TodoItem = { text: string; status: 'pending' | 'in_progress' | 'completed' }
+
+const TODO_STATUS = new Set(['pending', 'in_progress', 'completed'])
+
+/**
+ * The list a to-do tool call sets, or null when the call isn't one. TodoWrite sends the
+ * whole list each time, so this is the list as it now stands; the item in progress reads
+ * in its present-tense form ("Running the tests") when the call gives one.
+ */
+export function todoItems(tool: string, input: Record<string, unknown>): TodoItem[] | null {
+  if (tool !== 'TodoWrite' || !Array.isArray(input.todos)) return null
+  const out: TodoItem[] = []
+  for (const t of input.todos.slice(0, 30)) {
+    if (!t || typeof t !== 'object') continue
+    const o = t as Record<string, unknown>
+    const status = TODO_STATUS.has(String(o.status)) ? (o.status as TodoItem['status']) : 'pending'
+    const raw = status === 'in_progress' && typeof o.activeForm === 'string' && o.activeForm.trim() ? o.activeForm : o.content
+    const text = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim().slice(0, 120) : ''
+    if (text) out.push({ text, status })
+  }
+  return out
+}

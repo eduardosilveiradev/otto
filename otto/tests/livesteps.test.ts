@@ -1,5 +1,5 @@
-import { expect, test } from 'bun:test'
-import { LiveSteps, findImage } from '../livesteps.ts'
+import { describe, expect, test } from 'bun:test'
+import { LiveSteps, findImage, todoItems } from '../livesteps.ts'
 
 /** A LiveSteps on a hand-wound clock: `run()` fires whatever is due. */
 function rig() {
@@ -89,4 +89,25 @@ test('findImage reads both image shapes and ignores the rest', () => {
   expect(findImage({ content: [{ type: 'image', source: { type: 'base64', data: b } }] })).toBe(b)
   expect(findImage([{ type: 'text', text: 'clicked' }])).toBeNull()
   expect(findImage('nope')).toBeNull()
+})
+
+describe('todoItems', () => {
+  test('reads a TodoWrite list, with the item in progress in its -ing form', () => {
+    const items = todoItems('TodoWrite', { todos: [
+      { content: 'Write the parser', status: 'completed', activeForm: 'Writing the parser' },
+      { content: 'Run the tests', status: 'in_progress', activeForm: 'Running the tests' },
+      { content: 'Ship it', status: 'pending', activeForm: 'Shipping it' },
+    ] })
+    expect(items).toEqual([
+      { text: 'Write the parser', status: 'completed' },
+      { text: 'Running the tests', status: 'in_progress' },
+      { text: 'Ship it', status: 'pending' },
+    ])
+  })
+  test('other tools and broken input are not a list', () => {
+    expect(todoItems('Bash', { todos: [] })).toBeNull()
+    expect(todoItems('TodoWrite', {})).toBeNull()
+    expect(todoItems('TodoWrite', { todos: [null, { content: '  ', status: 'x' }, { content: 'a\n b', status: 'weird' }] }))
+      .toEqual([{ text: 'a b', status: 'pending' }])
+  })
 })

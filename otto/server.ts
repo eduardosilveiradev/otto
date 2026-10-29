@@ -191,7 +191,7 @@ import { homedir, tmpdir } from 'os'
 import { join, extname, sep, isAbsolute, dirname, basename, resolve } from 'path'
 import { statusLabel } from './toolstatus.ts'
 import { wantsPolish, polishStatus } from './statuspolish.ts'
-import { LiveSteps, findImage, shrinkScreenshot } from './livesteps.ts'
+import { LiveSteps, findImage, shrinkScreenshot, todoItems, type TodoItem } from './livesteps.ts'
 import { promptSnippet } from './terminalprompt.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
 import { handleDash, triggerRows, type DashDeps } from './dash.ts'
@@ -229,6 +229,13 @@ const appPending: string[] = []
 const chatFeed = new ChatFeed()
 /** The step list behind the typing bubble (livesteps.ts); live only, like the status line. */
 const liveSteps = new LiveSteps(frame => { for (const ws of appSockets) ws.send(frame) })
+/** The to-do list kept while working on the app's request, shown in the thinking bubble; cleared when the turn ends. */
+let liveTodos: TodoItem[] = []
+function setLiveTodos(items: TodoItem[]): void {
+  liveTodos = items
+  const frame = JSON.stringify({ type: 'todos', items })
+  for (const ws of appSockets) ws.send(frame)
+}
 /** Otto's own durable memory — facts, open loops, saved items, write audit. */
 const NOTES_FILE = join(STATE_DIR, 'notes.json')
 /** Recall misses and per-memory hit counts — what was asked for, what gets used. */
@@ -6544,6 +6551,7 @@ function startWebhook(retry = true): void {
           for (const a of liveApprovals()) ws.send(approvalFrame(a))
           const steps = liveSteps.snapshot()
           if (steps) ws.send(steps)
+          if (liveTodos.length) ws.send(JSON.stringify({ type: 'todos', items: liveTodos }))
           // Always, on or off: after a restart the app may still be showing the old server's dots.
           ws.send(JSON.stringify({ type: 'typing', on: appTyping }))
         },
@@ -6776,6 +6784,9 @@ async function sweepOtpDeletes(): Promise<void> {
 //                  { "type": "echo", "id", "text", "ts", "shared"? }  a message the user typed on the web dashboard
 //                    or shared from the phone's share sheet
 //                    (shown as theirs by apps that know the frame; older apps ignore it)
+//                  { "type": "todos", "items": [{ "text", "status": "pending"|"in_progress"|"completed" }] }
+//                    the to-do list kept while working on their request, whole each time; [] when the
+//                    turn ends. Live only; a socket that connects mid-turn gets the current one
 //                  { "type": "terminal", "text", "ts" }  the first six words of a prompt typed into
 //                    Otto's terminal (UserPromptSubmit hook), for a system line, not a bubble; live only
 //   /app/dash/*       the web dashboard's API (dash.ts; wire types in dash-types.ts): its own
@@ -6987,6 +6998,7 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   if (h.hook_event_name === 'Stop') {
     closeTurn()
     liveSteps.finish()
+    if (liveTodos.length) setLiveTodos([])
     if (!unreadApp.size) setAppTyping(false, true)
     return new Response(null, { status: 204 })
   }
@@ -6998,6 +7010,8 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
     return new Response(null, { status: 204 })
   }
   const tool = String(h.tool_name ?? '')
+  const todos = todoItems(tool, h.tool_input ?? {})
+  if (todos) { setLiveTodos(todos.map(t => ({ ...t, text: redactSecrets(t.text).text }))); setAppTyping(true) }
   const text = statusLabel(tool, h.tool_input ?? {})
   liveSteps.step(text) // kept with no socket open too: a reconnect mid-task gets the whole list
   const seq = ++statusSeq
