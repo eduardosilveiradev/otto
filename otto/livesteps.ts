@@ -159,3 +159,44 @@ export function todoItems(tool: string, input: Record<string, unknown>): TodoIte
   }
   return out
 }
+
+const clip = (v: unknown) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, 120) : '')
+
+/** The id a TaskCreate result names, wherever it sits ({task:{id}}, {taskId}, {id}). */
+function taskId(res: unknown, depth = 0): string | null {
+  if (!res || typeof res !== 'object' || depth > 3) return null
+  const o = res as Record<string, unknown>
+  for (const k of ['taskId', 'id']) if (typeof o[k] === 'string' || typeof o[k] === 'number') return String(o[k])
+  for (const v of Object.values(o)) { const id = taskId(v, depth + 1); if (id) return id }
+  return null
+}
+
+/**
+ * The newer task tools (TaskCreate / TaskUpdate) change one item per call instead of
+ * sending the whole list, so the list is kept here. `apply` returns the list as it now
+ * stands, or null when the call wasn't a task call.
+ */
+export class TaskBoard {
+  private tasks = new Map<string, { subject: string; activeForm: string; status: TodoItem['status'] }>()
+  apply(tool: string, input: Record<string, unknown>, response?: unknown): TodoItem[] | null {
+    if (tool === 'TaskCreate') {
+      const id = taskId(response) ?? `new-${this.tasks.size + 1}`
+      this.tasks.set(id, { subject: clip(input.subject), activeForm: clip(input.activeForm), status: 'pending' })
+    } else if (tool === 'TaskUpdate') {
+      const id = String(input.taskId ?? '')
+      const t = this.tasks.get(id)
+      if (!t) return null
+      if (input.status === 'deleted') this.tasks.delete(id)
+      else {
+        if (TODO_STATUS.has(String(input.status))) t.status = input.status as TodoItem['status']
+        if (clip(input.subject)) t.subject = clip(input.subject)
+        if (clip(input.activeForm)) t.activeForm = clip(input.activeForm)
+      }
+    } else return null
+    return [...this.tasks.values()].slice(0, 30).flatMap(t => {
+      const text = t.status === 'in_progress' && t.activeForm ? t.activeForm : t.subject
+      return text ? [{ text, status: t.status }] : []
+    })
+  }
+  clear(): void { this.tasks.clear() }
+}

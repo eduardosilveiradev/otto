@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { LiveSteps, findImage, todoItems } from '../livesteps.ts'
+import { LiveSteps, findImage, todoItems, TaskBoard } from '../livesteps.ts'
 
 /** A LiveSteps on a hand-wound clock: `run()` fires whatever is due. */
 function rig() {
@@ -109,5 +109,19 @@ describe('todoItems', () => {
     expect(todoItems('TodoWrite', {})).toBeNull()
     expect(todoItems('TodoWrite', { todos: [null, { content: '  ', status: 'x' }, { content: 'a\n b', status: 'weird' }] }))
       .toEqual([{ text: 'a b', status: 'pending' }])
+  })
+})
+
+describe('TaskBoard', () => {
+  test('follows TaskCreate and TaskUpdate one item at a time', () => {
+    const b = new TaskBoard()
+    expect(b.apply('Bash', {})).toBeNull()
+    b.apply('TaskCreate', { subject: 'Run the tests', activeForm: 'Running the tests' }, { task: { id: '1', subject: 'Run the tests' } })
+    expect(b.apply('TaskCreate', { subject: 'Push' }, { task: { id: '2' } })).toEqual([
+      { text: 'Run the tests', status: 'pending' }, { text: 'Push', status: 'pending' }])
+    expect(b.apply('TaskUpdate', { taskId: '1', status: 'in_progress' })).toEqual([
+      { text: 'Running the tests', status: 'in_progress' }, { text: 'Push', status: 'pending' }])
+    expect(b.apply('TaskUpdate', { taskId: '2', status: 'deleted' })).toEqual([{ text: 'Running the tests', status: 'in_progress' }])
+    expect(b.apply('TaskUpdate', { taskId: '9', status: 'completed' })).toBeNull()
   })
 })
