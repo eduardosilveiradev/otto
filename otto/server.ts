@@ -6773,7 +6773,8 @@ async function sweepOtpDeletes(): Promise<void> {
 //                    the reply in the works, step by step (livesteps.ts); live only
 //                  { "type": "typing", "on": true | false }
 //                    on when an app message arrives, off when its turn ends; resent on connect
-//                  { "type": "echo", "id", "text", "ts" }  a message the user typed on the web dashboard
+//                  { "type": "echo", "id", "text", "ts", "shared"? }  a message the user typed on the web dashboard
+//                    or shared from the phone's share sheet
 //                    (shown as theirs by apps that know the frame; older apps ignore it)
 //                  { "type": "terminal", "text", "ts" }  the first six words of a prompt typed into
 //                    Otto's terminal (UserPromptSubmit hook), for a system line, not a bubble; live only
@@ -7327,6 +7328,7 @@ async function appUpload(req: Request, url: URL): Promise<Response> {
     const shared = url.searchParams.get('shared') === '1'
     appInbound(caption || '(photo)', { image_path: path, ...(shared ? { shared: '1' } : {}) }, 'photo', msgId,
       shared ? 'shared into the app from another app' : undefined)
+    if (shared && msgId) echoToApps(msgId, caption || '(photo)', true)
     return new Response(null, { status: 204 })
   }
   lastVoiceInbound.set(APP_CHAT, Date.now())
@@ -7352,6 +7354,8 @@ function appFrame(raw: string): void {
     const shared = f.shared === true
     appInbound(f.text.trim(), { ...appReplyMeta(f.reply_to), ...(shared ? { shared: '1' } : {}) }, 'text', id,
       shared ? 'shared into the app from another app' : undefined)
+    // The share sheet sends on its own short-lived socket, so an open app would only see it on its next history sync.
+    if (shared && id) echoToApps(id, f.text.trim(), true)
   } else if (f.type === 'react' && typeof f.emoji === 'string' && f.emoji.trim()) {
     // A tapback reads like a one-emoji reply to that message — a 👍 under a draft is a yes.
     appInbound(f.emoji.trim().slice(0, 8), { reaction: '1', ...appReplyMeta(f.id) }, 'reaction')
@@ -7446,8 +7450,13 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
 /** A message typed on the dashboard: into the app thread exactly as the phone's would be, plus an echo so an open phone can show it as the user's. */
 async function dashSend(text: string, id: string): Promise<void> {
   await appInbound(text, { from_dashboard: '1' }, 'text', id, 'sent from the dashboard, whose token lives in a browser')
-  const frame = JSON.stringify({ type: 'echo', id, text, ts: new Date().toISOString() })
-  for (const ws of appSockets) ws.send(frame) // live only: /app/history carries it for the next connect
+  echoToApps(id, text)
+}
+
+/** One of the user's messages that didn't come from the open phone, so it can show it as theirs. Live only: /app/history carries it for the next connect. */
+function echoToApps(id: string, text: string, shared = false): void {
+  const frame = JSON.stringify({ type: 'echo', id, text, ts: new Date().toISOString(), ...(shared ? { shared: true } : {}) })
+  for (const ws of appSockets) ws.send(frame)
 }
 
 /** The callback_query handler's path, for a tap in the app. */
