@@ -191,7 +191,7 @@ import { homedir, tmpdir } from 'os'
 import { join, extname, sep, isAbsolute, dirname, basename, resolve } from 'path'
 import { statusLabel } from './toolstatus.ts'
 import { wantsPolish, polishStatus } from './statuspolish.ts'
-import { LiveSteps, TaskBoard, findImage, shrinkScreenshot, todoItems, type TodoItem } from './livesteps.ts'
+import { LiveSteps, findImage, readTaskList, shrinkScreenshot, todoItems, type TodoItem } from './livesteps.ts'
 import { promptSnippet } from './terminalprompt.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
 import { handleDash, triggerRows, type DashDeps } from './dash.ts'
@@ -231,7 +231,6 @@ const chatFeed = new ChatFeed()
 const liveSteps = new LiveSteps(frame => { for (const ws of appSockets) ws.send(frame) })
 /** The to-do list kept while working on the app's request, shown in the thinking bubble; cleared when the turn ends. */
 let liveTodos: TodoItem[] = []
-const taskBoard = new TaskBoard()
 function setLiveTodos(items: TodoItem[]): void {
   liveTodos = items
   const frame = JSON.stringify({ type: 'todos', items })
@@ -6999,28 +6998,28 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   if (h.hook_event_name === 'Stop') {
     closeTurn()
     liveSteps.finish()
-    taskBoard.clear()
     if (liveTodos.length) setLiveTodos([])
     if (!unreadApp.size) setAppTyping(false, true)
     return new Response(null, { status: 204 })
   }
-  // The task tools change one item per call, so the board follows every call, shown or not.
-  // TaskCreate's id only exists once it ran; TaskUpdate is read before, like every step.
   const tool = String(h.tool_name ?? '')
-  const board = h.hook_event_name === 'PostToolUse' ? (tool === 'TaskCreate' ? taskBoard.apply(tool, h.tool_input ?? {}, h.tool_response) : null)
-    : tool === 'TaskUpdate' ? taskBoard.apply(tool, h.tool_input ?? {}) : null
   const waiting = appTyping || (lastInbound.get(APP_CHAT) ?? 0) > lastAppOut
   if (!waiting) return new Response(null, { status: 204 })
   const showTodos = (todos: TodoItem[] | null) => {
     if (todos) { setLiveTodos(todos.map(t => ({ ...t, text: redactSecrets(t.text).text }))); setAppTyping(true) }
   }
   if (h.hook_event_name === 'PostToolUse') {
-    showTodos(board)
     const img = findImage(h.tool_response)
     if (img) void shrinkScreenshot(img).then(jpeg => { if (jpeg) liveSteps.screenshot(jpeg) })
     return new Response(null, { status: 204 })
   }
-  showTodos(board ?? todoItems(tool, h.tool_input ?? {}))
+  showTodos(todoItems(tool, h.tool_input ?? {}))
+  // The task tools change one task per call and keep the list on disk, written as the
+  // call runs: read it back just after.
+  if ((tool === 'TaskCreate' || tool === 'TaskUpdate') && /^[\w-]+$/.test(h.session_id ?? '')) {
+    const dir = join(homedir(), '.claude', 'tasks', h.session_id!)
+    setTimeout(() => showTodos(readTaskList(dir)), 400)
+  }
   const text = statusLabel(tool, h.tool_input ?? {})
   liveSteps.step(text) // kept with no socket open too: a reconnect mid-task gets the whole list
   const seq = ++statusSeq

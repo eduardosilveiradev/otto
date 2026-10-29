@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { LiveSteps, findImage, todoItems, TaskBoard } from '../livesteps.ts'
+import { LiveSteps, findImage, todoItems, readTaskList } from '../livesteps.ts'
+import { mkdtempSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 /** A LiveSteps on a hand-wound clock: `run()` fires whatever is due. */
 function rig() {
@@ -112,16 +115,14 @@ describe('todoItems', () => {
   })
 })
 
-describe('TaskBoard', () => {
-  test('follows TaskCreate and TaskUpdate one item at a time', () => {
-    const b = new TaskBoard()
-    expect(b.apply('Bash', {})).toBeNull()
-    b.apply('TaskCreate', { subject: 'Run the tests', activeForm: 'Running the tests' }, { task: { id: '1', subject: 'Run the tests' } })
-    expect(b.apply('TaskCreate', { subject: 'Push' }, { task: { id: '2' } })).toEqual([
-      { text: 'Run the tests', status: 'pending' }, { text: 'Push', status: 'pending' }])
-    expect(b.apply('TaskUpdate', { taskId: '1', status: 'in_progress' })).toEqual([
-      { text: 'Running the tests', status: 'in_progress' }, { text: 'Push', status: 'pending' }])
-    expect(b.apply('TaskUpdate', { taskId: '2', status: 'deleted' })).toEqual([{ text: 'Running the tests', status: 'in_progress' }])
-    expect(b.apply('TaskUpdate', { taskId: '9', status: 'completed' })).toBeNull()
+describe('readTaskList', () => {
+  test('reads the task folder in id order, present tense for the one in progress', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tasks-'))
+    writeFileSync(join(dir, '10.json'), JSON.stringify({ id: '10', subject: 'Push', status: 'pending' }))
+    writeFileSync(join(dir, '9.json'), JSON.stringify({ id: '9', subject: 'Run the tests', activeForm: 'Running the tests', status: 'in_progress' }))
+    writeFileSync(join(dir, '.highwatermark'), '10')
+    writeFileSync(join(dir, '11.json'), '{"id":') // mid-write
+    expect(readTaskList(dir)).toEqual([{ text: 'Running the tests', status: 'in_progress' }, { text: 'Push', status: 'pending' }])
+    expect(readTaskList(join(dir, 'missing'))).toEqual([])
   })
 })
