@@ -14,6 +14,7 @@ test('Bash prefers its description', () => {
 test('otto sends are the reply itself, so they show nothing', () => {
   expect(statusLabel('mcp__plugin_otto_otto__reply', { text: 'hi' })).toBe('')
   expect(statusLabel('ToolSearch', {})).toBe('')
+  expect(statusLabel('TaskCreate', { subject: 'x' })).toBe('')   // the to-do bubble shows it
 })
 
 test('connectors read as what they check', () => {

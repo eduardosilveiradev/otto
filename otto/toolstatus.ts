@@ -39,7 +39,8 @@ export function statusLabel(tool: string, input: Record<string, unknown>): strin
     case 'WebSearch': return `Searching the web for ${str('query')}`
     case 'WebFetch': { try { return `Reading ${new URL(str('url')).hostname}` } catch { return 'Reading a web page' } }
     case 'Agent': case 'Task': return str('description') ? `Running a subagent: ${str('description')}` : 'Starting a subagent'
-    case 'ToolSearch': case 'TodoWrite': return ''
+    // The to-do bubble already shows the list these change.
+    case 'ToolSearch': case 'TodoWrite': case 'TaskCreate': case 'TaskUpdate': case 'TaskList': case 'TaskGet': return ''
   }
   const m = /^mcp__(.+?)__(.+)$/.exec(tool)
   if (!m) return tool
