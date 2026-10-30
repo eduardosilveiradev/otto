@@ -50,6 +50,7 @@ export const NEVER_COPIED = ['.env', 'access.json', 'bot.pid', 'voice-daemon.jso
 export const SCRUBBED = [
   'OTTO_CHANNEL_HOST',
   'TELEGRAM_BOT_TOKEN',
+  'WHATSAPP_AGENT_TOKEN',
   'OTTO_ACCESS_MODE',
   'ANTHROPIC_API_KEY',
 ]

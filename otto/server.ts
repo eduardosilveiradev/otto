@@ -200,6 +200,8 @@ import { ChatFeed } from './chatfeed.ts'
 import { carriesPairingCode, pairingButton, pairingCommand } from './pairing.ts'
 import { checkMessage } from './phishingmail.ts'
 import { drainRelay, isUpdateBatch, makeDedupe, type RelayUpdate } from './tgrelay.ts'
+import { chunk } from './chunk.ts'
+import { WhatsApp, WA_CHAT, describe as describeWa, renderButtons, matchButton, type WaMessage } from './whatsapp.ts'
 import {
   accessToggles, flipAccess, triggerToggles, triggerIdOf, connectorToggles, flipConnector,
   readConnectorSources, findToggle, renderSettings, setQuietWindow, type Toggle,
@@ -314,6 +316,8 @@ if (!TOKEN && process.env.OTTO_CHANNEL_HOST === '1') {
   process.exit(1)
 }
 const BOT_TOKEN = TOKEN ?? 'disconnected'
+/** The WhatsApp agent's API key; polled only by the channel host (whatsapp.ts). */
+const wa = process.env.WHATSAPP_AGENT_TOKEN ? new WhatsApp(process.env.WHATSAPP_AGENT_TOKEN, join(STATE_DIR, 'whatsapp.json')) : null
 if (!TOKEN) process.stderr.write(`otto channel: no TELEGRAM_BOT_TOKEN — tools only, sends will fail (set it in ${ENV_FILE})\n`)
 
 // Telegram allows exactly one getUpdates consumer per token. A stale poller that
@@ -591,7 +595,7 @@ function googleAccount(access: Access = loadAccess()): string {
 }
 
 function assertAllowedChat(chat_id: string): void {
-  if (chat_id === APP_CHAT) return
+  if (chat_id === APP_CHAT || chat_id === WA_CHAT) return
   const access = loadAccess()
   if (access.allowFrom.includes(chat_id)) return
   throw new Error(`chat ${chat_id} is not allowlisted — add via /otto:access`)
@@ -808,29 +812,6 @@ function inQuietHours(spec: string | undefined): boolean {
   const start = Number(m[1]) * 60 + Number(m[2])
   const end = Number(m[3]) * 60 + Number(m[4])
   return start <= end ? cur >= start && cur < end : cur >= start || cur < end
-}
-
-// ---------------------------------------------------------------------------
-// Text chunking
-// ---------------------------------------------------------------------------
-
-function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[] {
-  if (text.length <= limit) return [text]
-  const out: string[] = []
-  let rest = text
-  while (rest.length > limit) {
-    let cut = limit
-    if (mode === 'newline') {
-      const para = rest.lastIndexOf('\n\n', limit)
-      const line = rest.lastIndexOf('\n', limit)
-      const space = rest.lastIndexOf(' ', limit)
-      cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit
-    }
-    out.push(rest.slice(0, cut))
-    rest = rest.slice(cut).replace(/^\n+/, '')
-  }
-  if (rest) out.push(rest)
-  return out
 }
 
 const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
@@ -1491,7 +1472,7 @@ function closeTurn(): void {
  * nothing else: a trigger, a scan, a tap or a redelivery leaves it unknown, and a
  * terminal turn never reaches the server, so the model passes "terminal" itself.
  */
-let factSurface: 'telegram' | 'app' | undefined
+let factSurface: 'telegram' | 'app' | 'whatsapp' | undefined
 
 function stampOrigin(wake: Wake): void {
   const carried = origin.tainted && turnOpen && Date.now() - taintedAt < TAINT_CARRY_MS ? origin.taintedBy ?? 'external text was read' : undefined
@@ -1767,6 +1748,11 @@ async function deliverQueued(m: QueuedMessage, held = true): Promise<void> {
       hold: { reason: m.reason, count: 1, ...(m.why ? { inner: m.why } : {}) },
     }) : null)
   }
+  if (m.chat_id === WA_CHAT) {
+    const ids = await waSend(m.text, m.buttons, m.files)
+    recordHistory({ dir: 'out', chat_id: WA_CHAT, kind: 'text', text: m.text, ...(ids[0] ? { message_id: ids[0] } : {}), src: 'queue-flush' })
+    return
+  }
   const sentIds: number[] = []
   const sent = await bot.api.sendMessage(m.chat_id, m.text)
   sentIds.push(sent.message_id)
@@ -1854,6 +1840,12 @@ async function flushQueue(force = false): Promise<number> {
             // Same rule as coalesce's footer: anything held for a flight names the whole batch.
             hold: { reason: plain.some(m => m.reason === 'inflight') ? 'inflight' : plain[0].reason, count: plain.length, ...(plain.length === 1 && plain[0].why ? { inner: plain[0].why } : {}) },
           }))
+          sent++
+          continue
+        }
+        if (chat_id === WA_CHAT) {
+          const ids = await waSend(text)
+          recordHistory({ dir: 'out', chat_id, kind: 'text', text, ...(ids[0] ? { message_id: ids[0] } : {}), src: 'queue-flush' })
           sent++
           continue
         }
@@ -3336,6 +3328,10 @@ function becomeChannelHost(reason: string): void {
   if (loadAccess().telegramMode === 'relay') void startRelay()
   else void startPolling()
   startWebhook()
+  if (wa) {
+    process.stderr.write('otto channel: polling WhatsApp\n')
+    void wa.run(waInbound)
+  }
   // Build the first brief immediately — the first trigger of the day should not
   // be the one that goes without context.
   lastBriefRefresh = Date.now()
@@ -4427,6 +4423,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         // Critical at volume 0: through Focus and silent mode, but no sound, as they asked.
         if (args.bark === true || args.critical === true) barkPush(text, true, args.critical === true ? { level: 'critical', volume: 0 } : {})
 
+        if (chat_id === WA_CHAT) {
+          const vcfg = loadAccess().voice ?? {}
+          const line = (args.voice != null ? Boolean(args.voice) : shouldSpeak(WA_CHAT, vcfg)) && voiceEnabled(vcfg)
+            ? speakable(text, vcfg.maxSpeakChars ?? 900) : ''
+          const ids = await waSend(text, buttons, files, args.reply_to != null ? String(args.reply_to) : undefined, line)
+          const src = conversational ? 'chat' : currentSrc ?? 'chat'
+          recordHistory({ dir: 'out', chat_id, kind: 'text', text, ...(ids[0] ? { message_id: ids[0] } : {}), src })
+          recordSend(topics, topicDecision.key, text)
+          saveTopics(TOPICS_FILE, topics)
+          journalAnswered([WA_CHAT], args.reply_to)
+          return { content: [{ type: 'text', text: `sent to WhatsApp (ids: ${ids.join(', ')})` }] }
+        }
+
         if (chat_id === APP_CHAT) {
           // Spoken like Telegram, but as WAV: the phone can't play Opus. The text
           // still shows in the bubble, so a failed synthesis just loses the audio.
@@ -4560,6 +4569,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       }
 
       case 'react': {
+        if (String(args.chat_id) === WA_CHAT) {
+          // Agents can't react; a lone emoji quoting the message is how WhatsApp says the same thing.
+          await waSend(String(args.emoji), [], [], String(args.message_id))
+          journalAnswered([WA_CHAT])
+          return { content: [{ type: 'text', text: 'reacted (as a quoted emoji — WhatsApp agents have no reactions)' }] }
+        }
         if (String(args.chat_id) === APP_CHAT) {
           appBroadcast(JSON.stringify({ type: 'react', id: String(args.message_id), emoji: String(args.emoji) }))
           journalAnswered([APP_CHAT])
@@ -4578,6 +4593,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       }
 
       case 'edit_message': {
+        if (String(args.chat_id) === WA_CHAT) throw new Error('WhatsApp messages cannot be edited — send a correction instead')
         if (String(args.chat_id) === APP_CHAT) {
           assertNoPairingCode(String(args.text))
           appBroadcast(JSON.stringify({ type: 'edit', id: String(args.message_id), text: String(args.text) }))
@@ -7496,6 +7512,104 @@ async function appTap(data: string, label: string): Promise<void> {
   settleCancelTap(data)
   recordHistory({ dir: 'in', chat_id: APP_CHAT, kind: 'tap', text: label || data })
   injectEvent('button', data, { chat_id: APP_CHAT, ...(label ? { button_label: label } : {}) })
+}
+
+// ---------------------------------------------------------------------------
+// WhatsApp — the third chat surface (whatsapp.ts)
+// ---------------------------------------------------------------------------
+
+/** The choices under the last message sent there: WhatsApp agents have no buttons, so a reply naming one is the tap. */
+let waButtons: ReplyButton[] = []
+
+/** Everything bound for WhatsApp: a voice note when `spoken`, the text with its buttons written under it, then files. */
+async function waSend(text: string, buttons: ReplyButton[] = [], files: string[] = [], replyTo?: string, spoken = ''): Promise<string[]> {
+  if (!wa) throw new Error('WhatsApp is not set up — WHATSAPP_AGENT_TOKEN in the state .env')
+  const ids: string[] = []
+  if (spoken) {
+    // A plain audio attachment, not a voice-note bubble (the API's only kind); the text follows regardless.
+    const ogg = await synthesize(spoken)
+    if (ogg) {
+      try { ids.push(await wa.sendFile(ogg)) } catch (err) { process.stderr.write(`otto channel: whatsapp voice send failed: ${err}\n`) }
+      finally { rmSync(ogg, { force: true }) }
+    }
+  }
+  if (text.trim()) ids.push(...await wa.sendText(renderButtons(text, buttons), replyTo))
+  for (const f of files) {
+    assertSendable(f)
+    ids.push(await wa.sendFile(f))
+  }
+  // Only the newest message's choices count; a stale "1" must not tap last week's draft.
+  if (text.trim()) waButtons = buttons
+  return ids
+}
+
+/** appTap's path, for a choice picked by replying to it. */
+async function waTap(data: string, label: string): Promise<void> {
+  try {
+    const line = await handleCapabilityButton(data, WA_CHAT)
+    if (line) { await waSend(line); return }
+  } catch (err) {
+    await waSend(`couldn't do that — ${err instanceof Error ? err.message : String(err)}`).catch(() => {})
+    return
+  }
+  settleCancelTap(data)
+  recordHistory({ dir: 'in', chat_id: WA_CHAT, kind: 'tap', text: label || data })
+  injectEvent('button', data, { chat_id: WA_CHAT, button_label: label })
+}
+
+/** appInbound's bookkeeping for a WhatsApp message, with the Telegram handlers' media and voice handling. */
+async function waInbound(m: WaMessage): Promise<void> {
+  const d = describeWa(m)
+  if (!d || !wa) return
+  // Blue ticks now, and the typing dots unless it is a tapback, which rarely wants an answer.
+  void wa.markRead(m.id, d.kind !== 'reaction').catch(err => process.stderr.write(`otto channel: whatsapp read receipt failed: ${err}\n`))
+  if (d.kind === 'text') {
+    const b = matchButton(waButtons, d.text)
+    if (b?.data) { waButtons = []; return waTap(b.data, b.label) }
+  }
+  let text = d.text
+  const meta: Record<string, string> = { ...d.meta }
+  if (d.media) {
+    try {
+      const path = await wa.download(d.media.id, d.media.ext, INBOX_DIR)
+      if (d.kind === 'photo') meta.image_path = path
+      else if (d.kind === 'voice') {
+        lastVoiceInbound.set(WA_CHAT, Date.now())
+        meta.audio_path = path
+        const result = voiceEnabled() && voiceConfig().stt !== false ? await transcribe(path) : null
+        if (result) {
+          text = result.text
+          Object.assign(meta, { voice: '1', transcript: 'whisper', ...(result.language ? { voice_language: result.language } : {}) })
+        }
+      } else meta.attachment_path = path
+    } catch (err) {
+      process.stderr.write(`otto channel: whatsapp media download failed: ${err}\n`)
+    }
+  }
+  if (meta.reply_to_id) {
+    const quoted = readHistory(WA_CHAT, 200).find(h => h.message_id === meta.reply_to_id)?.text.replace(/\s+/g, ' ').trim()
+    if (quoted) meta.reply_to_text = quoted.length > 300 ? `${quoted.slice(0, 300)}…` : quoted
+  }
+  const link = d.kind === 'reaction' ? {} : await linkMetaFor(text)
+  lastInbound.set(WA_CHAT, Date.now())
+  recordHistory({ dir: 'in', chat_id: WA_CHAT, kind: d.kind, text, message_id: m.id })
+  // The sender gate in whatsapp.ts is what makes "inbound means user-typed" true here.
+  currentSrc = null
+  stampOrigin({ kind: 'inbound' })
+  factSurface = 'whatsapp'
+  origin = recordTyped(origin, text)
+  const sec = Number(m.timestamp)
+  const full = {
+    chat_id: WA_CHAT, user: WA_CHAT, user_id: WA_CHAT, ts: (sec ? new Date(sec * 1000) : new Date()).toISOString(),
+    ...deskMeta(), ...(d.kind === 'reaction' ? {} : memMeta(text)), ...link, ...meta,
+  }
+  if (d.kind !== 'reaction') updateJournal(j => recordInbound(j, { chat_id: WA_CHAT, message_id: m.id, text, meta: full }, Date.now()))
+  mcp.notification({
+    method: 'notifications/claude/channel',
+    params: { content: text, meta: full },
+  }).catch(err => {
+    process.stderr.write(`otto channel: failed to deliver whatsapp inbound: ${err}\n`)
+  })
 }
 
 // Take the token immediately when run.sh told us we are the channel session.

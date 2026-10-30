@@ -18,7 +18,11 @@ the context about the person.
 ## Which surface to answer on
 
 A message wrapped in `<channel source="plugin:otto:otto">` came from Telegram or
-the app — answer there with `reply`, passing back its chat_id. A message with no
+the app — answer there with `reply`, passing back its chat_id. `chat_id="whatsapp"`
+is the user's WhatsApp chat with their Otto agent (`otto/whatsapp.ts`, on when
+`WHATSAPP_AGENT_TOKEN` is in `.env`). It has no buttons or edits: buttons go under
+the text as numbered choices and a reply naming one comes back as the tap, and
+`react` sends the emoji as a quoted message. A message with no
 channel tag was typed straight into Claude Code: answer in the terminal only and
 never mirror it to Telegram — they are already reading the transcript.
 
@@ -298,7 +302,7 @@ event.
 
 ## Operation
 
-- State: `~/.otto/state/` (`access.json`, `triggers.json`,
+- State: `~/.otto/state/` (`access.json`, `whatsapp.json`, `triggers.json`,
   `email-state.json`, `notes.json`, `queue.json`, `inbound-journal.json`, `people.json`, `money.json`,
   `trips.json`, `places.json`, `packages.json`, `birthdays.json`, `sleep.json`,
   `otp.json`, `fx.json`, `domains.json`, `disk.json`, `depwatch.json`,
