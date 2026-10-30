@@ -6826,7 +6826,7 @@ function routeReply(chat_id: string): string {
   return chat_id
 }
 
-type AppFile = { id: string; name: string; kind: 'image' | 'audio' | 'file' }
+type AppFile = { id: string; name: string; kind: 'image' | 'video' | 'audio' | 'file' }
 /** id -> path for GET /app/file, kept on disk so history's links outlive a restart. */
 const APP_FILES_FILE = join(STATE_DIR, 'app-files.json')
 const appFiles = new Map<string, string>((() => {
@@ -6841,7 +6841,7 @@ function appFile(path: string): AppFile {
   for (const old of [...appFiles.keys()].slice(0, Math.max(0, appFiles.size - 300))) appFiles.delete(old)
   try { writeFileSync(APP_FILES_FILE, JSON.stringify(Object.fromEntries(appFiles)), { mode: 0o600 }) } catch {}
   const ext = extname(path).toLowerCase()
-  return { id, name: basename(path), kind: PHOTO_EXTS.has(ext) ? 'image' : ['.wav', '.m4a', '.mp3'].includes(ext) ? 'audio' : 'file' }
+  return { id, name: basename(path), kind: PHOTO_EXTS.has(ext) ? 'image' : ['.mp4', '.mov', '.m4v'].includes(ext) ? 'video' : ['.wav', '.m4a', '.mp3'].includes(ext) ? 'audio' : 'file' }
 }
 
 function appBroadcast(frame: string): void {
