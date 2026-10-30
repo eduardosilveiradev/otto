@@ -6933,10 +6933,13 @@ function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: App
 const voiceLaterTokens = new Set<string>()
 /** Voice that followed its text, for /app/history. ponytail: in memory, so a restart leaves those replies text-only there. */
 const lateVoice = new Map<string, AppFile>()
+/** Replies whose voice is still being made: history says so, or a phone catching up reads them as text-only and speaks them in the system voice. */
+const voicePending = new Set<string>()
 
 /** The spoken half of a reply already on the phone as text. voice: null tells the app none is coming. */
 async function sendVoiceLater(id: string, line: string): Promise<void> {
-  const wav = await synthesize(line, 'wav').catch(() => null)
+  voicePending.add(id)
+  const wav = await synthesize(line, 'wav').catch(() => null).finally(() => voicePending.delete(id))
   const voice = wav ? appFile(wav) : null
   if (voice) lateVoice.set(id, voice)
   appBroadcast(JSON.stringify({ type: 'voice', id, voice }))
@@ -7254,7 +7257,7 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
       // An edit is its own entry; fold the latest one onto the message it changed.
       const edits = new Map(h.filter(e => e.kind === 'edit').map(e => [e.message_id, e.text]))
       return Response.json(h.filter(e => e.kind !== 'reaction' && e.kind !== 'edit')
-        .map(e => ({ dir: e.dir, text: (e.message_id && edits.get(e.message_id)) || e.text, ts: e.ts, ...(e.message_id ? { id: e.message_id } : {}), ...(e.kind === 'terminal' ? { kind: e.kind } : {}), ...(e.extra ?? {}), ...(e.message_id && lateVoice.has(e.message_id) ? { voice: lateVoice.get(e.message_id) } : {}) })))
+        .map(e => ({ dir: e.dir, text: (e.message_id && edits.get(e.message_id)) || e.text, ts: e.ts, ...(e.message_id ? { id: e.message_id } : {}), ...(e.kind === 'terminal' ? { kind: e.kind } : {}), ...(e.extra ?? {}), ...(e.message_id && lateVoice.has(e.message_id) ? { voice: lateVoice.get(e.message_id) } : {}), ...(e.message_id && voicePending.has(e.message_id) ? { voicePending: true } : {}) })))
     }
   }
   return new Response(null, { status: 404 })
