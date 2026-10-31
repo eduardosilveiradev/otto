@@ -200,7 +200,7 @@ import { ChatFeed } from './chatfeed.ts'
 import { carriesPairingCode, pairingButton, pairingCommand } from './pairing.ts'
 import { checkMessage } from './phishingmail.ts'
 import { drainRelay, isUpdateBatch, makeDedupe, type RelayUpdate } from './tgrelay.ts'
-import { chunk, bubbles } from './chunk.ts'
+import { chunk, bubbles, typingDelay } from './chunk.ts'
 import { WhatsApp, WA_CHAT, describe as describeWa, renderButtons, matchButton, type WaMessage } from './whatsapp.ts'
 import {
   accessToggles, flipAccess, triggerToggles, triggerIdOf, connectorToggles, flipConnector,
@@ -4492,23 +4492,34 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             ? { thread: 'chat' }
             : { thread: topicDecision.key, src, ...(why ? { why } : {}), ...(priority === 'urgent' ? { level: 'timeSensitive' as const } : {}) }
           // A blank line starts a new bubble, like texting; buttons, files and voice ride on the last one.
+          // After the first, each waits behind the typing dots for as long as it would take to type.
           const parts = bubbles(text)
-          for (const p of parts.slice(0, -1)) {
-            const pid = appSend(p, [], {}, notice)
-            recordHistory({ dir: 'out', chat_id, kind: 'text', text: p, message_id: pid, src, extra: { ...notice } })
+          const sendPart = (p: string, isLast: boolean): string => {
+            const id = isLast ? appSend(p, buttons, later ? { ...extra, voicePending: true } : extra, notice) : appSend(p, [], {}, notice)
+            if (isLast && later) void sendVoiceLater(id, line)
+            recordHistory({
+              dir: 'out', chat_id, kind: 'text', text: p, message_id: id, src,
+              // The notice rides along so a message the app catches up on later files the same way.
+              extra: isLast ? { ...extra, ...(buttons.length ? { buttons } : {}), ...notice } : { ...notice },
+            })
+            return id
           }
-          const last = parts.at(-1)!
-          const id = appSend(last, buttons, later ? { ...extra, voicePending: true } : extra, notice)
-          if (later) void sendVoiceLater(id, line)
-          recordHistory({
-            dir: 'out', chat_id, kind: 'text', text: last, message_id: id, src,
-            // The notice rides along so a message the app catches up on later files the same way.
-            extra: { ...extra, ...(buttons.length ? { buttons } : {}), ...notice },
-          })
           recordSend(topics, topicDecision.key, text)
           saveTopics(TOPICS_FILE, topics)
           journalAnswered([String(args.chat_id), chat_id], args.reply_to)
-          return { content: [{ type: 'text', text: `sent to the app (id: ${id})` }] }
+          const queued = appPacing > 0
+          const id = queued ? '' : sendPart(parts[0], parts.length === 1)
+          appPacing++
+          appOut = appOut.then(async () => {
+            for (let i = queued ? 0 : 1; i < parts.length; i++) {
+              if (i > 0 || queued) { setAppTyping(true); await Bun.sleep(typingDelay(parts[i])) }
+              sendPart(parts[i], i === parts.length - 1)
+            }
+          }).catch(() => {}).finally(() => {
+            // The turn may have ended while bubbles were still going out; its "off" waited for them.
+            if (--appPacing === 0 && typingOffPending) { typingOffPending = false; setAppTyping(false, true) }
+          })
+          return { content: [{ type: 'text', text: parts.length > 1 || queued ? `sending ${parts.length} bubbles to the app` : `sent to the app (id: ${id})` }] }
         }
 
         const access = loadAccess()
@@ -6971,6 +6982,10 @@ let lastAppOut = 0
  * the app still queued behind it. A reply doesn't end them — Otto often answers and keeps going.
  */
 let appTyping = false
+/** App replies still going out bubble by bubble, in order; the turn's "dots off" waits for them. */
+let appOut: Promise<void> = Promise.resolve()
+let appPacing = 0
+let typingOffPending = false
 /** `force`: send even when unchanged. The turn's end says "off" outright, so a restart or a
  *  missed "on" (both have left a status stuck on screen) can never strand the dots. */
 function setAppTyping(on: boolean, force = false): void {
@@ -7141,7 +7156,7 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
     closeTurn()
     liveSteps.finish()
     if (liveTodos.length) setLiveTodos([])
-    if (!unreadApp.size) setAppTyping(false, true)
+    if (!unreadApp.size) { if (appPacing > 0) typingOffPending = true; else setAppTyping(false, true) }
     return new Response(null, { status: 204 })
   }
   const tool = String(h.tool_name ?? '')

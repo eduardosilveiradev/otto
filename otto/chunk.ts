@@ -24,3 +24,8 @@ export function bubbles(text: string): string[] {
   const parts = text.split(/\n[ \t]*\n/).map(s => s.trim()).filter(Boolean)
   return parts.length ? parts : [text]
 }
+
+/** How long the typing dots show before a follow-up bubble: a beat, plus a little per character, capped. */
+export function typingDelay(text: string): number {
+  return Math.min(2200, 450 + 22 * text.length)
+}
