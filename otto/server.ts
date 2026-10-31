@@ -191,6 +191,7 @@ import { homedir, tmpdir } from 'os'
 import { join, extname, sep, isAbsolute, dirname, basename, resolve } from 'path'
 import { statusLabel } from './toolstatus.ts'
 import { wantsPolish, polishStatus } from './statuspolish.ts'
+import { askFront, frontShouldAnswer, type FrontConfig } from './front.ts'
 import { LiveSteps, findImage, readTaskList, shrinkScreenshot, todoItems, type TodoItem } from './livesteps.ts'
 import { promptSnippet } from './terminalprompt.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
@@ -389,6 +390,8 @@ type PendingEntry = {
 }
 
 type Access = {
+  /** The front desk experiment (otto/front.ts): a quick reply in the app while a long turn runs. */
+  front?: FrontConfig
   dmPolicy: 'pairing' | 'allowlist' | 'disabled'
   allowFrom: string[]
   pending: Record<string, PendingEntry>
@@ -1437,6 +1440,10 @@ const TAINT_CARRY_MS = 20 * 60_000
 /** A delegated job's own otto runs on a task the user did not type; it is never user-typed. */
 const ORIGIN_PINNED = process.env.OTTO_ORIGIN_PIN === 'external-content'
 let turnOpen = false
+/** When the open turn began, so the front desk knows a reply isn't coming soon. */
+let turnStartedAt = 0
+/** The last step of the open turn, in the bubble's words, for the front desk to name. */
+let lastStep = ''
 let taintedAt = 0
 let origin: OriginState = ORIGIN_PINNED ? taint(freshOriginState(), 'a delegated job runs on a task the user did not type') : loadOrigin()
 
@@ -1480,6 +1487,7 @@ function stampOrigin(wake: Wake): void {
   if (carried && !origin.tainted) origin = taint(origin, `${carried.replace(/ \(earlier this turn\)$/, '')} (earlier this turn)`)
   else if (origin.tainted) taintedAt = Date.now()
   if (ORIGIN_PINNED && !origin.tainted) origin = taint(origin, 'a delegated job runs on a task the user did not type')
+  if (!turnOpen) turnStartedAt = Date.now()
   turnOpen = true
   factSurface = undefined
   saveOrigin()
@@ -4512,7 +4520,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           appPacing++
           appOut = appOut.then(async () => {
             for (let i = queued ? 0 : 1; i < parts.length; i++) {
-              if (i > 0 || queued) { setAppTyping(true); await Bun.sleep(typingDelay(parts[i])) }
+              if (i > 0 || queued) { setAppTyping(true, true); await Bun.sleep(typingDelay(parts[i])) }   // forced: the app hid its dots when the last bubble landed
               sendPart(parts[i], i === parts.length - 1)
             }
           }).catch(() => {}).finally(() => {
@@ -7179,6 +7187,7 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   }
   const text = statusLabel(tool, h.tool_input ?? {})
   liveSteps.step(text) // kept with no socket open too: a reconnect mid-task gets the whole list
+  lastStep = text
   const seq = ++statusSeq
   // A bare "Remembering" or a tool's own name: Haiku says what it's about, and the
   // better line replaces the bare one, in the bubble only if nothing newer took over.
@@ -7615,8 +7624,18 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
   // The link fetch starts now, but delivery keeps arrival order: a message waiting on a slow
   // site must not be overtaken by the one sent after it.
   const link = kind === 'reaction' ? {} : linkMetaFor(text)
+  // Busy on something else: the front desk may cover the wait with a quick line of its own.
+  const front = kind === 'text' && !untrusted && frontShouldAnswer(loadAccess().front, turnOpen, turnStartedAt)
+    ? askFront(ANTHROPIC_KEY, readHistory(APP_CHAT, 16).map(e => ({ dir: e.dir, text: e.text ?? '', ts: e.ts })), text, lastStep)
+    : Promise.resolve(null)
   const turn = appInboundTail.then(async () => {
     const fields = await link
+    const said = await front
+    if (said) {
+      const id = randomBytes(4).toString('hex')
+      appBroadcast(JSON.stringify({ type: 'message', id, text: said, ts: new Date().toISOString(), buttons: [], thread: 'chat' }))
+      recordHistory({ dir: 'out', chat_id: APP_CHAT, kind: 'text', text: said, message_id: id, src: 'front', extra: { thread: 'chat' } })
+    }
     // Stamped right before delivery, not on arrival: otherwise a later message (or an event
     // injected during the fetch) would decide the origin this one is delivered under.
     currentSrc = null
@@ -7624,7 +7643,8 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
     factSurface = 'app'
     if (untrusted) taintOrigin(untrusted)
     else origin = recordTyped(origin, text)
-    const meta = { chat_id: APP_CHAT, user: APP_CHAT, user_id: APP_CHAT, ts: new Date().toISOString(), ...(message_id ? { message_id } : {}), ...deskMeta(), ...(kind === 'reaction' ? {} : memMeta(text)), ...fields, ...extraMeta }
+    const meta = { chat_id: APP_CHAT, user: APP_CHAT, user_id: APP_CHAT, ts: new Date().toISOString(), ...(message_id ? { message_id } : {}), ...deskMeta(), ...(kind === 'reaction' ? {} : memMeta(text)), ...fields, ...extraMeta,
+      ...(said ? { front_reply: `already answered for you while you were busy: "${said}". Don't repeat it; follow through when you get to it.` } : {}) }
     if (message_id && kind !== 'reaction') updateJournal(j => recordInbound(j, { chat_id: APP_CHAT, message_id, text, meta }, Date.now()))
     mcp.notification({
       method: 'notifications/claude/channel',
