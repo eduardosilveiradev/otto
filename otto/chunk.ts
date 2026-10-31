@@ -17,3 +17,10 @@ export function chunk(text: string, limit: number, mode: 'length' | 'newline'): 
   if (rest) out.push(rest)
   return out
 }
+
+/** A reply as chat bubbles: one per blank-line-separated paragraph. A code block keeps it whole. */
+export function bubbles(text: string): string[] {
+  if (text.includes('```')) return [text]
+  const parts = text.split(/\n[ \t]*\n/).map(s => s.trim()).filter(Boolean)
+  return parts.length ? parts : [text]
+}

@@ -200,7 +200,7 @@ import { ChatFeed } from './chatfeed.ts'
 import { carriesPairingCode, pairingButton, pairingCommand } from './pairing.ts'
 import { checkMessage } from './phishingmail.ts'
 import { drainRelay, isUpdateBatch, makeDedupe, type RelayUpdate } from './tgrelay.ts'
-import { chunk } from './chunk.ts'
+import { chunk, bubbles } from './chunk.ts'
 import { WhatsApp, WA_CHAT, describe as describeWa, renderButtons, matchButton, type WaMessage } from './whatsapp.ts'
 import {
   accessToggles, flipAccess, triggerToggles, triggerIdOf, connectorToggles, flipConnector,
@@ -4491,10 +4491,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const notice: Notice = conversational
             ? { thread: 'chat' }
             : { thread: topicDecision.key, src, ...(why ? { why } : {}), ...(priority === 'urgent' ? { level: 'timeSensitive' as const } : {}) }
-          const id = appSend(text, buttons, later ? { ...extra, voicePending: true } : extra, notice)
+          // A blank line starts a new bubble, like texting; buttons, files and voice ride on the last one.
+          const parts = bubbles(text)
+          for (const p of parts.slice(0, -1)) {
+            const pid = appSend(p, [], {}, notice)
+            recordHistory({ dir: 'out', chat_id, kind: 'text', text: p, message_id: pid, src, extra: { ...notice } })
+          }
+          const last = parts.at(-1)!
+          const id = appSend(last, buttons, later ? { ...extra, voicePending: true } : extra, notice)
           if (later) void sendVoiceLater(id, line)
           recordHistory({
-            dir: 'out', chat_id, kind: 'text', text, message_id: id, src,
+            dir: 'out', chat_id, kind: 'text', text: last, message_id: id, src,
             // The notice rides along so a message the app catches up on later files the same way.
             extra: { ...extra, ...(buttons.length ? { buttons } : {}), ...notice },
           })
