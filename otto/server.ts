@@ -103,7 +103,7 @@ import {
 import { pollCalendar, loadSnapshot, formatChanges, worthTelling, CALFEED_FILE } from './calfeed.ts'
 import {
   recordMoney, queryMoney, totalsByCurrency, totalsByMonth, totalsByCategory,
-  convertTotals, formatTotals, formatRecord, formatAmount, loadMoney, saveMoney, MONEY_FILE,
+  convertTotals, formatTotals, formatRecord, formatAmount, formatMoney, loadMoney, saveMoney, MONEY_FILE,
   type Annotate, type MoneyRecord, type PurchaseFacts,
 } from './money.ts'
 import { refreshFx, annotator, homeCurrency } from './fx.ts'
@@ -195,7 +195,7 @@ import { LiveSteps, findImage, readTaskList, shrinkScreenshot, todoItems, type T
 import { promptSnippet } from './terminalprompt.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
 import { handleDash, triggerRows, type DashDeps } from './dash.ts'
-import type { TriggerRow } from './dash-types.ts'
+import type { TriggerRow, RecordedCard } from './dash-types.ts'
 import { ChatFeed } from './chatfeed.ts'
 import { carriesPairingCode, pairingButton, pairingCommand } from './pairing.ts'
 import { checkMessage } from './phishingmail.ts'
@@ -4315,6 +4315,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         assertAllowedChat(chat_id)
         const buttons = validateButtons(args.buttons)
         const scheduled = takeScheduled()
+        const recorded = takeRecorded()
         assertNoPairingCode(text, ...buttons.map(b => b.label))
         for (const f of files) {
           assertSendable(f)
@@ -4451,6 +4452,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             ...(files.length ? { files: files.map(appFile) } : {}),
             ...(wav ? { voice: appFile(wav) } : {}),
             ...(scheduled.length ? { scheduled } : {}),
+            ...(recorded.length ? { recorded } : {}),
             ...(args.reply_to != null ? { reply_to: String(args.reply_to) } : {}),
           }
           // A reply is part of the chat; anything unprompted gets its own stack per topic,
@@ -4766,6 +4768,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             body,
             scope: scopeSlug(args.scope != null ? String(args.scope) : 'global'),
           })
+          justRecorded.push({
+            kind: 'memory', id: mem.name, title: description, detail: 'Remembered', body: body.slice(0, 600),
+            action: { label: 'Forget it', data: `forget memory ${mem.name}` }, at: Date.now(),
+          })
           return { content: [{ type: 'text', text: `stored memory [${mem.name}] (${mem.type}, ${mem.scope})` }] }
         }
 
@@ -4783,6 +4789,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             ...(source ? { source } : {}),
           })
           writeNotes(notes)
+          if (w.action !== 'confirmed') { const c = noteCard(w.note); if (c) justRecorded.push({ ...c, at: Date.now() }) }
           const verb = w.action === 'confirmed' ? 'confirmed' : 'stored'
           const replaced = w.superseded.length
             ? `\nsuperseded ${w.superseded.map(n => `${n.id} — ${n.text}`).join('; ')}`
@@ -4803,6 +4810,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           ...(args.key ? { key: normalizeKey(String(args.key)) } : {}),
         })
         writeNotes(notes)
+        { const c = noteCard(note); if (c) justRecorded.push({ ...c, at: Date.now() }) }
         return { content: [{ type: 'text', text: `${created ? 'stored' : 'updated'} ${formatNote(note)}` }] }
       }
 
@@ -5009,6 +5017,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           ...(args.purchase && typeof args.purchase === 'object' ? { purchase: purchaseArg(args.purchase as Record<string, unknown>) } : {}),
         })
         if (created || updated) saveMoney(MONEY_FILE, records)
+        if (created) {
+          const month = queryMoney(records, { month: record.date.slice(0, 7), merchant: record.merchant })
+          justRecorded.push({
+            kind: 'money', id: record.id, title: `${formatMoney(record.amount, record.currency)} · ${record.merchant}`,
+            detail: [record.category, record.date].filter(Boolean).join(' · '),
+            body: `This month at ${record.merchant}: ${formatTotals(totalsByCurrency(month))} (${month.length})`,
+            at: Date.now(),
+          })
+        }
         const fx = await moneyAnnotator()
         return {
           content: [{
@@ -5130,6 +5147,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             soon = hit.days === 0 ? ' (birthday is today)' : ` (birthday in ${hit.days} day${hit.days === 1 ? '' : 's'} — no nudge will follow, so offer one now if it helps)`
           }
         }
+        justRecorded.push({
+          kind: 'person', id: p.id, title: displayName(p), detail: [p.relationship, p.city].filter(Boolean).join(' · ') || 'Contact',
+          ...(args.note ? { body: String(args.note) } : {}), at: Date.now(),
+        })
         return { content: [{ type: 'text', text: `noted — ${displayName(p)}${soon}` }] }
       }
 
@@ -5166,6 +5187,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         })
         savePlaces(PLACES_FILE, places)
         if (people) savePeople(PEOPLE_FILE, people)
+        justRecorded.push({
+          kind: 'place', id: place.id, title: place.name, detail: [place.status, place.city].filter(Boolean).join(' · '),
+          ...(args.note ? { body: String(args.note) } : {}), at: Date.now(),
+        })
         return { content: [{ type: 'text', text: `${created ? 'noted' : 'updated'} — ${formatPlace(place)}` }] }
       }
 
@@ -6791,6 +6816,8 @@ async function sweepOtpDeletes(): Promise<void> {
 //                    "why"?: "<plain words>" }  — src/why only on unprompted messages
 //                    "scheduled"?: [TriggerRow]  triggers armed while writing it (dash-types.ts), shown as a chip;
 //                    GET /app/dash/triggers/item?id= has the whole of one
+//                    "recorded"?: [RecordedCard]  money, memories and loops written while writing it (dash-types.ts),
+//                    shown as cards; a card's action comes back as a tap frame
 //                  { "type": "voice", "id", "voice": { id, name, kind } | null }  the spoken version of message id,
 //                    sent with "voicePending": true when every open app asked for ?voiceLater=1; null = none coming
 //                  { "type": "steps", "taskId", "steps": [{ "label", "ts" }], "screenshot"?, "done" }
@@ -6936,7 +6963,36 @@ function takeScheduled(): TriggerRow[] {
   return ids.size ? triggerRows(loadTriggers().filter(t => ids.has(t.id))) : []
 }
 
-function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; voicePending?: boolean; reply_to?: string; scheduled?: TriggerRow[] } = {}, notice: Notice = {}): string {
+/** Money, memories, loops, places, people and undoable writes since the last reply, for cards on the next app message.
+ * Same ride as justScheduled; the last write of one thing wins, so a loop stored then closed shows once. */
+let justRecorded: (RecordedCard & { at: number })[] = []
+function takeRecorded(): RecordedCard[] {
+  const fresh = justRecorded.filter(r => Date.now() - r.at < 15 * 60_000)
+  justRecorded = []
+  return [...new Map(fresh.map(({ at: _, ...r }) => [`${r.kind}:${r.id}`, r])).values()]
+}
+
+function noteCard(n: Note): RecordedCard | null {
+  if (n.kind === 'loop') {
+    const open = n.status !== 'done'
+    return {
+      kind: 'loop', id: n.id, title: n.text,
+      detail: !open ? 'Done' : n.due ? `Due ${n.due.slice(0, 10)}` : 'Open',
+      ...(open ? { action: { label: 'Done', data: `close loop ${n.id}` } } : {}),
+    }
+  }
+  if (n.kind === 'fact' || n.kind === 'saved') {
+    return { kind: 'memory', id: n.id, title: n.text, detail: n.kind === 'fact' ? 'Remembered' : 'Saved', action: { label: 'Forget it', data: `forget note ${n.id}` } }
+  }
+  if (n.kind === 'write') {
+    // The undo note after a calendar event or task: the card is the event, its action the undo.
+    const cal = /calendar|event/i.test(`${(n.tags ?? []).join(' ')} ${n.text}`)
+    return { kind: 'write', id: n.id, title: n.text, detail: cal ? 'Calendar' : 'Added', ...(n.undo ? { body: `Undo: ${n.undo}`, action: { label: 'Undo it', data: `undo write ${n.id}` } } : {}) }
+  }
+  return null
+}
+
+function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: AppFile[]; voice?: AppFile; voicePending?: boolean; reply_to?: string; scheduled?: TriggerRow[]; recorded?: RecordedCard[] } = {}, notice: Notice = {}): string {
   barkPush(text, false, { ...(notice.thread ? { group: notice.thread } : {}), ...(notice.level ? { level: notice.level } : {}) })
   lastAppOut = Date.now()
   const id = randomBytes(4).toString('hex')

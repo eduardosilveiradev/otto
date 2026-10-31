@@ -214,6 +214,18 @@ export type TriggerRow = {
 }
 
 export type Triggers = { triggers: TriggerRow[] }
+
+/** Something written down while answering, shown as a card on that reply ("recorded" on the message frame).
+ * `action` is a tap the app sends back as is, like a button. */
+export type RecordedCard = {
+  kind: 'money' | 'memory' | 'loop' | 'place' | 'person' | 'write'
+  id: string
+  title: string
+  detail?: string
+  body?: string
+  action?: { label: string; data: string }
+}
+
 /** The whole action, for the one trigger the user opened. */
 export type TriggerDetail = TriggerRow & { action: string; condition?: string; tz?: string; createdAt: string }
 
