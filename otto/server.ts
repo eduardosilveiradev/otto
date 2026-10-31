@@ -4224,6 +4224,35 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'ask_payment',
+      title: 'Ask to confirm a payment in the app',
+      annotations: { title: 'Confirm a payment', readOnlyHint: false, openWorldHint: false },
+      description:
+        'Before paying for anything they asked you to buy: put a payment confirmation in the Otto app, the way ask_approval does for a change — merchant, every item, the total, the card, and anything they should know (no refunds, a hold that runs out). Pay (behind Face ID) or Decline comes back as a button event; pay only after Pay. Only for a purchase they asked for in their own words. If the app is not connected, confirm on the chat with buttons as before.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          merchant: { type: 'string', description: 'Who gets paid, as the checkout names them.' },
+          site: { type: 'string', description: 'The checkout host, e.g. checkout.example.com.' },
+          items: {
+            type: 'array',
+            description: 'Every line on the bill.',
+            items: {
+              type: 'object',
+              properties: { name: { type: 'string' }, detail: { type: 'string', description: 'Date, size, seat…' }, quantity: { type: 'number' }, unit: { type: 'number', description: 'Price of one, in the checkout currency.' } },
+              required: ['name', 'unit'],
+            },
+          },
+          total: { type: 'number', description: 'What will be charged, everything included.' },
+          currency: { type: 'string', description: 'ISO 4217, as the checkout states it.' },
+          method: { type: 'string', description: 'What pays: "card ending 4242", "saved Visa ending 1111".' },
+          notes: { type: 'array', items: { type: 'string' }, description: 'Short lines they should see before paying: no refunds, the hold ends 16:14.' },
+          test: { type: 'boolean', description: 'A demonstration: nothing gets paid whatever they tap.' },
+        },
+        required: ['merchant', 'items', 'total', 'currency', 'method'],
+      },
+    },
+    {
       name: 'reload',
       title: 'Restart on the code on disk',
       annotations: { title: 'Reload server', readOnlyHint: false, openWorldHint: false },
@@ -5494,6 +5523,37 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         // skip the push, and an approval nobody sees just sits there blocking the work.
         barkPush(`approve? ${title}`, true, { level: 'timeSensitive', group: 'approval' })
         return text(`approval screen is up in the app (${a.id}). Their answer arrives as a button event; the typed phrase still works too.`)
+      }
+
+      case 'ask_payment': {
+        const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
+        // A payment confirmation is for a purchase the user asked for, never one a mail or a page asked for.
+        if (effectiveOrigin(origin) !== 'user-typed') return text(`not asking — ${describeOrigin(origin)}. Only a purchase they asked for in their own words gets a payment screen.`)
+        const total = Number(args.total)
+        const currency = String(args.currency ?? '').trim().toUpperCase()
+        const items = (Array.isArray(args.items) ? args.items : []).slice(0, 20).map((i: Record<string, unknown>) => ({
+          name: String(i?.name ?? '').trim().slice(0, 120),
+          ...(i?.detail ? { detail: String(i.detail).trim().slice(0, 160) } : {}),
+          quantity: Math.max(1, Math.round(Number(i?.quantity) || 1)),
+          unit: Number(i?.unit),
+        })).filter(i => i.name && Number.isFinite(i.unit))
+        const merchant = String(args.merchant ?? '').trim().slice(0, 120)
+        const method = String(args.method ?? '').trim().slice(0, 120)
+        if (!merchant || !method || !items.length || !Number.isFinite(total) || total <= 0 || !/^[A-Z]{3}$/.test(currency)) throw new Error('merchant, method, items, a positive total and a 3-letter currency are required')
+        if (!appSockets.size) return text("the app isn't connected — confirm the item and total on the chat with buttons instead")
+        const payment: Payment = {
+          merchant, items, total, currency, method,
+          ...(typeof args.site === 'string' && args.site.trim() ? { site: args.site.trim().slice(0, 120) } : {}),
+          notes: (Array.isArray(args.notes) ? args.notes : []).map(String).map(n => n.trim().slice(0, 160)).filter(Boolean).slice(0, 6),
+          ...(args.test === true ? { test: true } : {}),
+        }
+        const amount = `${total.toFixed(2)} ${currency}`
+        const a: Approval = { id: randomBytes(6).toString('hex'), title: `${payment.test ? 'Test: ' : ''}Pay ${amount}`, summary: `${merchant}${payment.site ? ` · ${payment.site}` : ''}`, files: [], at: Date.now(), payment }
+        approvals.set(a.id, a)
+        const frame = approvalFrame(a)
+        for (const ws of appSockets) ws.send(frame)
+        barkPush(`approve? ${a.title}`, true, { level: 'timeSensitive', group: 'approval' })
+        return text(`payment confirmation is up in the app (${a.id}). Pay or Decline arrives as a button event; don't pay before it.`)
       }
 
       case 'self_edit_check': {
@@ -7136,7 +7196,9 @@ function triggerWriteRefused() {
  * the phrase does. Kept in memory: a reload drops pending ones, and the app is told so on
  * reconnect by their absence.
  */
-type Approval = { id: string; title: string; summary: string; files: { path: string; tier: string; why: string }[]; branch?: string; stat?: string; at: number }
+// `payment`: a purchase to confirm (ask_payment); Pay hands the session the go-ahead and sets no proof for code.
+type Payment = { merchant: string; site?: string; items: { name: string; detail?: string; quantity: number; unit: number }[]; total: number; currency: string; method: string; notes: string[]; test?: true }
+type Approval = { id: string; title: string; summary: string; files: { path: string; tier: string; why: string }[]; branch?: string; stat?: string; at: number; payment?: Payment }
 const APPROVAL_TTL_MS = 30 * 60_000
 const approvals = new Map<string, Approval>()
 const approvalFrame = (a: Approval) => JSON.stringify({ type: 'approval', ...a, expires: new Date(a.at + APPROVAL_TTL_MS).toISOString() })
@@ -7149,6 +7211,15 @@ function decideApproval(id: string, approve: boolean): void {
   if (!a) return
   approvals.delete(id)
   for (const ws of appSockets) ws.send(JSON.stringify({ type: 'approval_done', id }))
+  if (a.payment) {
+    const p = a.payment, what = `${p.total.toFixed(2)} ${p.currency} to ${p.merchant} with ${p.method}`
+    injectEvent('button', p.test
+      ? `${approve ? 'tapped Pay' : 'declined'} on the test payment confirmation (${what}). It was a test: pay nothing, just tell them it came through.`
+      : approve ? `approved in the app: pay ${what} for ${p.items.map(i => `${i.quantity}× ${i.name}`).join(', ')}. Pay it now, exactly this.`
+        : `declined in the app: don't pay ${what}`,
+      { chat_id: APP_CHAT, button_label: approve ? 'Pay' : 'Decline' })
+    return
+  }
   if (!approve) {
     injectEvent('button', `declined in the app: ${a.title} — don't make this change`, { chat_id: APP_CHAT, button_label: 'Decline' })
     return
