@@ -39,7 +39,9 @@ export function frontRequest(thread: Line[], message: string, doing: string, now
   const lines = thread.slice(-16).map(l => `${l.dir === 'in' ? 'them' : 'you'}: ${l.text.replace(/\s+/g, ' ').slice(0, 400)}`)
   return {
     model: FRONT_MODEL,
-    max_tokens: 120,
+    // Sonnet 5.5 opens with a thinking block; a tight budget left no room for the text.
+    max_tokens: 1024,
+    thinking: { type: 'between_tools' },
     system: SYSTEM,
     messages: [{
       role: 'user',
