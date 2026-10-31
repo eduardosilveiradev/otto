@@ -10,6 +10,7 @@
  */
 
 import { tmpdir } from 'os'
+import { join } from 'path'
 
 export const FRONT_MODEL = 'claude-sonnet-5-5'
 
@@ -41,7 +42,8 @@ const SYSTEM = [
   'ACK: <text> when they want something done, or asked something you cannot fully answer: a few words saying you are on it after what you are doing now. Name that the way they asked for it in the thread, or just say "after this". The full version of you handles it after.',
   'An ACK never answers the question itself, not even partly: no "yes", no guess, just that it is coming.',
   'PASS when a reply adds nothing (a "k", half a thought). The full version of you handles it after.',
-  'Never DONE anything that needs an action, a look at mail, calendar or files, or a guess. Never claim you did, checked, sent or saved anything. Never promise a time.',
+  'You can look things up, read only: memory, reminders, calendar, mail (sender and subject only) and chat history. When a question is about something those hold, look it up and answer it yourself with DONE. Keep it to one or two lookups; you are covering a wait, not doing the work. Plans and times usually live in reminders and memory, not the calendar: check those first.',
+  'Never DONE anything that needs an action or a guess. Never claim you did, sent, saved or changed anything. Never promise a time.',
 ].join('\n')
 
 /** The system prompt and the turn, kept pure so they can be tested. */
@@ -60,8 +62,14 @@ export function frontPrompt(thread: Line[], message: string, now = new Date(), k
 
 export type Run = (system: string, user: string) => Promise<string>
 
-const RUN_ARGS = ['-p', '--model', FRONT_MODEL, '--tools', '', '--strict-mcp-config', '--setting-sources', '',
-  '--no-session-persistence', '--disable-slash-commands']
+/** Its only tools: the read-only lookups in frontmcp.ts. */
+const LOOKUPS = ['memory', 'reminders', 'calendar', 'mail', 'history'].map(t => `mcp__front__${t}`)
+function runArgs(): string[] {
+  const mcp = { mcpServers: { front: { command: process.execPath, args: [join(import.meta.dir, 'frontmcp.ts')],
+    env: { OTTO_GOOGLE_ACCOUNT: process.env.OTTO_GOOGLE_ACCOUNT ?? '', PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' } } } }
+  return ['-p', '--model', FRONT_MODEL, '--tools', '', '--mcp-config', JSON.stringify(mcp), '--strict-mcp-config',
+    '--allowedTools', LOOKUPS.join(','), '--setting-sources', '', '--no-session-persistence', '--disable-slash-commands']
+}
 
 function runEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env }
@@ -92,7 +100,7 @@ export class WarmRun {
   }
 
   private start(system: string): void {
-    this.proc = Bun.spawn([this.bin, ...RUN_ARGS, '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+    this.proc = Bun.spawn([this.bin, ...runArgs(), '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
       '--system-prompt', system], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', cwd: tmpdir(), env: runEnv() })
     this.reader = (this.proc.stdout as ReadableStream<Uint8Array>).getReader()
     this.buf = ''
@@ -132,7 +140,8 @@ export type FrontAnswer = { done: boolean; text: string }
 
 /** DONE (settled, don't pass it on) or ACK (send, then pass it on); null for PASS, junk or too long. */
 export function frontReply(raw: string): FrontAnswer | null {
-  const m = /^\s*(DONE|ACK)\s*:\s*([\s\S]+)$/i.exec(raw.trim())
+  // The last DONE/ACK line wins: after a lookup the model sometimes says a few words first.
+  const m = /(?:^|\n)\s*(DONE|ACK)\s*:\s*([\s\S]+)$/i.exec(raw.trim())
   if (!m) return null
   const text = m[2].trim().replace(/^["“]|["”]$/g, '').trim()
   if (!text || text.length > 280) return null

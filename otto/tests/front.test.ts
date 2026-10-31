@@ -23,6 +23,7 @@ test('DONE settles it, ACK passes it on, PASS and junk send nothing', () => {
   expect(frontReply('ACK: ' + 'x'.repeat(300))).toBeNull()
   expect(frontReply('ACK: "on it after the build"')).toEqual({ done: false, text: 'on it after the build' })
   expect(frontReply('done: tuesday at 9')).toEqual({ done: true, text: 'tuesday at 9' })
+  expect(frontReply('checking reminders\nDONE: 17:10')).toEqual({ done: true, text: '17:10' })
 })
 
 test('the prompt carries the thread, memory and the new message', () => {
