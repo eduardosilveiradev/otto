@@ -294,9 +294,16 @@ function describe(r: ProbeResult, fix: Repair | null): string {
   return `${head}${detail}${ask}.`
 }
 
+/**
+ * Only sections the brief renders whenever their source answers, even with
+ * nothing to say ("nobody", "clear"). The rest (Machine, Recent thread, Playing,
+ * Desk…) come and go with what the user is doing, so their absence is no outage.
+ */
+export const ALWAYS_RENDERED = ['Today', 'Inbox 24h', 'Waiting on you']
+
 /** Turn omitted sections into the probe result the decision function expects. */
 export function briefSectionsProbe(rebuilds: BriefRebuild[], n = OMITTED_REBUILDS): ProbeResult {
-  const gone = omittedSections(rebuilds, n)
+  const gone = omittedSections(rebuilds, n).filter(s => ALWAYS_RENDERED.includes(s))
   return gone.length
     ? { name: 'brief-sections', ok: false, detail: `${gone.join(' and ')} missing ${n} rebuilds running` }
     : { name: 'brief-sections', ok: true }

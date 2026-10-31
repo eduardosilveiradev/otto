@@ -317,3 +317,8 @@ test('a watchdog restart logged after the real install is never blamed for the c
   const opaque = install({ id: 'o', by: 'forge', revert: { kind: 'none', why: 'irreversible' }, at: '2026-08-12T10:03:00Z' })
   expect(blameSelfInstall(Date.parse('2026-08-12T10:05:00Z'), [forge, opaque])?.id).toBe('forge1')
 })
+
+test('a conditional section going quiet is not an outage', () => {
+  const rebuilds = [1, 2, 3, 4, 5].map(at => ({ at, sections: at === 1 ? ['Today', 'Machine', 'Recent thread'] : ['Today'] }))
+  expect(briefSectionsProbe(rebuilds).ok).toBe(true)
+})
