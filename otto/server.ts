@@ -7087,7 +7087,8 @@ function appSend(text: string, buttons: ReplyButton[] = [], extra: { files?: App
   lastAppOut = Date.now()
   const id = randomBytes(4).toString('hex')
   appBroadcast(JSON.stringify({ type: 'message', id, text, ts: new Date().toISOString(), buttons, ...extra, ...notice }))
-  liveSteps.finish()
+  // The step list stays until the turn ends (Stop): clearing it on every reply shrank the
+  // thinking bubble and grew it back with the next step, and the thread jumped each time.
   return id
 }
 
@@ -7162,6 +7163,7 @@ async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }
   markRead(h.transcript_path)
   if (h.hook_event_name === 'Stop') {
     closeTurn()
+    flushHeld()
     liveSteps.finish()
     if (liveTodos.length) setLiveTodos([])
     if (!unreadApp.size) { if (appPacing > 0) typingOffPending = true; else setAppTyping(false, true) }
@@ -7588,6 +7590,15 @@ function markSeen(field: 'opened' | 'returned', memories: Pick<Memory, 'path' | 
   try { appendFileSync(MEMHINTS_FILE, JSON.stringify({ ts: new Date().toISOString(), sess: HINT_SESS, [field]: handles }) + '\n', { mode: 0o600 }) } catch {}
 }
 /** mem="m7f2a lights via SmartThings CLI | …" on what they send, when anything clears the bar. */
+/** What memory says about a message, for the front desk: a few notes and memories, short. */
+function frontMemory(text: string): string {
+  try {
+    const notes = searchNotes(readNotes(), { query: text, limit: 4 }).map(n => formatNote(n))
+    const mems = searchMemories(loadMemories(), text, { limit: 3 }).map(h => formatHit(h, false))
+    return [...notes, ...mems].join('\n').slice(0, 2500)
+  } catch { return '' }
+}
+
 function memMeta(text: string): Record<string, string> {
   try {
     const mem = memHints(loadMemories(), text, hintSeen())
@@ -7603,6 +7614,21 @@ function memMeta(text: string): Record<string, string> {
 function deskMeta(): Record<string, string> {
   const d = deskNow()
   return d ? { desk: d } : {}
+}
+
+/** App messages held while the front desk covers a long turn; delivered in order when it ends. */
+let heldForStop: (() => unknown)[] = []
+let heldTimer: ReturnType<typeof setTimeout> | undefined
+function holdForStop(deliver: () => unknown): void {
+  heldForStop.push(deliver)
+  // A Stop that never comes (a crash, a wedged turn) must not strand them.
+  heldTimer ??= setTimeout(flushHeld, 10 * 60_000)
+}
+function flushHeld(): void {
+  if (heldTimer) { clearTimeout(heldTimer); heldTimer = undefined }
+  const q = heldForStop
+  heldForStop = []
+  for (const d of q) d()
 }
 
 /** The last app message's delivery, so the next one queues behind it. */
@@ -7625,16 +7651,20 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
   // site must not be overtaken by the one sent after it.
   const link = kind === 'reaction' ? {} : linkMetaFor(text)
   // Busy on something else: the front desk may cover the wait with a quick line of its own.
-  const front = kind === 'text' && !untrusted && frontShouldAnswer(loadAccess().front, turnOpen, turnStartedAt)
-    ? askFront(ANTHROPIC_KEY, readHistory(APP_CHAT, 16).map(e => ({ dir: e.dir, text: e.text ?? '', ts: e.ts })), text, lastStep)
+  const busy = kind === 'text' && !untrusted && frontShouldAnswer(loadAccess().front, turnOpen, turnStartedAt)
+  const front = busy
+    ? askFront(ANTHROPIC_KEY, readHistory(APP_CHAT, 16).map(e => ({ dir: e.dir, text: e.text ?? '', ts: e.ts })), text, lastStep, fetch, frontMemory(text))
     : Promise.resolve(null)
   const turn = appInboundTail.then(async () => {
     const fields = await link
-    const said = await front
-    if (said) {
+    const answer = await front
+    const said = answer?.text
+    if (answer) {
       const id = randomBytes(4).toString('hex')
-      appBroadcast(JSON.stringify({ type: 'message', id, text: said, ts: new Date().toISOString(), buttons: [], thread: 'chat' }))
-      recordHistory({ dir: 'out', chat_id: APP_CHAT, kind: 'text', text: said, message_id: id, src: 'front', extra: { thread: 'chat' } })
+      appBroadcast(JSON.stringify({ type: 'message', id, text: answer.text, ts: new Date().toISOString(), buttons: [], thread: 'chat' }))
+      recordHistory({ dir: 'out', chat_id: APP_CHAT, kind: 'text', text: answer.text, message_id: id, src: 'front', extra: { thread: 'chat' } })
+      // Settled on the spot: it stays in the history, and the session is never woken for it.
+      if (answer.done) { if (message_id) unreadApp.delete(message_id); return }
     }
     // Stamped right before delivery, not on arrival: otherwise a later message (or an event
     // injected during the fetch) would decide the origin this one is delivered under.
@@ -7646,12 +7676,16 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
     const meta = { chat_id: APP_CHAT, user: APP_CHAT, user_id: APP_CHAT, ts: new Date().toISOString(), ...(message_id ? { message_id } : {}), ...deskMeta(), ...(kind === 'reaction' ? {} : memMeta(text)), ...fields, ...extraMeta,
       ...(said ? { front_reply: `already answered for you while you were busy: "${said}". Don't repeat it; follow through when you get to it.` } : {}) }
     if (message_id && kind !== 'reaction') updateJournal(j => recordInbound(j, { chat_id: APP_CHAT, message_id, text, meta }, Date.now()))
-    mcp.notification({
+    const deliver = () => mcp.notification({
       method: 'notifications/claude/channel',
       params: { content: text, meta },
     }).catch(err => {
       process.stderr.write(`otto channel: failed to deliver app inbound: ${err}\n`)
     })
+    // While the front desk covers a long turn, the message waits for that turn to end
+    // (the Stop hook) instead of landing in the middle of it.
+    if (busy) holdForStop(deliver)
+    else void deliver()
   })
   appInboundTail = turn.catch(() => {})
   await turn

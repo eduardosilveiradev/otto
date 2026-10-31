@@ -17,18 +17,17 @@ test('answers only when a turn has been running a while', () => {
   expect(frontShouldAnswer(cfg, true, now - 30_000, now)).toBe(true)
 })
 
-test('PASS, empty and overlong replies send nothing', () => {
+test('DONE settles it, ACK passes it on, PASS and junk send nothing', () => {
   expect(frontReply('PASS')).toBeNull()
-  expect(frontReply('pass.')).toBeNull()
-  expect(frontReply('  ')).toBeNull()
-  expect(frontReply('x'.repeat(300))).toBeNull()
-  expect(frontReply('"on it after the build"')).toBe('on it after the build')
+  expect(frontReply('hello there')).toBeNull()
+  expect(frontReply('ACK: ' + 'x'.repeat(300))).toBeNull()
+  expect(frontReply('ACK: "on it after the build"')).toEqual({ done: false, text: 'on it after the build' })
+  expect(frontReply('done: tuesday at 9')).toEqual({ done: true, text: 'tuesday at 9' })
 })
 
-test('the request carries the task, the thread and the new message', () => {
+test('the request carries the thread and the new message', () => {
   const body = JSON.stringify(frontRequest([{ dir: 'in', text: 'hey', ts: '' }, { dir: 'out', text: 'yo', ts: '' }], 'you there?', 'Building the app'))
   expect(body).toContain('claude-sonnet-5-5')
-  expect(body).toContain('Building the app')
   expect(body).toContain('them: hey')
   expect(body).toContain('you there?')
 })
@@ -37,6 +36,6 @@ test('no key or a failed call is a silent pass', async () => {
   expect(await askFront(undefined, [], 'hi', '')).toBeNull()
   const failing = (async () => new Response('', { status: 500 })) as unknown as typeof fetch
   expect(await askFront('k', [], 'hi', '', failing)).toBeNull()
-  const ok = (async () => Response.json({ content: [{ type: 'text', text: 'mid-build, give me a sec' }] })) as unknown as typeof fetch
-  expect(await askFront('k', [], 'hi', '', ok)).toBe('mid-build, give me a sec')
+  const ok = (async () => Response.json({ content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: 'ACK: mid-build, give me a sec' }] })) as unknown as typeof fetch
+  expect(await askFront('k', [], 'hi', '', ok)).toEqual({ done: false, text: 'mid-build, give me a sec' })
 })

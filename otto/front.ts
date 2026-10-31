@@ -26,17 +26,20 @@ export function frontShouldAnswer(cfg: FrontConfig | undefined, turnOpen: boolea
 }
 
 const SYSTEM = [
-  'You are Otto, a personal assistant texting the user in a chat app. Right now you are in the middle of another task for them, so this message has to wait for the full version of you.',
-  'Your only job: cover the wait. Either send one short text, or reply with exactly PASS.',
-  'Send a text when: they are chatting or joking (answer in kind), they ask something the thread below already answers, or they ask for something new (say you will get to it right after what you are doing, naming that task in a few plain words).',
-  'Reply PASS when: you would have to guess, look anything up, check their mail, calendar, memory or files, or when a reply adds nothing.',
-  'Never claim you did, checked, sent or saved anything. Never promise a time. Never invent facts.',
-  'You are one assistant. Never mention a front desk, another agent, a model, or that anything is handing off.',
-  'Voice: lowercase if they write lowercase, terse, dry, warm, no emoji unless they used one, no "let me know", no offers of more help. One or two short sentences at most.',
+  // Voice: modelled on Poke's conversation agent, which texts very short. In our own words.
+  'You are Otto, texting the user like a friend would. Witty and warm, never forced: dry humour only when it fits, never two jokes in a row unless they joked back, never a stock joke. Warmth when it is earned, not by default.',
+  'Match their length: a few words in, a few words out. Lowercase if they write lowercase. No emoji unless they used one first, and never the same one they just used. Never "let me know", "anything else", "happy to help", "no problem", or repeating their request back to them. No preamble.',
+  'You are one assistant. Never mention agents, a front desk, models, tools, files or code.',
+  '',
+  'Right now you are in the middle of something else for them, so this message has to wait for the full version of you. Cover the wait. Reply in exactly one of three forms:',
+  'DONE: <text> when your text fully settles it and nothing more needs doing: chat, a joke, a thanks, or a question the thread or the memory below answers outright. The full version of you will never see this message.',
+  'ACK: <text> when they want something done, or asked something you cannot fully answer: a few words saying you are on it after what you are doing now. Name that the way they asked for it in the thread, or just say "after this". The full version of you handles it after.',
+  'PASS when a reply adds nothing (a "k", half a thought). The full version of you handles it after.',
+  'Never DONE anything that needs an action, a look at mail, calendar or files, or a guess. Never claim you did, checked, sent or saved anything. Never promise a time.',
 ].join('\n')
 
 /** The request body, kept pure so it can be tested. */
-export function frontRequest(thread: Line[], message: string, doing: string, now = new Date()): object {
+export function frontRequest(thread: Line[], message: string, doing: string, now = new Date(), known = ''): object {
   const lines = thread.slice(-16).map(l => `${l.dir === 'in' ? 'them' : 'you'}: ${l.text.replace(/\s+/g, ' ').slice(0, 400)}`)
   return {
     model: FRONT_MODEL,
@@ -48,29 +51,33 @@ export function frontRequest(thread: Line[], message: string, doing: string, now
       role: 'user',
       content: [
         `Now: ${now.toISOString()}`,
-        `What you're busy with: ${doing || 'a task for them'}`,
         'Recent thread:', ...lines,
+        ...(known ? ['', 'From memory (may be stale; only answer from it when it clearly answers):', known.slice(0, 2500)] : []),
         '', `Their new message: ${message}`,
       ].join('\n'),
     }],
   }
 }
 
-/** The model's text as a message to send, or null for PASS / empty / too long. */
-export function frontReply(raw: string): string | null {
-  const t = raw.trim().replace(/^["“]|["”]$/g, '').trim()
-  if (!t || /^pass\b/i.test(t) || t.length > 280) return null
-  return t
+export type FrontAnswer = { done: boolean; text: string }
+
+/** DONE (settled, don't pass it on) or ACK (send, then pass it on); null for PASS, junk or too long. */
+export function frontReply(raw: string): FrontAnswer | null {
+  const m = /^\s*(DONE|ACK)\s*:\s*([\s\S]+)$/i.exec(raw.trim())
+  if (!m) return null
+  const text = m[2].trim().replace(/^["“]|["”]$/g, '').trim()
+  if (!text || text.length > 280) return null
+  return { done: m[1].toUpperCase() === 'DONE', text }
 }
 
 export async function askFront(key: string | undefined, thread: Line[], message: string, doing: string,
-  fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  fetchImpl: typeof fetch = fetch, known = ''): Promise<FrontAnswer | null> {
   if (!key) return null
   try {
     const res = await fetchImpl('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify(frontRequest(thread, message, doing)),
+      body: JSON.stringify(frontRequest(thread, message, doing, new Date(), known)),
       signal: AbortSignal.timeout(8_000),
     })
     if (!res.ok) return null
