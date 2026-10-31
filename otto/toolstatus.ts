@@ -24,6 +24,17 @@ export function gerund(phrase: string): string {
     .replace(/(,\s*(?:and\s+|then\s+)?|\s(?:and|then)\s+)([a-z]+)\b/g, (all, sep: string, w: string) => VERBS.has(w) ? sep + ing(w) : all)
 }
 
+// Otto's own tools by what they do, not their names ("Who", "Places").
+const OTTO: Record<string, string> = {
+  places: 'Checking your places', note_place: 'Saving the place', note_contact: 'Noting that down',
+  remember: 'Noting that down', forget: 'Forgetting it', brief: 'Checking your day',
+  create_trigger: 'Setting that up', update_trigger: 'Changing the schedule', delete_trigger: 'Removing the schedule',
+  list_triggers: 'Checking the schedule', record_money: 'Logging the payment', spending: 'Checking your spending',
+  trips: 'Checking your trips', record_trip: 'Saving the trip', read_history: 'Rereading the chat', otto_status: 'Checking everything is up',
+  ask_approval: 'Asking for your approval', ask_payment: 'Asking you to confirm the payment',
+  self_test: 'Testing the change', phishing_check: 'Checking that email', warranty: 'Checking the warranty',
+}
+
 /** A tool call as a few words for the typing bubble; '' for calls not worth showing. Never cut: the app wraps it. */
 export function statusLabel(tool: string, input: Record<string, unknown>): string {
   const str = (k: string) => (typeof input[k] === 'string' ? (input[k] as string).trim() : '')
@@ -49,6 +60,8 @@ export function statusLabel(tool: string, input: Record<string, unknown>): strin
   // Its own sends are the reply itself, not a step towards it.
   if (/otto/.test(srv) && /^(reply|react|edit_message|set_email_state)$/.test(name)) return ''
   if (/otto/.test(srv) && name === 'recall') return 'Remembering'
+  if (/otto/.test(srv) && name === 'who') return input.drift === true ? "Checking who's gone quiet" : str('name') ? `Looking up ${str('name')}` : 'Looking someone up'
+  if (/otto/.test(srv) && OTTO[name]) return OTTO[name]
   // The server restarts mid-call, so a Haiku label for it would never arrive.
   if (/otto/.test(srv) && name === 'reload') return 'Restarting with the update'
   const where = /gmail/i.test(srv) ? 'mail' : /calendar/i.test(srv) ? 'calendar' : /drive/i.test(srv) ? 'Drive' : ''

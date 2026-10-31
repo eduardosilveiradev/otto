@@ -27,6 +27,12 @@ test('connectors read as what they check', () => {
   expect(statusLabel('mcp__thing__do_stuff', {})).toBe('Do stuff')
 })
 
+test("otto's own tools say what they do", () => {
+  expect(statusLabel('mcp__plugin_otto_otto__who', { name: 'ana' })).toBe('Looking up ana')
+  expect(statusLabel('mcp__plugin_otto_otto__who', { drift: true })).toBe("Checking who's gone quiet")
+  expect(statusLabel('mcp__plugin_otto_otto__places', {})).toBe('Checking your places')
+})
+
 test('long labels arrive whole', () => {
   expect(statusLabel('Grep', { pattern: 'x'.repeat(100) })).toBe(`Searching for ${'x'.repeat(100)}`)
 })
