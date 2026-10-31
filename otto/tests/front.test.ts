@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { frontActive, frontShouldAnswer, frontReply, frontRequest, askFront } from '../front.ts'
+import { frontActive, frontShouldAnswer, frontReply, frontPrompt, askFront } from '../front.ts'
 
 const now = Date.parse('2026-11-01T12:00:00Z')
 
@@ -25,17 +25,16 @@ test('DONE settles it, ACK passes it on, PASS and junk send nothing', () => {
   expect(frontReply('done: tuesday at 9')).toEqual({ done: true, text: 'tuesday at 9' })
 })
 
-test('the request carries the thread and the new message', () => {
-  const body = JSON.stringify(frontRequest([{ dir: 'in', text: 'hey', ts: '' }, { dir: 'out', text: 'yo', ts: '' }], 'you there?', 'Building the app'))
-  expect(body).toContain('claude-sonnet-5-5')
-  expect(body).toContain('them: hey')
-  expect(body).toContain('you there?')
+test('the prompt carries the thread, memory and the new message', () => {
+  const { system, user } = frontPrompt([{ dir: 'in', text: 'hey', ts: '' }, { dir: 'out', text: 'yo', ts: '' }], 'you there?', new Date(), 'loop: dentist tuesday')
+  expect(system).toContain('DONE')
+  expect(user).toContain('them: hey')
+  expect(user).toContain('dentist tuesday')
+  expect(user).toContain('you there?')
 })
 
-test('no key or a failed call is a silent pass', async () => {
-  expect(await askFront(undefined, [], 'hi', '')).toBeNull()
-  const failing = (async () => new Response('', { status: 500 })) as unknown as typeof fetch
-  expect(await askFront('k', [], 'hi', '', failing)).toBeNull()
-  const ok = (async () => Response.json({ content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: 'ACK: mid-build, give me a sec' }] })) as unknown as typeof fetch
-  expect(await askFront('k', [], 'hi', '', ok)).toEqual({ done: false, text: 'mid-build, give me a sec' })
+test('a failed or odd run is a silent pass', async () => {
+  expect(await askFront(async () => { throw new Error('no claude') }, [], 'hi')).toBeNull()
+  expect(await askFront(async () => '', [], 'hi')).toBeNull()
+  expect(await askFront(async () => 'ACK: mid-build, give me a sec\n', [], 'hi')).toEqual({ done: false, text: 'mid-build, give me a sec' })
 })

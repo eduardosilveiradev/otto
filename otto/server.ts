@@ -191,7 +191,7 @@ import { homedir, tmpdir } from 'os'
 import { join, extname, sep, isAbsolute, dirname, basename, resolve } from 'path'
 import { statusLabel } from './toolstatus.ts'
 import { wantsPolish, polishStatus } from './statuspolish.ts'
-import { askFront, frontShouldAnswer, type FrontConfig } from './front.ts'
+import { askFront, WarmRun, frontShouldAnswer, type FrontConfig, type Run } from './front.ts'
 import { LiveSteps, findImage, readTaskList, shrinkScreenshot, todoItems, type TodoItem } from './livesteps.ts'
 import { promptSnippet } from './terminalprompt.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
@@ -7590,6 +7590,14 @@ function markSeen(field: 'opened' | 'returned', memories: Pick<Memory, 'path' | 
   try { appendFileSync(MEMHINTS_FILE, JSON.stringify({ ts: new Date().toISOString(), sess: HINT_SESS, [field]: handles }) + '\n', { mode: 0o600 }) } catch {}
 }
 /** mem="m7f2a lights via SmartThings CLI | …" on what they send, when anything clears the bar. */
+/** The front desk's warm session, made on first use and kept for the life of the server. */
+let frontWarm: WarmRun | null = null
+function frontRun(): Run {
+  frontWarm ??= new WarmRun(loadAccess().front?.bin)
+  return frontWarm.run
+}
+process.on('exit', () => frontWarm?.stop())
+
 /** What memory says about a message, for the front desk: a few notes and memories, short. */
 function frontMemory(text: string): string {
   try {
@@ -7653,7 +7661,7 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
   // Busy on something else: the front desk may cover the wait with a quick line of its own.
   const busy = kind === 'text' && !untrusted && frontShouldAnswer(loadAccess().front, turnOpen, turnStartedAt)
   const front = busy
-    ? askFront(ANTHROPIC_KEY, readHistory(APP_CHAT, 16).map(e => ({ dir: e.dir, text: e.text ?? '', ts: e.ts })), text, lastStep, fetch, frontMemory(text))
+    ? askFront(frontRun(), readHistory(APP_CHAT, 16).map(e => ({ dir: e.dir, text: e.text ?? '', ts: e.ts })), text, frontMemory(text))
     : Promise.resolve(null)
   const turn = appInboundTail.then(async () => {
     const fields = await link
