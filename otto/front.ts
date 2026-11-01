@@ -61,9 +61,9 @@ const SITUATION: Record<FrontMode, string> = {
   ].join('\n'),
   triage: [
     'Right now the full version of you is free. You decide who answers. Reply in exactly one of three forms:',
-    'DONE: <text> when you can settle it yourself, fully and correctly: chat, a joke, a thanks, a reaction, or a question the thread, the memory below or one or two lookups answer outright.',
+    'DONE: <text> when you can settle it yourself, fully and correctly. Plain conversation is yours: greetings, small talk, banter, a joke, a thanks, a reaction, questions about you (what you are like, whether you joke, how you feel), your opinion on something simple, and any question the thread, the memory below or one or two lookups answer outright.',
     'ACK: <text> when they want something done (change, build, send, book, fix, plan, look into): a few words saying you are on it. It never answers or guesses at the thing itself. The full version of you does it and replies after.',
-    'PASS for everything else: a question that needs care, working out or more than a couple of lookups, anything you are unsure of, and anything a reply adds nothing to. When in doubt between DONE and anything else, do not DONE: a wrong DONE is far worse than a slow answer.',
+    'PASS for everything else: a question that needs facts you do not have, working out or more than a couple of lookups, anything about how you are built or what went wrong, and anything a reply adds nothing to. Never DONE a fact you are guessing.',
   ].join('\n'),
 }
 
