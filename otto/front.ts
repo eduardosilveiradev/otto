@@ -16,7 +16,8 @@ import { join } from 'path'
 export const FRONT_MODEL = 'claude-sonnet-5-5'
 
 /** `bin`: the Claude Code binary to run it through (default `claude` on PATH). */
-export type FrontConfig = { enabled?: boolean; until?: string; busySeconds?: number; bin?: string; triage?: boolean }
+/** `voice: false` stops it rewriting the main session's app replies. */
+export type FrontConfig = { enabled?: boolean; until?: string; busySeconds?: number; bin?: string; triage?: boolean; voice?: boolean }
 export type FrontMode = 'cover' | 'triage'
 export type Line = { dir: 'in' | 'out'; text: string; ts: string }
 
@@ -59,9 +60,10 @@ const SITUATION: Record<FrontMode, string> = {
     'PASS when a reply adds nothing (a "k", half a thought). The full version of you handles it after.',
   ].join('\n'),
   triage: [
-    'Right now the full version of you is free and will answer this within a minute. You decide who answers. Reply in exactly one of two forms:',
+    'Right now the full version of you is free. You decide who answers. Reply in exactly one of three forms:',
     'DONE: <text> when you can settle it yourself, fully and correctly: chat, a joke, a thanks, a reaction, or a question the thread, the memory below or one or two lookups answer outright.',
-    'PASS for everything else: anything to do, decide, write, plan or work out, anything that needs care or more than a couple of lookups, and anything you are unsure of. When in doubt, PASS: a wrong DONE is far worse than a slow answer.',
+    'ACK: <text> when they want something done (change, build, send, book, fix, plan, look into): a few words saying you are on it. It never answers or guesses at the thing itself. The full version of you does it and replies after.',
+    'PASS for everything else: a question that needs care, working out or more than a couple of lookups, anything you are unsure of, and anything a reply adds nothing to. When in doubt between DONE and anything else, do not DONE: a wrong DONE is far worse than a slow answer.',
   ].join('\n'),
 }
 
@@ -171,8 +173,48 @@ export function frontReply(raw: string): FrontAnswer | null {
 export async function askFront(run: Run, thread: Line[], message: string, known = '', mode: FrontMode = 'cover'): Promise<FrontAnswer | null> {
   try {
     const { system, user } = frontPrompt(thread, message, new Date(), known, mode)
-    const answer = frontReply(await run(system, user))
-    // Triage has no ACK: an acknowledgement while the main session is free is just noise before its answer.
-    return mode === 'triage' && answer && !answer.done ? null : answer
+    return frontReply(await run(system, user))
+  } catch { return null }
+}
+
+// ---------------------------------------------------------------------------
+// The talker's rewrite: the main session's app replies, put the way it texts
+// ---------------------------------------------------------------------------
+
+/** What a rewrite may never change: links, emails, `code`, and every token with a digit in it (times, amounts, dates, ids, codes). */
+export function lockedTokens(text: string): string[] {
+  const out = new Set<string>()
+  for (const m of text.matchAll(/https?:\/\/\S+|[\w.+-]+@[\w-]+\.[\w.]+|`[^`\n]+`/g)) out.add(m[0].replace(/[.,;:!?)]+$/, ''))
+  const rest = text.replace(/https?:\/\/\S+|[\w.+-]+@[\w-]+\.[\w.]+|`[^`\n]+`/g, ' ')
+  for (const m of rest.matchAll(/[^\s]*\d[^\s]*/g)) {
+    const t = m[0].replace(/^[("'“‘]+|[.,;:!?)"'”’]+$/g, '')
+    if (t) out.add(t)
+  }
+  return [...out]
+}
+
+/** Every locked token of the original, still there and unchanged. */
+export function keepsFacts(original: string, rewritten: string): boolean {
+  return lockedTokens(original).every(t => rewritten.includes(t))
+}
+
+/** Already the way it texts, or not text it should touch: short, code, or a list meant to be read whole. */
+export function skipRewrite(text: string): boolean {
+  return text.length <= 140 || text.includes('```') || /^\s*([-*•]|\d+[.)])\s/m.test(text)
+}
+
+const VOICE = [
+  'The full version of you just wrote the reply below for them. Rewrite it the way you text: 1 to 3 short messages, one sentence each, separated by a blank line. Keep every fact they need and drop explanation they did not ask for.',
+  'Copy exactly, character for character: every number, time, date, amount, code, id, name, link and email. Never add a fact, a promise or an offer that is not in it. If it is already short and plain, return it unchanged.',
+  'Answer with TEXT: and then the messages, nothing else.',
+].join('\n')
+
+export async function voicePass(run: Run, thread: Line[], reply: string): Promise<string | null> {
+  try {
+    const lines = thread.slice(-8).map(l => `${l.dir === 'in' ? 'them' : 'you'}: ${l.text.replace(/\s+/g, ' ').slice(0, 300)}`)
+    const raw = await run(SYSTEM, [VOICE, '', 'Recent thread:', ...lines, '', 'The reply:', reply].join('\n'))
+    const m = /(?:^|\n)\s*TEXT\s*:\s*([\s\S]+)$/i.exec(raw.trim())
+    const text = m?.[1].trim()
+    return text && text.length <= reply.length + 40 && keepsFacts(reply, text) ? text : null
   } catch { return null }
 }

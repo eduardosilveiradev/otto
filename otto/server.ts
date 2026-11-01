@@ -191,7 +191,7 @@ import { homedir, tmpdir } from 'os'
 import { join, extname, sep, isAbsolute, dirname, basename, resolve } from 'path'
 import { statusLabel } from './toolstatus.ts'
 import { wantsPolish, polishStatus } from './statuspolish.ts'
-import { askFront, WarmRun, frontMode, type FrontConfig, type Run } from './front.ts'
+import { askFront, WarmRun, frontMode, frontActive, voicePass, skipRewrite, type FrontConfig, type Run } from './front.ts'
 import { LiveSteps, findImage, readTaskList, shrinkScreenshot, todoItems, type TodoItem } from './livesteps.ts'
 import { promptSnippet } from './terminalprompt.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
@@ -3461,6 +3461,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'boolean',
             description: 'true speaks the reply, false forces text. Omit to follow the channel default. Keep spoken replies short — this is a voice note, not a document.',
           },
+          verbatim: {
+            type: 'boolean',
+            description: 'App only: send the text exactly as written instead of letting the talker put it in its own short words. For drafts shown for approval, anything they asked to read in full, and wording that must not change.',
+          },
           buttons: {
             type: 'array',
             items: {
@@ -4475,6 +4479,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
 
         if (chat_id === APP_CHAT) {
+          // A reply to them goes out in the talker's words (front.ts), with every fact locked;
+          // anything it can't rewrite cleanly in time goes out as written.
+          const text = conversational && args.verbatim !== true ? await talkerVoice(String(args.text ?? '')) : String(args.text ?? '')
           // Spoken like Telegram, but as WAV: the phone can't play Opus. The text
           // still shows in the bubble, so a failed synthesis just loses the audio.
           const appAccess = loadAccess()
@@ -7597,6 +7604,16 @@ function frontRun(): Run {
   return frontWarm.run
 }
 process.on('exit', () => frontWarm?.stop())
+
+/** The talker's version of a reply for the app, or the reply itself when it's off, has nothing to do, is slow or changed a fact. */
+async function talkerVoice(text: string): Promise<string> {
+  const cfg = loadAccess().front
+  if (!frontActive(cfg) || cfg?.voice === false || skipRewrite(text)) return text
+  const thread = readHistory(APP_CHAT, 8).map(e => ({ dir: e.dir, text: e.text ?? '', ts: e.ts }))
+  const out = await Promise.race([voicePass(frontRun(), thread, text), Bun.sleep(3_000).then(() => null)])
+  if (!out) process.stderr.write('otto channel: talker kept the reply as written\n')
+  return out ?? text
+}
 
 /** What memory says about a message, for the front desk: a few notes and memories, short. */
 function frontMemory(text: string): string {

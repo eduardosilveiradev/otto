@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { frontActive, frontShouldAnswer, frontMode, frontReply, frontPrompt, askFront } from '../front.ts'
+import { frontActive, frontShouldAnswer, frontMode, frontReply, frontPrompt, askFront, lockedTokens, keepsFacts, skipRewrite, voicePass } from '../front.ts'
 
 const now = Date.parse('2026-11-01T12:00:00Z')
 
@@ -50,11 +50,32 @@ test('triage when free, cover when busy a while, nothing when off or turned down
   expect(frontMode({ enabled: false }, false, 0, now)).toBeNull()
 })
 
-test('triage settles with DONE and passes everything else, an ACK included', async () => {
+test('triage settles with DONE, says it is on a job with ACK, passes the rest', async () => {
   expect(await askFront(async () => 'DONE: lol fair', [], 'haha', '', 'triage')).toEqual({ done: true, text: 'lol fair' })
-  expect(await askFront(async () => 'ACK: on it', [], 'book me a table', '', 'triage')).toBeNull()
-  expect(await askFront(async () => 'PASS', [], 'book me a table', '', 'triage')).toBeNull()
+  expect(await askFront(async () => 'ACK: on it', [], 'book me a table', '', 'triage')).toEqual({ done: false, text: 'on it' })
+  expect(await askFront(async () => 'PASS', [], 'why is the sky blue', '', 'triage')).toBeNull()
   const { user } = frontPrompt([], 'hi', new Date(), '', 'triage')
   expect(user).toContain('You decide who answers')
-  expect(user).not.toContain('ACK:')
+})
+
+test('locked tokens: links, codes, and anything with a digit', () => {
+  const t = lockedTokens('leave at 16:20, €17 at lux, see https://ex.example/a?b=1. id `f76fa548`, mail me@ex.example, code 389633.')
+  expect(t).toEqual(expect.arrayContaining(['16:20', '€17', 'https://ex.example/a?b=1', '`f76fa548`', 'me@ex.example', '389633']))
+  expect(keepsFacts('leave at 16:20 for €17', 'go at 16:20, €17')).toBe(true)
+  expect(keepsFacts('leave at 16:20 for €17', 'go at 4:20, €17')).toBe(false)
+})
+
+test('short text, code and lists are left alone', () => {
+  expect(skipRewrite('live')).toBe(true)
+  expect(skipRewrite('x'.repeat(200) + '\n```js\nx\n```')).toBe(true)
+  expect(skipRewrite('x'.repeat(150) + '\n- one\n- two')).toBe(true)
+  expect(skipRewrite('x'.repeat(200))).toBe(false)
+})
+
+test('the rewrite is used only when it keeps every fact and is no longer', async () => {
+  const reply = 'I moved your leave reminder from 17:10 to 16:20 today, so it fires then and tells you you are meeting Sam at 5. The buttons stay the same as before.'
+  expect(await voicePass(async () => 'TEXT: moved it to 16:20, meeting sam at 5', [], reply)).toBeNull()   // dropped 17:10
+  expect(await voicePass(async () => 'TEXT: moved it from 17:10 to 16:20\n\nmeeting sam at 5', [], reply)).toBe('moved it from 17:10 to 16:20\n\nmeeting sam at 5')
+  expect(await voicePass(async () => 'sure', [], reply)).toBeNull()
+  expect(await voicePass(async () => { throw new Error('down') }, [], reply)).toBeNull()
 })
