@@ -7677,7 +7677,12 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
       appBroadcast(JSON.stringify({ type: 'message', id, text: answer.text, ts: new Date().toISOString(), buttons: [], thread: 'chat' }))
       recordHistory({ dir: 'out', chat_id: APP_CHAT, kind: 'text', text: answer.text, message_id: id, src: 'front', extra: { thread: 'chat' } })
       // Settled on the spot: it stays in the history, and the session is never woken for it.
-      if (answer.done) { if (message_id) unreadApp.delete(message_id); return }
+      if (answer.done) {
+        if (message_id) unreadApp.delete(message_id)
+        // No turn follows to end the dots (the Stop hook), so they end here, unless one is open anyway.
+        if (!turnOpen && !unreadApp.size) setAppTyping(false, true)
+        return
+      }
     }
     // Stamped right before delivery, not on arrival: otherwise a later message (or an event
     // injected during the fetch) would decide the origin this one is delivered under.
