@@ -1,12 +1,13 @@
 /**
- * The front desk: a small, fast model that answers in the app while the main session is
- * busy on something else (an experiment, off unless `front.enabled` in access.json, and
- * only until `front.until`).
+ * The front desk: a small, fast model that reads every app message first (an experiment,
+ * off unless `front.enabled` in access.json, and only until `front.until`).
  *
- * The main session takes every message as usual and does the work. The front only covers
- * the wait: an acknowledgement, or a quick answer straight from the recent thread. It has
- * no tools and writes nothing; anything that needs doing it passes on (PASS), and when it
- * does speak, the main session is told what it said so the two never answer twice.
+ * Two modes. While the main session has been busy a while (`cover`), it covers the wait: an
+ * acknowledgement, or a quick answer. Otherwise (`triage`, unless `front.triage: false`) it
+ * decides who answers: what it can settle outright it settles, and the main session is never
+ * woken for it; everything else goes straight through. It has only read-only lookups and
+ * writes nothing; when it does speak and passes on, the main session is told what it said so
+ * the two never answer twice.
  */
 
 import { tmpdir } from 'os'
@@ -15,7 +16,8 @@ import { join } from 'path'
 export const FRONT_MODEL = 'claude-sonnet-5-5'
 
 /** `bin`: the Claude Code binary to run it through (default `claude` on PATH). */
-export type FrontConfig = { enabled?: boolean; until?: string; busySeconds?: number; bin?: string }
+export type FrontConfig = { enabled?: boolean; until?: string; busySeconds?: number; bin?: string; triage?: boolean }
+export type FrontMode = 'cover' | 'triage'
 export type Line = { dir: 'in' | 'out'; text: string; ts: string }
 
 /** On, not past its end date. */
@@ -29,6 +31,12 @@ export function frontShouldAnswer(cfg: FrontConfig | undefined, turnOpen: boolea
   return frontActive(cfg, now) && turnOpen && now - turnStartedAt >= (cfg?.busySeconds ?? 20) * 1000
 }
 
+/** `cover` while the main session is busy a while, `triage` otherwise, null when it's off. */
+export function frontMode(cfg: FrontConfig | undefined, turnOpen: boolean, turnStartedAt: number, now = Date.now()): FrontMode | null {
+  if (frontShouldAnswer(cfg, turnOpen, turnStartedAt, now)) return 'cover'
+  return frontActive(cfg, now) && cfg?.triage !== false ? 'triage' : null
+}
+
 const SYSTEM = [
   // Voice: modelled on Poke's conversation agent, which texts very short. In our own words.
   'You are Otto, texting the user like a friend would. Witty and warm, never forced: dry humour only when it fits, never two jokes in a row unless they joked back, never a stock joke. Warmth when it is earned, not by default.',
@@ -36,22 +44,34 @@ const SYSTEM = [
   'Match their length: a few words in, a few words out. Lowercase if they write lowercase. No emoji unless they used one first, and never the same one they just used. Never "let me know", "anything else", "happy to help", "no problem", or repeating their request back to them. No preamble.',
   'You are one assistant. Never mention agents, a front desk, models, tools, files or code.',
   'Each message you get stands alone: judge it only by the thread and memory it carries, never by earlier messages in this conversation.',
-  '',
-  'Right now you are in the middle of something else for them, so this message has to wait for the full version of you. Cover the wait. Reply in exactly one of three forms:',
-  'DONE: <text> when your text fully settles it and nothing more needs doing: chat, a joke, a thanks, or a question the thread or the memory below answers outright. The full version of you will never see this message.',
-  'ACK: <text> when they want something done, or asked something you cannot fully answer: a few words saying you are on it after what you are doing now. Name that the way they asked for it in the thread, or just say "after this". The full version of you handles it after.',
-  'An ACK never answers the question itself, not even partly: no "yes", no guess, just that it is coming.',
-  'PASS when a reply adds nothing (a "k", half a thought). The full version of you handles it after.',
+  'Each message says which situation you are in and which forms of reply you may use. DONE: <text> means your text fully settles it and the full version of you will never see the message.',
   'You can look things up, read only: memory, reminders, calendar, mail (sender and subject only) and chat history. When a question is about something those hold, look it up and answer it yourself with DONE. Keep it to one or two lookups; you are covering a wait, not doing the work. Plans and times usually live in reminders and memory, not the calendar: check those first.',
   'Never DONE anything that needs an action or a guess. Never claim you did, sent, saved or changed anything. Never promise a time.',
 ].join('\n')
 
+// Per message rather than in the system prompt: the warm session keeps one system prompt.
+const SITUATION: Record<FrontMode, string> = {
+  cover: [
+    'Right now you are in the middle of something else for them, so this message has to wait for the full version of you. Cover the wait. Reply in exactly one of three forms:',
+    'DONE: <text> when your text fully settles it and nothing more needs doing: chat, a joke, a thanks, or a question the thread or the memory below answers outright.',
+    'ACK: <text> when they want something done, or asked something you cannot fully answer: a few words saying you are on it after what you are doing now. Name that the way they asked for it in the thread, or just say "after this". The full version of you handles it after.',
+    'An ACK never answers the question itself, not even partly: no "yes", no guess, just that it is coming.',
+    'PASS when a reply adds nothing (a "k", half a thought). The full version of you handles it after.',
+  ].join('\n'),
+  triage: [
+    'Right now the full version of you is free and will answer this within a minute. You decide who answers. Reply in exactly one of two forms:',
+    'DONE: <text> when you can settle it yourself, fully and correctly: chat, a joke, a thanks, a reaction, or a question the thread, the memory below or one or two lookups answer outright.',
+    'PASS for everything else: anything to do, decide, write, plan or work out, anything that needs care or more than a couple of lookups, and anything you are unsure of. When in doubt, PASS: a wrong DONE is far worse than a slow answer.',
+  ].join('\n'),
+}
+
 /** The system prompt and the turn, kept pure so they can be tested. */
-export function frontPrompt(thread: Line[], message: string, now = new Date(), known = ''): { system: string; user: string } {
+export function frontPrompt(thread: Line[], message: string, now = new Date(), known = '', mode: FrontMode = 'cover'): { system: string; user: string } {
   const lines = thread.slice(-16).map(l => `${l.dir === 'in' ? 'them' : 'you'}: ${l.text.replace(/\s+/g, ' ').slice(0, 400)}`)
   return {
     system: SYSTEM,
     user: [
+      SITUATION[mode], '',
       `Now: ${now.toISOString()}`,
       'Recent thread:', ...lines,
       ...(known ? ['', 'From memory (may be stale; only answer from it when it clearly answers):', known.slice(0, 2500)] : []),
@@ -148,9 +168,11 @@ export function frontReply(raw: string): FrontAnswer | null {
   return { done: m[1].toUpperCase() === 'DONE', text }
 }
 
-export async function askFront(run: Run, thread: Line[], message: string, known = ''): Promise<FrontAnswer | null> {
+export async function askFront(run: Run, thread: Line[], message: string, known = '', mode: FrontMode = 'cover'): Promise<FrontAnswer | null> {
   try {
-    const { system, user } = frontPrompt(thread, message, new Date(), known)
-    return frontReply(await run(system, user))
+    const { system, user } = frontPrompt(thread, message, new Date(), known, mode)
+    const answer = frontReply(await run(system, user))
+    // Triage has no ACK: an acknowledgement while the main session is free is just noise before its answer.
+    return mode === 'triage' && answer && !answer.done ? null : answer
   } catch { return null }
 }

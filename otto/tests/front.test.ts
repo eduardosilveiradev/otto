@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { frontActive, frontShouldAnswer, frontReply, frontPrompt, askFront } from '../front.ts'
+import { frontActive, frontShouldAnswer, frontMode, frontReply, frontPrompt, askFront } from '../front.ts'
 
 const now = Date.parse('2026-11-01T12:00:00Z')
 
@@ -38,4 +38,23 @@ test('a failed or odd run is a silent pass', async () => {
   expect(await askFront(async () => { throw new Error('no claude') }, [], 'hi')).toBeNull()
   expect(await askFront(async () => '', [], 'hi')).toBeNull()
   expect(await askFront(async () => 'ACK: mid-build, give me a sec\n', [], 'hi')).toEqual({ done: false, text: 'mid-build, give me a sec' })
+})
+
+test('triage when free, cover when busy a while, nothing when off or turned down', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z')
+  const cfg = { enabled: true }
+  expect(frontMode(cfg, false, 0, now)).toBe('triage')
+  expect(frontMode(cfg, true, now - 5_000, now)).toBe('triage')
+  expect(frontMode(cfg, true, now - 30_000, now)).toBe('cover')
+  expect(frontMode({ enabled: true, triage: false }, false, 0, now)).toBeNull()
+  expect(frontMode({ enabled: false }, false, 0, now)).toBeNull()
+})
+
+test('triage settles with DONE and passes everything else, an ACK included', async () => {
+  expect(await askFront(async () => 'DONE: lol fair', [], 'haha', '', 'triage')).toEqual({ done: true, text: 'lol fair' })
+  expect(await askFront(async () => 'ACK: on it', [], 'book me a table', '', 'triage')).toBeNull()
+  expect(await askFront(async () => 'PASS', [], 'book me a table', '', 'triage')).toBeNull()
+  const { user } = frontPrompt([], 'hi', new Date(), '', 'triage')
+  expect(user).toContain('You decide who answers')
+  expect(user).not.toContain('ACK:')
 })

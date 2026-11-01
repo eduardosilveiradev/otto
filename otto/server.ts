@@ -191,7 +191,7 @@ import { homedir, tmpdir } from 'os'
 import { join, extname, sep, isAbsolute, dirname, basename, resolve } from 'path'
 import { statusLabel } from './toolstatus.ts'
 import { wantsPolish, polishStatus } from './statuspolish.ts'
-import { askFront, WarmRun, frontShouldAnswer, type FrontConfig, type Run } from './front.ts'
+import { askFront, WarmRun, frontMode, type FrontConfig, type Run } from './front.ts'
 import { LiveSteps, findImage, readTaskList, shrinkScreenshot, todoItems, type TodoItem } from './livesteps.ts'
 import { promptSnippet } from './terminalprompt.ts'
 import { claudeBin, headlessMcpArgs } from './headless.ts'
@@ -7658,11 +7658,16 @@ async function appInbound(text: string, extraMeta: Record<string, string> = {}, 
   // The link fetch starts now, but delivery keeps arrival order: a message waiting on a slow
   // site must not be overtaken by the one sent after it.
   const link = kind === 'reaction' ? {} : linkMetaFor(text)
-  // Busy on something else: the front desk may cover the wait with a quick line of its own.
-  const busy = kind === 'text' && !untrusted && frontShouldAnswer(loadAccess().front, turnOpen, turnStartedAt)
-  const front = busy
-    ? askFront(frontRun(), readHistory(APP_CHAT, 16).map(e => ({ dir: e.dir, text: e.text ?? '', ts: e.ts })), text, frontMemory(text))
+  // The front desk reads it first: busy a while, it covers the wait with a quick line of its
+  // own; otherwise it settles what it can outright and passes the rest straight through.
+  const mode = kind === 'text' && !untrusted ? frontMode(loadAccess().front, turnOpen, turnStartedAt) : null
+  const busy = mode === 'cover'
+  const asked = mode
+    ? askFront(frontRun(), readHistory(APP_CHAT, 16).map(e => ({ dir: e.dir, text: e.text ?? '', ts: e.ts })), text, frontMemory(text), mode)
     : Promise.resolve(null)
+  // Triage holds up a message the main session would take right away, so a slow front desk
+  // gives way after a few seconds; its late answer is dropped.
+  const front = mode === 'triage' ? Promise.race([asked, Bun.sleep(6_000).then(() => null)]) : asked
   const turn = appInboundTail.then(async () => {
     const fields = await link
     const answer = await front
