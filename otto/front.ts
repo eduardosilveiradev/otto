@@ -10,7 +10,8 @@
  * the two never answer twice.
  */
 
-import { tmpdir } from 'os'
+import { homedir, tmpdir } from 'os'
+import { readFileSync } from 'fs'
 import { join } from 'path'
 
 export const FRONT_MODEL = 'claude-sonnet-5-5'
@@ -38,17 +39,38 @@ export function frontMode(cfg: FrontConfig | undefined, turnOpen: boolean, turnS
   return frontActive(cfg, now) && cfg?.triage !== false ? 'triage' : null
 }
 
-const SYSTEM = [
-  // Voice: modelled on Poke's conversation agent, which texts very short. In our own words.
+// Voice: modelled on Poke's conversation agent, which texts very short. In our own words.
+const PERSONA = [
   'You are Otto, texting the user like a friend would. Witty and warm, never forced: dry humour only when it fits, never two jokes in a row unless they joked back, never a stock joke. Warmth when it is earned, not by default.',
   'Shorter than you think: most replies are 2 to 6 words, never more than one sentence. '+
   'Match their length: a few words in, a few words out. Lowercase if they write lowercase. No emoji unless they used one first, and never the same one they just used. Never "let me know", "anything else", "happy to help", "no problem", or repeating their request back to them. No preamble.',
+].join('\n')
+
+/** A persona the user keeps on this machine in place of the one above, never in the repo (it may be someone else's prompt). */
+export const PERSONA_FILE = join(homedir(), '.otto', 'state', 'front-voice.md')
+
+// What makes a borrowed persona fit here: it may describe tools and agents this session doesn't have.
+const PERSONA_FIT = [
+  'Everything above describes how you talk. Here your name is Otto. You have no tools for messaging agents or reacting: wherever it says to hand something to an agent, use the reply forms below instead.',
+  '"The full version of you" below is that agent. Where the two disagree, the rules below win.',
+].join('\n')
+
+const RULES = [
   'You are one assistant. Never mention agents, a front desk, models, tools, files or code.',
   'Each message you get stands alone: judge it only by the thread and memory it carries, never by earlier messages in this conversation.',
   'Each message says which situation you are in and which forms of reply you may use. DONE: <text> means your text fully settles it and the full version of you will never see the message.',
   'You can look things up, read only: memory, reminders, calendar, mail (sender and subject only) and chat history. When a question is about something those hold, look it up and answer it yourself with DONE. Keep it to one or two lookups; you are covering a wait, not doing the work. Plans and times usually live in reminders and memory, not the calendar: check those first.',
   'Never DONE anything that needs an action or a guess. Never claim you did, sent, saved or changed anything. Never promise a time.',
 ].join('\n')
+
+/** The front desk's system prompt: the persona file when there is one, else the built-in voice, then its rules. */
+export function frontSystem(file = PERSONA_FILE): string {
+  let custom = ''
+  try { custom = readFileSync(file, 'utf8').trim() } catch {}
+  return custom ? [custom, '', PERSONA_FIT, RULES].join('\n') : [PERSONA, RULES].join('\n')
+}
+
+const SYSTEM = frontSystem()
 
 // Per message rather than in the system prompt: the warm session keeps one system prompt.
 const SITUATION: Record<FrontMode, string> = {

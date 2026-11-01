@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { frontActive, frontShouldAnswer, frontMode, frontReply, frontPrompt, askFront, lockedTokens, keepsFacts, skipRewrite, voicePass } from '../front.ts'
+import { frontActive, frontShouldAnswer, frontMode, frontReply, frontPrompt, askFront, lockedTokens, keepsFacts, skipRewrite, voicePass, frontSystem } from '../front.ts'
 
 const now = Date.parse('2026-11-01T12:00:00Z')
 
@@ -78,4 +78,15 @@ test('the rewrite is used only when it keeps every fact and is no longer', async
   expect(await voicePass(async () => 'TEXT: moved it from 17:10 to 16:20\n\nmeeting sam at 5', [], reply)).toBe('moved it from 17:10 to 16:20\n\nmeeting sam at 5')
   expect(await voicePass(async () => 'sure', [], reply)).toBeNull()
   expect(await voicePass(async () => { throw new Error('down') }, [], reply)).toBeNull()
+})
+
+test('a persona file replaces the built-in voice, the rules stay', () => {
+  const { writeFileSync, mkdtempSync } = require('fs'); const { join } = require('path'); const { tmpdir } = require('os')
+  const f = join(mkdtempSync(join(tmpdir(), 'front-')), 'voice.md')
+  expect(frontSystem(f)).toContain('You are Otto, texting the user')
+  writeFileSync(f, 'Talk like a pirate.')
+  const s = frontSystem(f)
+  expect(s.startsWith('Talk like a pirate.')).toBe(true)
+  expect(s).not.toContain('You are Otto, texting the user')
+  expect(s).toContain('Never claim you did, sent, saved or changed anything')
 })
