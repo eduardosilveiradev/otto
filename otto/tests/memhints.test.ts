@@ -21,11 +21,13 @@ test('a matching message gets a hint, offered once, with age when stale', () => 
   expect(h.startsWith(memHandle(lights) + ' home lights')).toBe(true)
   expect(h).toContain('(40d)')
   expect(h).not.toContain('banana')
+  expect(h).not.toContain(' | ')
   expect(memHints(pool, msg, seen, Date.now(), 0)).toBe('')
 })
 
 test('short or unmatched messages get nothing', () => {
   expect(memHints(pool, 'yeah', new Set())).toBe('')
+  expect(memHints(pool, 'bedroom lights smartthings desk lamp', new Set(), Date.now(), 0)).toBe('')
   expect(memHints(pool, 'what is the weather in tokyo today', new Set(), Date.now(), 0)).toBe('')
 })
 

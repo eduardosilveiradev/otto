@@ -378,9 +378,9 @@ export function memHandle(m: Pick<Memory, 'path'>): string {
 
 export const HANDLE_RE = /^m[0-9a-z]{4}$/
 
-const HINT_MIN_TERMS = 3
+const HINT_MIN_TERMS = 8
 const HINT_MIN_SCORE = 14
-const HINT_LIMIT = 3
+const HINT_LIMIT = 1
 const HINT_STALE_DAYS = 30
 
 /** Handles already in this session's context, from memhints.jsonl lines stamped with its `sess`:
