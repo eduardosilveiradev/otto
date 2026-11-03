@@ -198,6 +198,11 @@ test('the guard refuses anything that names config, secrets or the allowlist', (
   for (const argv of bad) expect(isSafeRepair({ argv, unattended: true, why: 'x' }).ok).toBe(false)
 })
 
+test('the Google login repair names the real account, or none', () => {
+  expect(repairFor('google-auth', { account: 'you@example.com' })!.argv).toEqual(['gog', 'auth', 'login', '-a', 'you@example.com'])
+  expect(repairFor('google-auth')!.argv).toEqual(['gog', 'auth', 'login'])
+})
+
 test('a repair that needs a human is never run, however safe it looks', () => {
   const g = repairFor('google-auth')!
   expect(isSafeRepair(g).ok).toBe(false)

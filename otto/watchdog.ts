@@ -117,7 +117,8 @@ export function repairFor(name: ProbeName, ctx: { home?: string; account?: strin
       }
     case 'google-auth':
       return {
-        argv: ['gog', 'auth', 'login', '-a', ctx.account ?? 'you@example.com'],
+        // No account known: leave -a off rather than print a placeholder they'd copy.
+        argv: ['gog', 'auth', 'login', ...(ctx.account ? ['-a', ctx.account] : [])],
         unattended: false,
         why: 'refreshing Google credentials needs a browser',
       }
