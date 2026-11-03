@@ -4641,6 +4641,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
         if (String(args.chat_id) === APP_CHAT) {
           appBroadcast(JSON.stringify({ type: 'react', id: String(args.message_id), emoji: String(args.emoji) }))
+          // A share-sheet message reaches the phone through /app/history, after this frame has
+          // already found nothing to land on; history folds the tapback onto it.
+          recordHistory({ dir: 'out', chat_id: APP_CHAT, kind: 'reaction', message_id: String(args.message_id), text: String(args.emoji) })
           journalAnswered([APP_CHAT])
           return { content: [{ type: 'text', text: 'reacted' }] }
         }
@@ -7439,8 +7442,10 @@ function handleApp(req: Request, server: Bun.Server<{ tokenId: string }>): Respo
       const h = readHistory(APP_CHAT, 50)
       // An edit is its own entry; fold the latest one onto the message it changed.
       const edits = new Map(h.filter(e => e.kind === 'edit').map(e => [e.message_id, e.text]))
+      // Otto's tapbacks, the same way: the latest one rides on the message it reacted to.
+      const reactions = new Map(h.filter(e => e.kind === 'reaction' && e.dir === 'out').map(e => [e.message_id, e.text]))
       return Response.json(h.filter(e => e.kind !== 'reaction' && e.kind !== 'edit')
-        .map(e => ({ dir: e.dir, text: (e.message_id && edits.get(e.message_id)) || e.text, ts: e.ts, ...(e.message_id ? { id: e.message_id } : {}), ...(e.kind === 'terminal' ? { kind: e.kind } : {}), ...(e.extra ?? {}), ...(e.message_id && lateVoice.has(e.message_id) ? { voice: lateVoice.get(e.message_id) } : {}), ...(e.message_id && voicePending.has(e.message_id) ? { voicePending: true } : {}) })))
+        .map(e => ({ dir: e.dir, text: (e.message_id && edits.get(e.message_id)) || e.text, ts: e.ts, ...(e.message_id ? { id: e.message_id } : {}), ...(e.message_id && reactions.has(e.message_id) ? { reaction: reactions.get(e.message_id) } : {}), ...(e.kind === 'terminal' ? { kind: e.kind } : {}), ...(e.extra ?? {}), ...(e.message_id && lateVoice.has(e.message_id) ? { voice: lateVoice.get(e.message_id) } : {}), ...(e.message_id && voicePending.has(e.message_id) ? { voicePending: true } : {}) })))
     }
   }
   return new Response(null, { status: 404 })
