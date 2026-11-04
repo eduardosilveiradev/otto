@@ -7121,7 +7121,11 @@ async function sendVoiceLater(id: string, line: string): Promise<void> {
 /** The Claude Code session that owns this server, as the hooks name it in X-Claude-Pid. */
 const sessionPid = process.env.OTTO_SUPERVISED === '1'
   // Under supervisor.ts our parent is the supervisor; the session the hooks name is its parent.
-  ? Bun.spawnSync(['ps', '-o', 'ppid=', '-p', String(process.ppid)]).stdout.toString().trim() || String(process.ppid)
+  // Windows has no `ps`, and a throw here (module load) kills the server before it polls.
+  // ponytail: there the hooks get the supervisor's pid; look up its parent via CIM if that matters.
+  ? process.platform === 'win32'
+    ? String(process.ppid)
+    : Bun.spawnSync(['ps', '-o', 'ppid=', '-p', String(process.ppid)]).stdout.toString().trim() || String(process.ppid)
   : String(process.ppid)
 
 /**
