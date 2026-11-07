@@ -923,10 +923,10 @@ async function ensureVoiceDaemon(): Promise<VoiceInfo | null> {
           // it, and a daemon tied to the old pid quit within 15 s of every reload.
           OTTO_VOICE_PARENT: String(process.ppid),
         },
-        // The daemon's stdout is model progress chatter, not protocol; its
-        // stderr is the log we want in session.err.
+        // The daemon's stdout is model progress chatter, not protocol; it logs
+        // to state/voice/voiced.log itself, since it outlives this process.
         stdout: 'ignore',
-        stderr: 'inherit',
+        stderr: 'ignore',
         stdin: 'ignore',
       })
     } catch (err) {

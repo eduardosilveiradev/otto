@@ -403,6 +403,12 @@ past their own learned rhythm (desk watcher, share sheet, the app, webhook
 sources; [otto/inputwatch.ts](otto/inputwatch.ts)) and what the iPhone app last
 reported about itself — `DOWN` when notifications are denied.
 
+**Voice (optional, Apple Silicon).** Off unless you run
+`bash ~/.otto/otto/voice/setup.sh`: then Telegram voice notes are transcribed
+on the Mac (Whisper) and Otto can answer out loud (Qwen3-TTS), both through
+MLX, nothing leaving the machine. Delete `~/.otto/state/voice/.venv` to turn it
+off again. Details in [otto/voice/README.md](otto/voice/README.md).
+
 **Live flight status.** Off until `AERODATABOX_KEY` (AeroDataBox via RapidAPI,
 free tier) is in `~/.otto/state/.env`; then
 [otto/flightstatus.ts](otto/flightstatus.ts) watches each booked flight from 6 h

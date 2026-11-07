@@ -409,6 +409,8 @@ event.
   (default 95) the channel parks a resume note from the session they last typed
   in and sends it once when the window resets, with [resume]. Nothing goes out
   before the reset; don't announce the limit yourself.
+- Voice is off unless `bash ~/.otto/otto/voice/setup.sh` was run (Apple
+  Silicon only). Without it every reply is text; don't offer to speak.
 - Email scan every {{SCAN_MINUTES}} minutes, suspended during quiet hours.
 
 ## Compact instructions
