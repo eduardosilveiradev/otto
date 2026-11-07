@@ -5,8 +5,8 @@
 # The channel plugin only survives in an INTERACTIVE session: in headless mode
 # (-p) channels are never loaded, so the CLI connects the MCP server and kills it
 # a few seconds later. Under systemd or launchd there is no terminal at all, so
-# `script` fabricates a pty for claude to run its interactive loop without a real
-# tty.
+# tmux (or `script`, without it) gives claude a pty to run its interactive loop
+# without a real tty.
 #
 # Do not add --dangerously-load-development-channels: the flag swallows the
 # following arguments as values and stalls startup on a consent screen. Otto is
@@ -64,6 +64,51 @@ cd "$RUN_DIR" || exit 1
 # token that doesn't start with a dash. Keep it last: a flag added after it
 # would be swallowed as a channel name rather than parsed.
 CLAUDE_ARGS=(--permission-mode auto --channels plugin:otto@otto)
+
+# With tmux installed, the session lives in tmux: it outlives whoever started it
+# and anyone can attach to it — this terminal, a second one over ssh (`run.sh`
+# again, or `tmux -S ~/.otto/state/tmux.sock attach`). The socket sits in the
+# state directory, so a second install with its own OTTO_STATE_DIR gets its own
+# session. Inside it, otto/session-loop.sh relaunches claude with --continue
+# after a crash. Without tmux, the `script` path below runs as it always has.
+STATE_DIR="${OTTO_STATE_DIR:-$HOME/.otto/state}"
+LOG_DIR="$OTTO_HOME/logs"
+TMUX_BIN="$(command -v tmux || true)"
+
+if [ -n "$TMUX_BIN" ]; then
+  mkdir -p "$STATE_DIR" "$LOG_DIR"
+  T=("$TMUX_BIN" -S "$STATE_DIR/tmux.sock" -f "$OTTO_HOME/otto/tmux.conf")
+  EXIT_FILE="$LOG_DIR/session.exit"
+
+  # Already running (an earlier run.sh, the service, a terminal): attach or watch
+  # it, never start a second channel host beside it.
+  if ! "${T[@]}" has-session -t otto 2>/dev/null; then
+    rm -f "$EXIT_FILE"
+    # -e, because a tmux server that is already up hands new sessions its own
+    # environment rather than ours.
+    ENV=(-e OTTO_CHANNEL_HOST=1 -e "OTTO_HOME=$OTTO_HOME" -e "PATH=$PATH" -e "HOME=$HOME")
+    [ -n "${OTTO_STATE_DIR:-}" ] && ENV+=(-e "OTTO_STATE_DIR=$OTTO_STATE_DIR")
+    [ -n "${OTTO_FRESH:-}" ] && ENV+=(-e "OTTO_FRESH=$OTTO_FRESH")
+    "${T[@]}" new-session -d -s otto -x 200 -y 50 -c "$RUN_DIR" "${ENV[@]}" \
+      /bin/bash "$OTTO_HOME/otto/session-loop.sh" \
+      "$LOG_DIR/session.err" "$EXIT_FILE" "$CLAUDE" "${CLAUDE_ARGS[@]}"
+    # Everything the session drew, for reading after a crash.
+    "${T[@]}" pipe-pane -t otto "cat > $(printf %q "$LOG_DIR/session.log")"
+  fi
+
+  if [ -t 0 ] && [ -t 1 ]; then
+    # Closing this terminal detaches; Otto keeps running.
+    TMUX= exec "${T[@]}" attach -t otto
+  fi
+
+  # systemd / launchd: stay in the foreground for as long as the session lives,
+  # so the service manager sees it end, and take it down with us when it stops.
+  trap '"${T[@]}" kill-session -t otto 2>/dev/null; exit 143' TERM INT HUP
+  while "${T[@]}" has-session -t otto 2>/dev/null; do
+    sleep 2 & wait $!
+  done
+  exit "$(cat "$EXIT_FILE" 2>/dev/null || echo 1)"
+fi
 
 # `script` exists only to fabricate a pty when we have no terminal. Starting from
 # a real terminal it is a downgrade: it never forwards SIGWINCH, so the TUI is

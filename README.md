@@ -122,6 +122,15 @@ It takes about five minutes, most of it waiting on your answers.
 | **macOS** | `com.otto.agent`, a LaunchAgent | no — comes back when you log in | `~/.otto/state/otto.log` |
 | **Linux without systemd** | background process + `@reboot` cron | no | `~/.otto/state/otto.log` |
 
+With `tmux` installed (`apt install tmux`, `brew install tmux`), the session
+runs inside it: `bash ~/.otto/run.sh` from any terminal, ssh included, attaches
+to the running Otto instead of starting a second one, and closing that terminal
+only detaches. If Claude Code crashes, `otto/session-loop.sh` relaunches it with
+`--continue` so the conversation picks up where it was; five crashes in five
+minutes stop it, and `/exit` ends it for good. Every start resumes the last
+conversation; set `OTTO_FRESH=1` for a new one. The screen output of the last
+run is in `~/.otto/logs/session.log`. Without tmux, run.sh works as before.
+
 On macOS Otto lives inside your login session: it pauses while the Mac sleeps
 and stops if you log out, then picks itself back up. If you want it awake
 overnight, stop the Mac from sleeping (System Settings → Lock Screen / Energy,
@@ -369,10 +378,44 @@ one normal message) and `criticalGb` / `criticalPercent` (5 GB or 3%, one
 urgent message). The message names what could be cleared (caches, the Trash,
 old Otto backups); Otto never deletes any of it.
 
+**Machine load.** Every 10 minutes [otto/runaway.ts](otto/runaway.ts) samples
+your own processes with `ps`. A process averaging over `runaway.cpuPercent`
+(default 80) for `runaway.hours` (default 2) gets one line, once per process,
+with [quit it]. On macOS it also reads swap, memory pressure and the thermal
+state: swap past `runaway.swapGb` (default 20) or critical pressure, or
+throttling, for 20 minutes is one line, at most once a day. `runaway.ignore`
+takes process names. [quit it] only works on a process the watch offered,
+re-checks its pid and start time, and never kills by name.
+
+**Key expiry.** [otto/keyshelf.ts](otto/keyshelf.ts) reads once a day from
+10:00 the expiry of the GitHub token `gh` uses, Vercel tokens (`VERCEL_TOKEN`
+or the Vercel CLI login) and, on macOS, Apple signing certificates and
+provisioning profiles. Anything else you mention is added through the
+`key_expiry` tool. Each gets one nudge 14 days out with the rotation steps.
+Only labels, dates and steps are stored; input that looks like a secret is
+refused.
+
+**Limit parachute.** The plugin's UserPromptSubmit hook tells the channel which
+Claude Code session you last typed in (session id, cwd, transcript path, the
+prompt's first words; nothing else from other sessions is read). When a plan
+window reaches `parachute.percent` (default 95) in a reading posted to
+`/plan-usage`, [otto/parachute.ts](otto/parachute.ts) parks a resume note (repo,
+branch, dirty files, the last red `bun test`) and sends it once when the window
+resets, with [resume]. On macOS [resume] opens `parachute.app` (default
+Terminal) there; elsewhere it replies with the `claude --resume` command. It
+needs a Claude Code status line that POSTs its `rate_limits` JSON to the
+channel's `/plan-usage`; without one it stays idle.
+
 **Inputs and the phone.** `otto_status` also lists inputs that have gone quiet
 past their own learned rhythm (desk watcher, share sheet, the app, webhook
 sources; [otto/inputwatch.ts](otto/inputwatch.ts)) and what the iPhone app last
 reported about itself — `DOWN` when notifications are denied.
+
+**Voice (optional, Apple Silicon).** Off unless you run
+`bash ~/.otto/otto/voice/setup.sh`: then Telegram voice notes are transcribed
+on the Mac (Whisper) and Otto can answer out loud (Qwen3-TTS), both through
+MLX, nothing leaving the machine. Delete `~/.otto/state/voice/.venv` to turn it
+off again. Details in [otto/voice/README.md](otto/voice/README.md).
 
 **Live flight status.** Off until `AERODATABOX_KEY` (AeroDataBox via RapidAPI,
 free tier) is in `~/.otto/state/.env`; then

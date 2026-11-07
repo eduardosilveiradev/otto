@@ -25,9 +25,9 @@ const MAX_REPOS = 4
 /** Only repos touched this recently are interesting — the rest is archaeology. */
 const RECENT_MS = 18 * 60 * 60 * 1000
 
-async function run(cmd: string[], cwd?: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<string | undefined> {
+export async function run(cmd: string[], cwd?: string, timeoutMs = PROBE_TIMEOUT_MS, env?: Record<string, string>): Promise<string | undefined> {
   try {
-    const proc = Bun.spawn(cmd, { cwd, stdout: 'pipe', stderr: 'ignore' })
+    const proc = Bun.spawn(cmd, { cwd, stdout: 'pipe', stderr: 'ignore', ...(env ? { env: { ...process.env, ...env } } : {}) })
     const timer = setTimeout(() => { try { proc.kill() } catch {} }, timeoutMs)
     const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
     clearTimeout(timer)

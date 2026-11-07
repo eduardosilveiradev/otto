@@ -20,3 +20,4 @@ bun.lockb
 # Repro tests the crash triage writes on this machine; deliberately red, never
 # part of the repo.
 /otto/tests/regressions/
+__pycache__/

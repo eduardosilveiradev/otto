@@ -26,6 +26,7 @@ import { readEnvKey } from './deadman.ts'
 import { depwatchStatus, type DepwatchState } from './depwatch.ts'
 import { domainStatus, peekDomains } from './domains.ts'
 import { diskStatus, peekDiskState } from './disk.ts'
+import { loadStatus, peekLoadState } from './runaway.ts'
 import { planSummary, type PlanUsage } from './spend.ts'
 import { loadInputs, inputsStatus } from './inputwatch.ts'
 import { appHealthStatus, peekAppHealth, tokenNames } from './apphealth.ts'
@@ -259,6 +260,9 @@ export async function collectStatus(d: StatusDeps): Promise<StatusRow[]> {
   // --- Disk space ----------------------------------------------------------
   const disk = diskStatus(peekDiskState(join(stateDir, 'disk.json')), now)
   rows.push({ id: 'disk', label: 'Disk space', verdict: disk.verdict, ...(disk.at ? { at: disk.at } : {}), detail: disk.detail })
+  // --- Machine load (runaway.ts) -------------------------------------------
+  const load = loadStatus(peekLoadState(join(stateDir, 'runaway.json')), now)
+  rows.push({ id: 'load', label: 'Machine load', verdict: load.verdict, ...(load.at ? { at: load.at } : {}), detail: load.detail })
 
   // --- Claude plan usage (posted by the Claude Code status line) ----------
   const plan = readJson<PlanUsage>(join(stateDir, 'plan-usage.json'))
