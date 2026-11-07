@@ -106,6 +106,7 @@ import {
   convertTotals, formatTotals, formatRecord, formatAmount, formatMoney, loadMoney, saveMoney, MONEY_FILE,
   type Annotate, type MoneyRecord, type PurchaseFacts,
 } from './money.ts'
+import { loadSplits, saveSplits, addSplit, settle, removeSplit, balances, netPlan, formatPlans, SPLITS_FILE } from './splits.ts'
 import { refreshFx, annotator, homeCurrency } from './fx.ts'
 import {
   extractOtps, formatOtp, otpSettings, otpVerdict, recordSent as recordOtpSent,
@@ -459,6 +460,8 @@ type Access = {
   returns?: { minAmount?: number }
   /** Parcel buttons. amazonDomain: the shop whose order page [reschedule] opens for Amazon parcels ("amazon.it"). Default "amazon.com". Read by otto/packages.ts. */
   packages?: { amazonDomain?: string }
+  /** Money between friends (otto/splits.ts). apps: currency → the app a request names ("EUR": "Wise"; default USD Venmo, else bank transfer). handles: app → the user's own handle shown in the request ("Venmo": "@handle"). Machine-local only. */
+  splits?: { apps?: Record<string, string>; handles?: Record<string, string> }
   /** Thresholds for the nightly loop-hygiene and memory-audit passes. Every field
    * is optional; anything missing or unusable falls back to its default. */
   hygiene?: {
@@ -3993,6 +3996,46 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'record_split',
+      title: 'Record money between friends',
+      annotations: { title: 'Record money between friends', readOnlyHint: false, openWorldHint: false },
+      description:
+        'Record who owes whom between the user and their friends: a shared bill, a receipt photo, or a payment that settles part of it. Only the user\'s own side is kept: "Luca paid 84 for four of us" → paid_by "Luca", total 84, people ["Luca","me"], count 4 → the user owes Luca 21. "I paid 36 for me and Sara" → Sara owes 18. A payment is the same call: "sent Luca 5" → paid_by "me", people ["Luca"], total 5, what "payment". Amount and currency exactly as on the bill — never convert, never guess a currency. Pass source "telegram:<message_id>" for a receipt photo so a re-read is not counted twice. Names resolve against the people graph; an ambiguous name throws — ask which. settle:true marks a friend\'s or an outing\'s balance as squared; remove deletes one wrong entry by id. Never moves money.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          paid_by: { type: 'string', description: '"me" or the friend who paid.' },
+          total: { type: 'number', description: 'Major units, as on the bill.' },
+          currency: { type: 'string', description: 'ISO 4217. Required — ask if the bill does not say.' },
+          people: { type: 'array', items: { type: 'string' }, description: 'Who shared it, "me" included when the user did. For a payment: just the one who received it.' },
+          count: { type: 'number', description: 'Equal split between this many when not all are named ("for four of us" → 4).' },
+          shares: { type: 'object', description: 'Uneven split, name → amount; must add up to total.' },
+          what: { type: 'string', description: 'Short label: "Weekend dinner", "payment".' },
+          date: { type: 'string', description: 'YYYY-MM-DD. Default today.' },
+          group: { type: 'string', description: 'Outing slug shared by every entry of one trip or night out: "weekend-oct". What splits nets across.' },
+          source: { type: 'string', description: '"telegram:<message_id>" or "email:<id>" — the dedupe key.' },
+          settle: { type: 'boolean', description: 'Mark settled instead of recording: with friend and/or group (and currency).' },
+          friend: { type: 'string', description: 'settle only.' },
+          remove: { type: 'string', description: 'Delete this entry id (a mistake), instead of recording.' },
+        },
+      },
+    },
+    {
+      name: 'splits',
+      title: 'Who owes whom',
+      annotations: { title: 'Who owes whom', readOnlyHint: true, openWorldHint: false },
+      description:
+        'The running tally between the user and each friend, netted across every outing, per currency (never added across currencies). Pass group for one outing: it also suggests redirects — a friend who owes the user pays the user\'s creditor directly — and the net the user sends or receives. Each "request <name>:" line is the message the user can paste to that friend, already naming the amount, currency and app (access.json splits.apps); put it on a reply button as {label:"copy for <name>", copy:<text>}, translated to the friend\'s language if `who` says they speak another. Otto never moves money and never sends the request itself. history:true lists entries instead, settled ones included.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          friend: { type: 'string' },
+          group: { type: 'string' },
+          history: { type: 'boolean' },
+        },
+      },
+    },
+    {
       name: 'note_contact',
       title: 'Record a person',
       annotations: { title: 'Record a person', readOnlyHint: false, openWorldHint: false },
@@ -5183,6 +5226,57 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           text += `\n≈ ${c.total} ${c.target}${c.missing.length ? ` (no rate for ${c.missing.join(', ')} — not included)` : ''}`
         }
         return { content: [{ type: 'text', text: text || '(nothing recorded)' }] }
+      }
+
+      case 'record_split': {
+        const state = loadSplits(SPLITS_FILE)
+        const people = loadPeople(PEOPLE_FILE)
+        if (args.remove) {
+          const gone = removeSplit(state, String(args.remove))
+          if (!gone) throw new Error(`no split entry ${args.remove}`)
+          saveSplits(SPLITS_FILE, state)
+          return { content: [{ type: 'text', text: `removed [${gone.id}] ${gone.name} ${gone.amount} ${gone.currency} ${gone.what}` }] }
+        }
+        if (args.settle) {
+          const n = settle(state, {
+            ...(args.friend ? { friend: String(args.friend) } : {}),
+            ...(args.group ? { group: String(args.group) } : {}),
+            ...(args.currency ? { currency: String(args.currency).trim().toUpperCase() } : {}),
+          }, people)
+          if (n) saveSplits(SPLITS_FILE, state)
+          return { content: [{ type: 'text', text: n ? `settled ${n} entr${n === 1 ? 'y' : 'ies'}` : 'nothing open to settle' }] }
+        }
+        const { added, already } = addSplit(state, {
+          paidBy: String(args.paid_by ?? ''),
+          total: Number(args.total),
+          currency: String(args.currency ?? ''),
+          people: ((args.people as unknown[]) ?? []).map(String),
+          ...(args.count != null ? { count: Number(args.count) } : {}),
+          ...(args.shares && typeof args.shares === 'object' ? { shares: args.shares as Record<string, number> } : {}),
+          what: String(args.what ?? 'shared'),
+          date: String(args.date ?? todayStamp()),
+          ...(args.group ? { group: String(args.group) } : {}),
+          ...(args.source ? { source: String(args.source) } : {}),
+        }, people)
+        if (added.length) saveSplits(SPLITS_FILE, state)
+        const group = added[0]?.group ?? already[0]?.group
+        const plans = netPlan(balances(state.entries, group ? { group } : {}))
+        const lines = [
+          ...added.map(e => `recorded [${e.id}] ${e.name} ${e.amount > 0 ? 'owes you' : 'you owe'} ${Math.abs(e.amount)} ${e.currency}`),
+          ...already.map(e => `already recorded [${e.id}] ${e.name}`),
+          '', formatPlans(plans, group, loadAccess().splits),
+        ]
+        return { content: [{ type: 'text', text: lines.join('\n') }] }
+      }
+
+      case 'splits': {
+        const state = loadSplits(SPLITS_FILE)
+        const filter = { ...(args.friend ? { friend: String(args.friend) } : {}), ...(args.group ? { group: String(args.group) } : {}) }
+        if (args.history) {
+          const rows = state.entries.filter(e => (!filter.group || e.group === filter.group) && (!filter.friend || e.name.toLowerCase().includes(filter.friend.toLowerCase())))
+          return { content: [{ type: 'text', text: rows.map(e => `[${e.id}] ${e.date} ${e.name} ${e.amount} ${e.currency} ${e.what}${e.group ? ` #${e.group}` : ''}${e.settledAt ? ' (settled)' : ''}`).join('\n') || '(nothing recorded)' }] }
+        }
+        return { content: [{ type: 'text', text: formatPlans(netPlan(balances(state.entries, filter)), filter.group, loadAccess().splits) }] }
       }
 
       case 'note_contact': {
