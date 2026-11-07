@@ -61,6 +61,9 @@ questions to learn who you are, then I'll install everything myself") and begin.
   `America/New_York`) — every time Otto shows depends on it.
 - What they do — one line. This is what separates "your flight leaves at 2pm"
   from "a tuition bill arrived": Otto needs to know what is important *to them*.
+- What currency they think in — the one their salary and rent are in. **Keep the
+  three-letter code** (`USD`, `BRL`, `GBP`…). Otto puts an approximate figure in
+  that currency next to foreign amounts; without it, it assumes euros.
 
 ### 2. The Telegram bot
 
@@ -77,11 +80,66 @@ Ask for the token. **It is a password** — say so, and say that it stays on the
 machine only. Never write the token back into the chat, and never repeat it to
 confirm; confirm the last 4 characters only.
 
-### 3. Their Telegram ID
+Put it straight into a private file so it never has to appear in a command again:
 
-They send `/start` to **@userinfobot** and it replies with a number (`Id:
-123456789`). That number is what authorizes the conversation — only it will be
-able to talk to Otto. Ask for the number.
+```bash
+mkdir -p ~/.otto/state && chmod 700 ~/.otto/state
+( umask 077; printf 'TELEGRAM_BOT_TOKEN=%s\n' "<token>" > ~/.otto/state/.env )
+```
+
+**Check it is real before going on.** Ask Telegram who the bot is:
+
+```bash
+( . ~/.otto/state/.env; curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getMe" )
+```
+
+`"ok":true` comes back with the bot's `first_name` and `username`. Say them back
+("found it — your bot is **Maria's Otto**, @MariaOttoBot") so they know it's the
+one they just made. `"ok":false` / `401 Unauthorized` means the token was
+mistyped or cut short: ask them to copy it again from BotFather (the whole line,
+both halves around the colon). Don't move on until `getMe` succeeds.
+
+Then clear anything the bot may have queued, and turn off a webhook if the bot
+ever had one — while a webhook is set, nobody can read messages the normal way,
+Otto included:
+
+```bash
+( . ~/.otto/state/.env; curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/deleteWebhook?drop_pending_updates=true" )
+```
+
+### 3. Who is allowed to talk to it
+
+Otto only answers the people on its list, and the list holds a number Telegram
+gives each chat. They don't need to find it — the bot can see it:
+
+1. Ask them to open their new bot in Telegram (BotFather's message has a link,
+   `t.me/<username>`), tap **Start**, and send any message, "hi" is fine.
+   Nothing will answer yet; say so, so the silence doesn't worry them.
+2. When they say they've sent it, read it:
+
+   ```bash
+   ( . ~/.otto/state/.env; curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates?allowed_updates=%5B%22message%22%5D" )
+   ```
+
+   Take the **last** update whose `message.chat.type` is `"private"`. Its
+   `message.chat.id` is the number for `allowFrom`; its `update_id` you need in
+   the next step. Check the `message.from.first_name` and the text against what
+   they said they sent — if it's someone else's message, or `result` is empty,
+   ask them to send another and read again. Never take a chat id from a group
+   (negative number) or from a person they don't recognise.
+3. Mark those updates as read, so the server starts clean and doesn't answer
+   the setup "hi" the moment it comes up:
+
+   ```bash
+   ( . ~/.otto/state/.env; curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates?offset=<update_id + 1>&timeout=0" )
+   ```
+
+   `"result":[]` means the queue is empty. Do this now, before the server
+   starts: once it's polling, Telegram allows only one reader per bot and a
+   second `getUpdates` gets `409 Conflict`.
+
+Tell them the number is theirs (not a password, but not something to post
+either), and that only this chat will be able to talk to Otto.
 
 ### 4. Email (optional)
 
@@ -116,8 +174,8 @@ sure, skip it: it can be added later by running this skill again.
 
 ### Closing the interview
 
-Repeat everything back in a short list — name, timezone, what they do, last 4
-digits of the token, Telegram ID, email and cadence, quiet hours, tone, app or
+Repeat everything back in a short list — name, timezone, home currency, what
+they do, the bot's @username, email and cadence, quiet hours, tone, app or
 no app — and ask
 whether it's right. **Only after** the "yes" do you install.
 
@@ -158,23 +216,31 @@ installing it is outside your reach.
 ```bash
 # moves an older install's state from ~/.claude/channels/otto, if there is one
 bash "$OTTO_HOME/scripts/migrate-state.sh"
-printf 'TELEGRAM_BOT_TOKEN=%s\n' "<token>" > ~/.otto/state/.env
-chmod 600 ~/.otto/state/.env
+chmod 600 ~/.otto/state/.env    # written during the interview; check it's still there
 ```
+
+If the old-location move reports that both places exist, the new
+`~/.otto/state` (with the token you just checked) is the one that counts.
 
 And `access.json`, with what they answered:
 
 ```json
 {
   "dmPolicy": "allowlist",
-  "allowFrom": ["<telegram id>"],
+  "allowFrom": ["<chat id from getUpdates, as a string>"],
   "pending": {},
   "ackReaction": "👀",
   "emailScanMinutes": 60,
   "quietHours": "23:30-08:00",
-  "googleAccount": "<email, or omit the key>"
+  "googleAccount": "<email, or omit the key>",
+  "money": { "home": "<three-letter currency code>" }
 }
 ```
+
+The timezone does **not** go here: the server reads the computer's own clock
+zone. It goes into `CLAUDE.md` in the next step. If the interview zone differs
+from this machine's zone (`readlink /etc/localtime` on macOS, `timedatectl
+show -p Timezone --value` on Linux), tell them — Otto follows the machine.
 
 `chmod 600` on that file too.
 
@@ -297,7 +363,8 @@ connection is closed within seconds.
 | `409 Conflict` in the log | two Ottos on the same token | `bash scripts/otto-ctl.sh restart`; if it persists, another machine is using the same bot |
 | `TELEGRAM_BOT_TOKEN required` | `.env` empty or in the wrong place | redo Step 3 |
 | service starts and dies in a loop | `claude` isn't in the service's PATH | put the absolute path in `run.sh` (on macOS check `/opt/homebrew/bin` is in the plist's PATH) |
-| bot ignores their messages | wrong ID in `allowFrom` | check with @userinfobot again |
+| bot ignores their messages | wrong ID in `allowFrom` | stop Otto, redo interview step 3 (send a message, read `getUpdates`), start it |
+| `getMe` says `401 Unauthorized` | token mistyped, or revoked in BotFather | copy it again from BotFather (`/token` there reissues it) and rewrite `.env` |
 | replies, but never starts a conversation | channel not authorized | Step 5 |
 | **macOS:** dies every night | the Mac sleeps | stop it sleeping, or accept the gap |
 | **macOS:** `launchctl bootstrap` says `Input/output error` | agent already loaded | `launchctl bootout gui/$(id -u)/com.otto.agent` first, then reinstall |
@@ -305,6 +372,11 @@ connection is closed within seconds.
 
 Never pretend it's working. If a step failed, say which one and what it costs in
 practice.
+
+`bash "$OTTO_HOME/scripts/install.sh" --check` diagnoses without changing
+anything, and `/otto:status` gives the running picture. To take Otto off the
+machine: `bash "$OTTO_HOME/scripts/uninstall.sh"` shows what it would remove,
+`--yes` does it.
 
 ---
 

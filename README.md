@@ -95,6 +95,14 @@ walks you through creating the Telegram bot, and installs the rest on its own.
 You just answer questions and type your computer password once — that's what
 lets Otto speak without being asked.
 
+That password step runs `scripts/allow-channel-plugin.sh`, which adds Otto to
+the `allowedChannelPlugins` list in Claude Code's managed-settings policy
+(`/Library/Application Support/ClaudeCode/managed-settings.json` on macOS,
+`/etc/claude-code/managed-settings.json` on Linux) and sets `channelsEnabled`.
+Claude Code only lets an approved channel plugin start a conversation, and that
+file is owned by root, so it needs `sudo`. Skip it and Otto still answers you,
+but never messages first: no reminders, no email alerts.
+
 It takes about five minutes, most of it waiting on your answers.
 
 ## What you need
@@ -418,6 +426,18 @@ stopped, `rm ~/.claude/channels/otto` and
   The one exception is the optional relay, which funnels the `/telegram` path
   alone, and that path refuses anything without the relay's secret.
 
+## If something's wrong
+
+- `bash ~/.otto/scripts/install.sh --check` looks at everything setup touches
+  (Claude Code, bun, the token, `access.json`, the personality file, the channel
+  policy) and changes nothing.
+- `/otto:status` in Claude says whether each moving part is up (the server,
+  reminders, email scan, app listener, voice, Google sign-in), with a plain
+  verdict and when it was last seen working.
+- `bash ~/.otto/scripts/uninstall.sh` lists what it would remove: the service,
+  Otto's `tailscale serve` path, its entry in the channel policy (that part asks
+  for `sudo`). `--yes` does it. `~/.otto/state` stays unless you add `--purge`.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -428,7 +448,7 @@ stopped, `rm ~/.claude/channels/otto` and
 | dies when you log out (Linux) | linger off | `sudo loginctl enable-linger $USER` |
 | quiet overnight (macOS) | the Mac went to sleep | keep it awake, or accept the gap |
 | gone after a reboot (no systemd) | `@reboot` entry missing | `crontab -l`, add it back |
-| ignores your messages | wrong ID | `/otto:access list` and check with @userinfobot |
+| ignores your messages | wrong chat id in `allowFrom` | `/otto:access list`; run `/otto:setup` again to read the right one |
 
 ## License
 
