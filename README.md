@@ -114,6 +114,15 @@ It takes about five minutes, most of it waiting on your answers.
 | **macOS** | `com.otto.agent`, a LaunchAgent | no — comes back when you log in | `~/.otto/state/otto.log` |
 | **Linux without systemd** | background process + `@reboot` cron | no | `~/.otto/state/otto.log` |
 
+With `tmux` installed (`apt install tmux`, `brew install tmux`), the session
+runs inside it: `bash ~/.otto/run.sh` from any terminal, ssh included, attaches
+to the running Otto instead of starting a second one, and closing that terminal
+only detaches. If Claude Code crashes, `otto/session-loop.sh` relaunches it with
+`--continue` so the conversation picks up where it was; five crashes in five
+minutes stop it, and `/exit` ends it for good. Every start resumes the last
+conversation; set `OTTO_FRESH=1` for a new one. The screen output of the last
+run is in `~/.otto/logs/session.log`. Without tmux, run.sh works as before.
+
 On macOS Otto lives inside your login session: it pauses while the Mac sleeps
 and stops if you log out, then picks itself back up. If you want it awake
 overnight, stop the Mac from sleeping (System Settings → Lock Screen / Energy,
