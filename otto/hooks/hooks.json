@@ -1,5 +1,5 @@
 {
-  "description": "Each tool call becomes a live status line and a step in the Otto app's typing bubble (server.ts handleStatus); screenshot tools also post their image, Stop marks the steps done, and UserPromptSubmit puts a prompt typed in the terminal into the app as a short system line. Silent and instant when the channel isn't running.",
+  "description": "Each tool call becomes a live status line and a step in the Otto app's typing bubble (server.ts handleStatus); screenshot tools also post their image, Stop marks the steps done, and UserPromptSubmit puts a prompt typed in the terminal into the app as a short system line. UserPromptSubmit also tells the channel which session the user last typed in (session id, cwd, transcript path and the prompt's first words, for the limit parachute); nothing else from other sessions is read. Silent and instant when the channel isn't running.",
   "hooks": {
     "PreToolUse": [
       {
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "u=$(cat \"${OTTO_STATE_DIR:-$HOME/.otto/state}/status-url\" 2>/dev/null) && curl -s -m 0.3 -H \"X-Claude-Pid: $PPID\" -H 'Content-Type: application/json' --data-binary @- \"$u\" >/dev/null 2>&1; exit 0",
+            "command": "u=$(cat \"${OTTO_STATE_DIR:-$HOME/.otto/state}/status-url\" 2>/dev/null) && curl -s -m 0.3 -H \"X-Claude-Pid: $PPID\" -H 'X-Otto-Hook: prompt' -H 'Content-Type: application/json' --data-binary @- \"$u\" >/dev/null 2>&1; exit 0",
             "timeout": 2
           }
         ]

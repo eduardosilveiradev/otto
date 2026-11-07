@@ -361,6 +361,34 @@ one normal message) and `criticalGb` / `criticalPercent` (5 GB or 3%, one
 urgent message). The message names what could be cleared (caches, the Trash,
 old Otto backups); Otto never deletes any of it.
 
+**Machine load.** Every 10 minutes [otto/runaway.ts](otto/runaway.ts) samples
+your own processes with `ps`. A process averaging over `runaway.cpuPercent`
+(default 80) for `runaway.hours` (default 2) gets one line, once per process,
+with [quit it]. On macOS it also reads swap, memory pressure and the thermal
+state: swap past `runaway.swapGb` (default 20) or critical pressure, or
+throttling, for 20 minutes is one line, at most once a day. `runaway.ignore`
+takes process names. [quit it] only works on a process the watch offered,
+re-checks its pid and start time, and never kills by name.
+
+**Key expiry.** [otto/keyshelf.ts](otto/keyshelf.ts) reads once a day from
+10:00 the expiry of the GitHub token `gh` uses, Vercel tokens (`VERCEL_TOKEN`
+or the Vercel CLI login) and, on macOS, Apple signing certificates and
+provisioning profiles. Anything else you mention is added through the
+`key_expiry` tool. Each gets one nudge 14 days out with the rotation steps.
+Only labels, dates and steps are stored; input that looks like a secret is
+refused.
+
+**Limit parachute.** The plugin's UserPromptSubmit hook tells the channel which
+Claude Code session you last typed in (session id, cwd, transcript path, the
+prompt's first words; nothing else from other sessions is read). When a plan
+window reaches `parachute.percent` (default 95) in a reading posted to
+`/plan-usage`, [otto/parachute.ts](otto/parachute.ts) parks a resume note (repo,
+branch, dirty files, the last red `bun test`) and sends it once when the window
+resets, with [resume]. On macOS [resume] opens `parachute.app` (default
+Terminal) there; elsewhere it replies with the `claude --resume` command. It
+needs a Claude Code status line that POSTs its `rate_limits` JSON to the
+channel's `/plan-usage`; without one it stays idle.
+
 **Inputs and the phone.** `otto_status` also lists inputs that have gone quiet
 past their own learned rhythm (desk watcher, share sheet, the app, webhook
 sources; [otto/inputwatch.ts](otto/inputwatch.ts)) and what the iPhone app last

@@ -368,6 +368,7 @@ event.
   `email-state.json`, `notes.json`, `queue.json`, `inbound-journal.json`, `people.json`, `money.json`, `splits.json`,
   `trips.json`, `places.json`, `packages.json`, `birthdays.json`, `sleep.json`,
   `otp.json`, `fx.json`, `domains.json`, `disk.json`, `depwatch.json`,
+  `runaway.json`, `keyshelf.json`, `parachute.json`,
   `keepintouch.json`, `flights.json`, `app-health.json`, `inputs.json`,
   `burned.json`, `backup-state.json`,
   `backup.key`, `.env`). Never `git clean -fdx` in `~/.otto`.
@@ -392,6 +393,22 @@ event.
   the lines. The channel sends one warning and one urgent line, naming what
   could be cleared — never delete any of it yourself, and don't raise disk
   space off `otto_status`.
+- Machine load: every 10 minutes the channel samples their processes
+  (`otto/runaway.ts`) and itself sends one line when a process has averaged
+  over `runaway.cpuPercent` for `runaway.hours`, or (macOS) swap, memory
+  pressure or throttling stays high. [quit it] quits that exact process and
+  nothing else. Never quit, kill or pkill anything yourself, and don't re-raise
+  what the channel said.
+- Key expiry: `key_expiry` is the shelf of credentials that lapse. The gh
+  token, Vercel tokens and (macOS) Apple signing certificates and profiles are
+  read daily. When they mention any other — "the staging deploy token expires
+  3 Nov" — `key_expiry` add with their label, the date and the steps they
+  gave. Names and dates only, never the value. The channel sends the one nudge
+  14 days out; don't add a trigger or a second mention.
+- Limit parachute: when a Claude plan window reaches `parachute.percent`
+  (default 95) the channel parks a resume note from the session they last typed
+  in and sends it once when the window resets, with [resume]. Nothing goes out
+  before the reset; don't announce the limit yourself.
 - Email scan every {{SCAN_MINUTES}} minutes, suspended during quiet hours.
 
 ## Compact instructions

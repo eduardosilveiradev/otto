@@ -180,6 +180,9 @@ import { collectStatus, formatStatus, defaultStatusDeps, recentRepairLines, rowT
 import { loadDomains, saveDomains, checkDomains, groupAlerts, readCertExpiry } from './domains.ts'
 import { collectInstalled, runDepwatch, loadDepwatch, saveDepwatch, formatDepAlerts, STATE_FILE_NAME as DEPWATCH_STATE_NAME } from './depwatch.ts'
 import { readVolumes, assessDisk, reclaimables, duBytes, formatDiskAlert, resolveDiskConfig, loadDiskState, saveDiskState } from './disk.ts'
+import { readProcs, readSystem, assessLoad, resolveRunawayConfig, loadLoadState, saveLoadState, quitProcess, QUIT_RE } from './runaway.ts'
+import { loadShelf, saveShelf, scanShelf, defaultReaders, dueNudges, markNudged as markShelfNudged, formatNudges, addManual, removeItem, formatShelf } from './keyshelf.ts'
+import { loadParachute, saveParachute, parachuteConfig, noteLive, parkWindow, shouldPark, snapshot, dueNote, formatNote as formatParkedNote, resumeWorkspace, RESUME_RE } from './parachute.ts'
 import { formatOutcome } from './canary.ts'
 import { backupDue, formatBackupAlert, loadBackupState, resolveBackupConfig, STATE_FILE_NAME as BACKUP_STATE_NAME } from './backup.ts'
 import { selfTestPlan, runSelfTest, cleanup as cleanupSelfTest } from './selftest.ts'
@@ -251,6 +254,12 @@ const HYGIENE_FILE = join(STATE_DIR, 'hygiene.json')
 /** Last-known certificate and registration expiry per domain, and which warnings went out. */
 const DOMAINS_FILE = join(STATE_DIR, 'domains.json')
 const DISK_FILE = join(STATE_DIR, 'disk.json')
+/** Mac load watch: per-process CPU baselines, hot streaks, which processes were offered [quit it]. */
+const RUNAWAY_FILE = join(STATE_DIR, 'runaway.json')
+/** Credentials that expire: labels, dates and rotation steps, never values (keyshelf.ts). */
+const KEYSHELF_FILE = join(STATE_DIR, 'keyshelf.json')
+/** The dev session the user last typed in, and the resume note parked near a plan limit (parachute.ts). */
+const PARACHUTE_FILE = join(STATE_DIR, 'parachute.json')
 /** Proactive messages held by snooze / busy / quiet hours, awaiting a flush. */
 const QUEUE_FILE = join(STATE_DIR, 'queue.json')
 /** Inbound messages until answered, so a restart cannot swallow one. See redeliver.ts. */
@@ -485,6 +494,10 @@ type Access = {
   domains?: string[]
   /** Free-space lines for the disk watch (otto/disk.ts). Defaults 15 GB or 10% (normal), 5 GB or 3% (urgent). */
   disk?: { warnGb?: number; warnPercent?: number; criticalGb?: number; criticalPercent?: number }
+  /** Mac load watch (otto/runaway.ts): a process averaging over cpuPercent for hours, swap past swapGb or critical memory pressure for 20 min, thermal throttling for 20 min. Defaults 80, 2, 20. ignore: process names never flagged. */
+  runaway?: { cpuPercent?: number; hours?: number; swapGb?: number; ignore?: string[] }
+  /** Limit parachute (otto/parachute.ts): park a resume note when a Claude plan window reaches percent, send it at the reset. app: what [resume] opens the repo in ("Terminal" also runs claude --resume there; anything else gets the command on the clipboard). Defaults 95, "Terminal"; percent over 100 turns it off. */
+  parachute?: { percent?: number; app?: string }
   /** Facts about things that move (city, job, phone, plans) older than this come
    * back from recall with their age. Default 180. */
   staleness?: { days?: number }
@@ -2073,6 +2086,7 @@ type RuntimeState = {
   lastConsolidation?: string
   /** Local calendar day of the last run, so one restart-per-hour cannot repeat it. */
   lastConsolidationDay?: string
+  lastKeyShelfDay?: string
   /** Local calendar day of the last nightly repo scan. */
   lastProjectScanDay?: string
   /** Local calendar day the repetition miner last ran (Sundays). */
@@ -2357,6 +2371,10 @@ async function handleCapabilityButton(instruction: string, chat_id: string): Pro
   if (slept) return slept
   const slowedDown = handleBackoffButton(instruction)
   if (slowedDown) return slowedDown
+  const quitLine = await handleQuitButton(instruction)
+  if (quitLine) return quitLine
+  const resumeLine = await handleResumeButton(instruction)
+  if (resumeLine) return resumeLine
   const kitTap = parseKitTap(instruction)
   if (kitTap) {
     const people = loadPeople(PEOPLE_FILE); const state = loadKitState(KEEPINTOUCH_FILE)
@@ -2630,6 +2648,100 @@ async function maybeCheckDisk(): Promise<void> {
     for (const a of alerts) await sendServerMessage(chat, formatDiskAlert(a, reclaim), { urgent: a.priority === 'urgent' })
   } finally { diskCheckInFlight = false }
 }
+
+// ---------------------------------------------------------------------------
+// Mac and dev-session ops (runaway.ts, keyshelf.ts, parachute.ts)
+// ---------------------------------------------------------------------------
+
+const LOAD_CHECK_MS = 10 * 60_000
+// Not 0: the first sample waits a full interval after boot, so a reload storm never samples back to back
+// and sessionPid (declared further down) is initialised before anything reads it.
+let lastLoadCheck = Date.now()
+let loadCheckInFlight = false
+/** Pids that are Otto: never flagged, never quit. */
+function protectedPids(): number[] { return [process.pid, process.ppid, Number(sessionPid)].filter(n => Number.isFinite(n) && n > 1) }
+async function maybeCheckLoad(): Promise<void> {
+  if (loadCheckInFlight) return
+  loadCheckInFlight = true
+  try {
+    const access = loadAccess()
+    const [procs, sys] = await Promise.all([readProcs(), readSystem()])
+    const state = loadLoadState(RUNAWAY_FILE)
+    const alerts = assessLoad(procs, sys, state, resolveRunawayConfig(access.runaway), Date.now(), { uid: process.getuid?.() ?? -1, protect: protectedPids() })
+    saveLoadState(RUNAWAY_FILE, state) // persist before sending: a crash loses one line, never repeats one
+    const chat = access.allowFrom[0]
+    if (!chat) return
+    for (const a of alerts) await sendServerMessage(chat, a.text, { buttons: a.buttons })
+  } finally { loadCheckInFlight = false }
+}
+/** [quit it]: only a process this server offered, checked by pid and start time. */
+async function handleQuitButton(instruction: string): Promise<string | null> {
+  const m = QUIT_RE.exec(instruction)
+  if (!m) return null
+  return quitProcess(Number(m[1]), Number(m[2]), { uid: process.getuid?.() ?? -1, protect: protectedPids(), offered: loadLoadState(RUNAWAY_FILE).offered })
+}
+
+const KEYSHELF_HOUR = 10
+let keyShelfInFlight = false
+/** Once a day from 10:00: tokens, certificates and profiles inside 14 days get their one nudge. */
+async function maybeCheckKeys(): Promise<void> {
+  if (keyShelfInFlight) return
+  const now = new Date()
+  if (now.getHours() < KEYSHELF_HOUR) return
+  const rt = loadRuntimeState()
+  if (rt.lastKeyShelfDay === todayStamp(now)) return
+  saveRuntimeState({ ...rt, lastKeyShelfDay: todayStamp(now) })   // stamp first: a pass that throws waits for tomorrow
+  keyShelfInFlight = true
+  try {
+    const shelf = loadShelf(KEYSHELF_FILE)
+    await scanShelf(shelf, defaultReaders(), Date.now())
+    const due = dueNudges(shelf, Date.now())
+    markShelfNudged(shelf, due)
+    saveShelf(KEYSHELF_FILE, shelf)   // persist before sending: a crash loses one nudge, never repeats one
+    const chat = loadAccess().allowFrom[0]
+    if (chat && due.length) await sendServerMessage(chat, formatNudges(due, Date.now()))
+  } finally { keyShelfInFlight = false }
+}
+
+const CLAUDE_PROJECTS = join(homedir(), '.claude', 'projects')
+/** A prompt typed in any session, Otto's own terminal included: the session the user is working in. */
+function liveSessionPrompt(h: unknown, pid: string | null): void {
+  const st = loadParachute(PARACHUTE_FILE)
+  if (noteLive(st, h, Number(pid) || undefined, Date.now(), { stateDir: STATE_DIR, projectsDir: CLAUDE_PROJECTS })) saveParachute(PARACHUTE_FILE, st)
+}
+let parkInFlight = false
+/** A plan reading at or over the line: snapshot the live session into a note for the reset. Sends nothing. */
+async function maybePark(u: PlanUsage): Promise<void> {
+  if (parkInFlight) return
+  const now = Date.now()
+  const resetAt = parkWindow(u, parachuteConfig(loadAccess().parachute).percent, now)
+  if (!resetAt) return
+  const st = loadParachute(PARACHUTE_FILE)
+  if (!shouldPark(st, resetAt, now)) return
+  parkInFlight = true
+  try {
+    const note = await snapshot(st.live!, resetAt, now)
+    saveParachute(PARACHUTE_FILE, { ...loadParachute(PARACHUTE_FILE), note }) // re-read: a prompt may have landed meanwhile
+  } finally { parkInFlight = false }
+}
+/** Every five minutes: a parked note whose window has reset goes out once. */
+async function checkParachute(now: number): Promise<void> {
+  const st = loadParachute(PARACHUTE_FILE)
+  const verdict = dueNote(st, now)
+  if (verdict === 'wait') return
+  const note = st.note!
+  saveParachute(PARACHUTE_FILE, { ...st, note: undefined, sent: note }) // persist before sending
+  const chat = loadAccess().allowFrom[0]
+  if (verdict === 'drop' || !chat) return
+  const m = formatParkedNote(note)
+  await sendServerMessage(chat, m.text, { buttons: m.buttons })
+}
+async function handleResumeButton(instruction: string): Promise<string | null> {
+  const m = RESUME_RE.exec(instruction)
+  if (!m) return null
+  return resumeWorkspace(m[1]!, { projectsDir: CLAUDE_PROJECTS, app: parachuteConfig(loadAccess().parachute).app, sent: loadParachute(PARACHUTE_FILE).sent })
+}
+
 
 const CALFEED_MS = 15 * 60_000
 let lastCalPoll = 0
@@ -3957,6 +4069,22 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'key_expiry',
+      title: 'Expiring keys and certificates',
+      annotations: { title: 'Expiring keys and certificates', readOnlyHint: false, openWorldHint: false },
+      description:
+        'The shelf of credentials that lapse. The GitHub token gh uses, Vercel tokens, Apple signing certificates and provisioning profiles are read once a day on their own; add anything else the user mentions ("the deploy token for the staging server expires 3 Nov") with action add: label in their words, expires as YYYY-MM-DD, rotate as the steps to replace it if they gave them. Names and dates only: never pass the secret itself — anything that looks like a key is refused. The channel sends one nudge 14 days out with the steps; do not set a reminder or mention it again. list shows everything with days left and any source it could not read; remove takes a label or id and only removes what was added by hand. claude.ai connectors are not on the shelf: they refresh themselves.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'add', 'remove'], description: 'Default list.' },
+          label: { type: 'string', description: 'add/remove: what it is, in their words ("staging deploy token").' },
+          expires: { type: 'string', description: 'add: YYYY-MM-DD.' },
+          rotate: { type: 'string', description: 'add: how to replace it, as they said it ("settings → developer → tokens"). Optional.' },
+        },
+      },
+    },
+    {
       name: 'mine_sent',
       title: 'Catch promises in sent mail',
       annotations: { title: 'Catch promises in sent mail', readOnlyHint: false, openWorldHint: false },
@@ -5174,6 +5302,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         return { content: [{ type: 'text', text }] }
       }
 
+      case 'key_expiry': {
+        const shelf = loadShelf(KEYSHELF_FILE)
+        const action = String(args.action ?? 'list')
+        let text: string
+        if (action === 'add') text = addManual(shelf, { label: String(args.label ?? ''), expires: String(args.expires ?? ''), ...(args.rotate ? { rotate: String(args.rotate) } : {}) }, Date.now())
+        else if (action === 'remove') text = removeItem(shelf, String(args.label ?? ''))
+        else return { content: [{ type: 'text', text: formatShelf(shelf, Date.now()) }] }
+        saveShelf(KEYSHELF_FILE, shelf)
+        return { content: [{ type: 'text', text }] }
+      }
+
       case 'mine_sent': {
         const id = String(args.message_id ?? '').trim()
         if (!id) throw new Error('message_id is required — it is the dedupe key')
@@ -5902,6 +6041,8 @@ function schedulerTick(): void {
     }
     // Is the desk watcher still rewriting its file? Cheap stat, five-minute cadence is plenty.
     observeInputs(INPUTS_FILE, DESK_STATE, now)
+    // A resume note parked near a plan limit, once its window has reset.
+    void checkParachute(now).catch(err => { process.stderr.write(`otto channel: parachute failed: ${err}\n`) })
   }
 
   // Distil yesterday's sessions into memory, once, overnight.
@@ -5924,6 +6065,13 @@ function schedulerTick(): void {
     lastDiskCheck = now
     void maybeCheckDisk().catch(err => { process.stderr.write(`otto channel: disk check failed: ${err}\n`) })
   }
+  // Every ten minutes: a process hot for hours, swap or memory pressure, thermal throttling.
+  if (now - lastLoadCheck >= LOAD_CHECK_MS) {
+    lastLoadCheck = now
+    void maybeCheckLoad().catch(err => { process.stderr.write(`otto channel: load check failed: ${err}\n`) })
+  }
+  // Once a day: credentials about to lapse.
+  void maybeCheckKeys().catch(err => { process.stderr.write(`otto channel: key shelf failed: ${err}\n`) })
 
   // After consolidation: close loops the evidence closed, compile house rules.
   try { maybeRunHygiene() } catch (err) {
@@ -7237,6 +7385,7 @@ async function handlePlanUsage(req: Request, server: Bun.Server<{ tokenId: strin
   const u = parsePlanUsage(body, Date.now())
   if (!u) return new Response(null, { status: 400 })
   try { writeFileSync(PLAN_USAGE_FILE, JSON.stringify(u) + '\n', { mode: 0o600 }) } catch {}
+  void maybePark(u).catch(err => { process.stderr.write(`otto channel: parachute park failed: ${err}\n`) })
   return new Response(null, { status: 204 })
 }
 
@@ -7252,13 +7401,19 @@ async function handlePlanUsage(req: Request, server: Bun.Server<{ tokenId: strin
 async function handleStatus(req: Request, server: Bun.Server<{ tokenId: string }>): Promise<Response> {
   const ip = server.requestIP(req)?.address ?? ''
   if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip)) return new Response(null, { status: 403 })
-  if (req.headers.get('x-claude-pid') !== sessionPid || req.method !== 'POST') return new Response(null, { status: 204 })
+  if (req.method !== 'POST') return new Response(null, { status: 204 })
+  if (req.headers.get('x-claude-pid') !== sessionPid) {
+    // Another session. Only its typed prompts are read, and only for the limit parachute.
+    if (req.headers.get('x-otto-hook') === 'prompt') { try { liveSessionPrompt(await req.json(), req.headers.get('x-claude-pid')) } catch {} }
+    return new Response(null, { status: 204 })
+  }
   // Read the body before answering: once the response is out, Bun has dropped it.
-  let h: { hook_event_name?: string; prompt?: string; tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown; transcript_path?: string }
+  let h: { hook_event_name?: string; prompt?: string; tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown; transcript_path?: string; cwd?: string; session_id?: string }
   try { h = await req.json() } catch { return new Response(null, { status: 400 }) }
   // Something typed straight into the terminal: a system line in the app, before
   // markRead and the typing/status code, because it is neither a tool call nor the app's turn.
   if (h.hook_event_name === 'UserPromptSubmit') {
+    try { liveSessionPrompt(h, sessionPid) } catch {}
     const text = promptSnippet(String(h.prompt ?? ''))
     if (text) {
       // Same ts as the history line, so the app can tell a live one from its replay.

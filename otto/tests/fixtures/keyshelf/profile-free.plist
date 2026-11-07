@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CreationDate</key>
+	<date>2026-01-01T00:00:00Z</date>
+	<key>ExpirationDate</key>
+	<date>2026-01-08T00:00:00Z</date>
+	<key>Name</key>
+	<string>Otto Free</string>
+	<key>UUID</key>
+	<string>22222222-3333-4444-8555-666666666666</string>
+</dict>
+</plist>
