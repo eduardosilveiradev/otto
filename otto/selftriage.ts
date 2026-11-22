@@ -10,7 +10,7 @@
  * quietly gone unfired.
  *
  * The first question after a restart is not "what is the stack" — it is "did I
- * do this to myself". Wave 3 installs code. A crash whose first occurrence
+ * do this to myself". Self-extension installs code. A crash whose first occurrence
  * lands within an hour of a self-install is that install until proven
  * otherwise, and reverting first and diagnosing second is the right order when
  * the diagnosis happens inside the thing that is crashing.
@@ -261,7 +261,7 @@ test('regression: ${crash.kind} — ${crash.message.replace(/'/g, "\\'").slice(0
 }
 
 /** The durable note, so the next session knows this happened without re-reading logs. */
-export function bugNote(i: Incident): { kind: 'loop'; text: string; tags: string[] } {
+export function bugNote(i: Incident): { kind: 'loop'; text: string; tags: string[]; source: string } {
   const cause = i.blamed
     ? `self-install ${i.blamed.id} (${i.blamed.what})`
     : i.crash
@@ -273,6 +273,7 @@ export function bugNote(i: Incident): { kind: 'loop'; text: string; tags: string
       `crash loop: ${i.loop.restarts} restarts from ${new Date(i.loop.firstAt).toISOString()}. ` +
       `Cause: ${cause}. ${i.action === 'revert' ? 'Reverted the install.' : 'Bug filed with a failing test.'}`,
     tags: ['crash', i.action],
+    source: `system:crashloop:${i.loop.firstAt}`,
   }
 }
 

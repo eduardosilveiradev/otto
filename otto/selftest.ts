@@ -2,7 +2,7 @@
 /**
  * A second Otto, wired to nothing.
  *
- * Wave 3 writes code that server.ts loads. There is no way to know whether that
+ * Self-extension writes code that server.ts loads. There is no way to know whether that
  * code loads without loading it, and loading it in the live session is the same
  * experiment as the deploy: if it is wrong, the thing that finds out is the
  * channel the user talks through.
@@ -98,7 +98,7 @@ Do exactly this and nothing else:
 1. List the tools the otto plugin exposes.
 2. Call list_triggers and report how many parsed.
 3. Call recall with the query "test" and report how many notes came back.
-4. Do NOT call reply, react, edit_message, create_trigger, update_trigger, delete_trigger, set_email_state, remember, or forget. This copy shares no state with the real one and any write here is wasted, but a call to reply would be a bug worth finding.
+4. Do NOT call reply, react, edit_message, delete_message, create_trigger, update_trigger, delete_trigger, set_email_state, remember, or forget. This copy shares no state with the real one and any write here is wasted, but a call to reply would be a bug worth finding.
 
 Then print exactly one line:
 

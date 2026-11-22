@@ -9,7 +9,7 @@
  *
  * So a burn overwrites the text, in place, everywhere the channel persisted it:
  *
- *   history.jsonl + history.1.jsonl   every line carrying that message id
+ *   history.jsonl + retained history.N.jsonl   every line carrying that message id
  *   the chat feed                     the dashboard's in-memory ring
  *   inbound-journal.json              the entry, and any reply_to_text quoting it
  *   queue.json                        a held outgoing message, if given its id

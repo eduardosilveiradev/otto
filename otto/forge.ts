@@ -18,8 +18,8 @@
  *
  * The pipeline is draft → dry-run → verdict, and all three are pure functions
  * over data. Spawning the twin (selftest.ts), reading history.jsonl and writing
- * the branch are plumbing. The install goes through selfedit.ts like everything
- * else in this wave — a forge that could write its own permission is a forge
+ * the branch are plumbing. The install goes through selfedit.ts like every other
+ * self-extension install path — a forge that could write its own permission is a forge
  * that only has to be talked into it once.
  */
 
@@ -57,13 +57,6 @@ export type ForgeRequest = {
   text: string
   origin: Origin
   at: string
-}
-
-/** "you should be able to..." and its cousins. Cheap, and deliberately narrow. */
-const ASK = /\b(you should (be able to|really)|can you learn|could you start|it'?d be (good|nice|useful) if you|why (don'?t|can'?t) you)\b/i
-
-export function looksLikeForgeRequest(text: string): boolean {
-  return ASK.test(text)
 }
 
 export function draftId(): string {

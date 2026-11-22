@@ -3,10 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
-  extractOtp, extractOtps, findCode, cleanSender, senderFromAddress, formatOtp, otpSettings,
+  extractOtps, findCode, cleanSender, senderFromAddress, formatOtp, maskOtp, otpAppFrame, otpSettings,
   emptyOtpState, otpVerdict, recordSent, scheduleDelete, dueDeletes, settleDelete, pruneOtp,
   loadOtp, saveOtp, otpKey, OTP_DEDUPE_MS, OTP_BURST_MAX, OTP_DELETE_GIVE_UP_MS,
 } from '../otp.ts'
+
+const extractOtp = (text: string) => extractOtps(text)[0] ?? null
 
 const tmp = mkdtempSync(join(tmpdir(), 'otto-otp-'))
 afterAll(() => { try { rmSync(tmp, { recursive: true }) } catch {} })
@@ -258,8 +260,9 @@ test('formatOtp is sender: code, or the bare code', () => {
 // ---------------------------------------------------------------------------
 
 test('settings default to on and ten minutes', () => {
-  expect(otpSettings(undefined)).toEqual({ enabled: true, deleteAfterMs: 600_000 })
-  expect(otpSettings({ enabled: false })).toEqual({ enabled: false, deleteAfterMs: 600_000 })
+  expect(otpSettings(undefined)).toEqual({ enabled: true, telegram: true, deleteAfterMs: 600_000 })
+  expect(otpSettings({ enabled: false })).toEqual({ enabled: false, telegram: true, deleteAfterMs: 600_000 })
+  expect(otpSettings({ telegram: false }).telegram).toBe(false)
   expect(otpSettings({ deleteAfterMinutes: 2 }).deleteAfterMs).toBe(120_000)
   expect(otpSettings({ deleteAfterMinutes: 0 }).deleteAfterMs).toBe(0)
   expect(otpSettings({ deleteAfterMinutes: -3 }).deleteAfterMs).toBe(600_000)
@@ -317,4 +320,24 @@ test('the store round-trips and moves a corrupt file aside', () => {
   expect(loadOtp(file)).toEqual(emptyOtpState())
   expect(readdirSync(tmp).some(n => n.startsWith('otp.json.corrupt-'))).toBe(true)
   expect(loadOtp(join(tmp, 'missing.json'))).toEqual(emptyOtpState())
+})
+
+// ---------------------------------------------------------------------------
+// The app's frame
+// ---------------------------------------------------------------------------
+
+test('app frame: the code rides the drawer, the bubble stays masked, and it is quiet', () => {
+  const f = JSON.parse(otpAppFrame('ab12cd34', { code: '482913', sender: 'Bank' }, '2026-01-01T00:00:00.000Z'))
+  expect(f).toEqual({
+    type: 'message', id: 'ab12cd34', text: 'Bank: ••••••', ts: '2026-01-01T00:00:00.000Z', buttons: [], quiet: true,
+    otp: { code: '482913', sender: 'Bank' },
+  })
+  expect(f.text).not.toContain('482913')
+})
+
+test('app frame: no sender, no empty sender field', () => {
+  const f = JSON.parse(otpAppFrame('x', { code: '7351', sender: '' }, '2026-01-01T00:00:00.000Z'))
+  expect(f.otp).toEqual({ code: '7351' })
+  expect(f.text).toBe(maskOtp({ code: '7351', sender: '' }))
+  expect(f.text).toBe('••••••')
 })

@@ -37,6 +37,35 @@ export async function run(cmd: string[], cwd?: string, timeoutMs = PROBE_TIMEOUT
   }
 }
 
+/** A failed command whose diagnostics the caller needs to report. */
+export class CommandError extends Error {
+  constructor(public stderr: string, public exitCode: number | null, public timedOut = false) {
+    super(stderr)
+    this.name = 'CommandError'
+  }
+}
+
+/** Unlike the best-effort probes, user actions must keep the reason they failed. */
+export async function runChecked(cmd: string[], cwd?: string, timeoutMs = PROBE_TIMEOUT_MS, env?: Record<string, string>): Promise<string> {
+  let proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>
+  try {
+    proc = Bun.spawn(cmd, { cwd, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', ...(env ? { env: { ...process.env, ...env } } : {}) })
+  } catch (err) {
+    throw new CommandError(err instanceof Error ? err.message : String(err), null)
+  }
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; try { proc.kill() } catch {} }, timeoutMs)
+  try {
+    const [out, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
+    ])
+    if (timedOut || code !== 0) throw new CommandError(stderr, code, timedOut)
+    return out.trim()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** Frontmost GUI app. Needs Accessibility permission; undefined without it. */
 export async function frontmostApp(): Promise<string | undefined> {
   if (process.platform !== 'darwin') return undefined

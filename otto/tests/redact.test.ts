@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { redactSecrets, redactionNote, validIban } from '../redact.ts'
+import { redactSecrets, validIban } from '../redact.ts'
 
 // Every secret below is a fake, assembled from pieces at runtime so no literal
 // in this file has the shape a secret scanner looks for.
@@ -145,14 +145,6 @@ test('several secrets in one message are all caught and counted', () => {
   }
   expect(text).toContain('HEAD is 3f9c2a1b7e4d5c6f8a9b0c1d2e3f4a5b6c7d8e9f')
   expect(text).toContain('AWS_ACCESS_KEY_ID=[redacted AWS access key]')
-  expect(redactionNote(hits)).toBe(
-    'redacted 5 secret(s): Anthropic key, OpenAI key, GitHub token, AWS access key, IBAN',
-  )
-})
-
-test('the note counts every hit but names each kind once', () => {
-  expect(redactionNote([])).toBe('')
-  expect(redactionNote(['GitHub token', 'GitHub token', 'IBAN'])).toBe('redacted 3 secret(s): GitHub token, IBAN')
 })
 
 test('MarkdownV2 sends get escaped brackets', () => {

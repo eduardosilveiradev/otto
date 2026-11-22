@@ -1,7 +1,6 @@
 import { test, expect } from 'bun:test'
 import {
   parseCrashes,
-  parseLaunchdState,
   detectCrashLoop,
   blameSelfInstall,
   triage,
@@ -51,17 +50,6 @@ test('the same crash from different lines shares a signature', () => {
   const b = signatureOf('TypeError', "cannot read x of undefined at /home/b/otto/server.ts:611:2")
   expect(a).toBe(b)
   expect(signatureOf('TypeError', 'something else')).not.toBe(a)
-})
-
-test('launchd state is read by key, not by layout', () => {
-  const s = parseLaunchdState(`
-  state = running
-  pid = 4823
-  runs = 17
-  last exit code = 1
-`)
-  expect(s).toEqual({ pid: 4823, runs: 17, lastExitStatus: 1 })
-  expect(parseLaunchdState('nothing useful here')).toEqual({})
 })
 
 // The noisy-direction failure: a message every time the user shuts the lid.

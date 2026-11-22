@@ -167,3 +167,42 @@ test('download looks up the media url, then fetches it into the inbox', async ()
   expect([...readFileSync(path)]).toEqual([1, 2, 3])
   expect((calls[1].init?.headers as Record<string, string>).Authorization).toBe('Bearer tok')
 })
+
+test('failed journaling keeps the offset and retry skips already journaled ids', async () => {
+  const file = join(tmp, 'journal-offset.json')
+  const journal = join(tmp, 'accepted.json')
+  writeFileSync(file, JSON.stringify({ offset: 1, owner: ME }))
+  writeFileSync(journal, '[]')
+  const batch = updates([msg({ id: 'first' }), msg({ id: 'second' })], 3)
+  const { fn, calls } = mockFetch([json(batch), json(batch)])
+  const got: string[] = []
+  let fail = true
+  const deliver = async (m: WaMessage) => {
+    const ids: string[] = JSON.parse(readFileSync(journal, 'utf8'))
+    if (ids.includes(m.id)) return
+    if (fail && m.id === 'second') throw new Error('disk full')
+    writeFileSync(journal, JSON.stringify([...ids, m.id]))
+    got.push(m.id)
+  }
+  await expect(new WhatsApp('tok', file, fn).pollOnce(deliver)).rejects.toThrow('disk full')
+  expect(JSON.parse(readFileSync(file, 'utf8')).offset).toBe(1)
+  fail = false
+  await new WhatsApp('tok', file, fn).pollOnce(deliver)
+  expect(calls[1].url).toContain('offset=1')
+  expect(got).toEqual(['first', 'second'])
+  expect(JSON.parse(readFileSync(file, 'utf8')).offset).toBe(3)
+})
+
+test('send retries one network error; download retries the lookup once', async () => {
+  const file = join(tmp, 'network.json')
+  writeFileSync(file, JSON.stringify({ offset: 1, owner: ME }))
+  const broken = () => { throw new Error('network') }
+  const send = mockFetch([broken, json({ messages: [{ id: 'sent' }] })])
+  expect(await new WhatsApp('tok', file, send.fn).sendText('hi')).toEqual(['sent'])
+  expect(send.calls).toHaveLength(2)
+  const dl = mockFetch([json({}, 503), json({ url: 'https://example.com/media' }), () => new Response('data')])
+  expect(readFileSync(await new WhatsApp('tok', file, dl.fn).download('media', 'txt', tmp), 'utf8')).toBe('data')
+  const failed = mockFetch([broken, broken])
+  await expect(new WhatsApp('tok', file, failed.fn).sendText('hi')).rejects.toThrow('network')
+  expect(failed.calls).toHaveLength(2)
+})

@@ -6,7 +6,6 @@ import {
   formatOffer,
   planInstall,
   installPaths,
-  looksLikeForgeRequest,
   type Draft,
   type Observation,
   type Sample,
@@ -37,12 +36,6 @@ function inb(ts: string, text: string): HistoryLine {
 function outb(ts: string, text: string): HistoryLine {
   return { ts, dir: 'out', text, kind: 'text' }
 }
-
-test('the ask is recognised without catching ordinary requests', () => {
-  expect(looksLikeForgeRequest('you should be able to watch that repo')).toBe(true)
-  expect(looksLikeForgeRequest("it'd be nice if you told me when CI breaks")).toBe(true)
-  expect(looksLikeForgeRequest('check the nocturne CI build')).toBe(false)
-})
 
 test('a draft without a claim cannot be built, because it could not be graded', () => {
   expect(() => draft({ claim: '  ' })).toThrow(/needs a claim/)

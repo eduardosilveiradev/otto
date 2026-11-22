@@ -98,7 +98,7 @@ function stateDir(): string {
   return dir
 }
 
-test('the checker alerts once across many runs, files one loop, and closes it on recovery', async () => {
+test('the checker alerts once across many runs, files one loop, and closes it after a day of recovery', async () => {
   const dir = stateDir()
   writeHeartbeat(join(dir, 'heartbeat.json'), beatAt(NOW - 3_600_000))
   const sent: string[] = []
@@ -115,12 +115,20 @@ test('the checker alerts once across many runs, files one loop, and closes it on
 
   const notes = JSON.parse(readFileSync(join(dir, 'notes.json'), 'utf8'))
   expect(notes).toHaveLength(1)
-  expect(notes[0]).toMatchObject({ kind: 'loop', status: 'open', source: 'deadman' })
+  expect(notes[0]).toMatchObject({ kind: 'loop', status: 'open', source: expect.stringContaining('system:deadman:') })
 
   writeHeartbeat(join(dir, 'heartbeat.json'), beatAt(NOW + 20 * CHECK_MS))
   const back = await runDeadman(deps(NOW + 20 * CHECK_MS + 1000))
   expect(back.did).toBe('recovered')
-  expect(JSON.parse(readFileSync(join(dir, 'notes.json'), 'utf8'))[0].status).toBe('done')
+  expect(JSON.parse(readFileSync(join(dir, 'notes.json'), 'utf8'))[0].status).toBe('open')
+  const recovered = NOW + 20 * CHECK_MS + 1000
+  for (const at of [recovered + 86_400_000 - 1, recovered + 86_400_000, recovered + 86_400_000 + CHECK_MS]) {
+    writeHeartbeat(join(dir, 'heartbeat.json'), beatAt(at))
+    await runDeadman(deps(at))
+    const n = JSON.parse(readFileSync(join(dir, 'notes.json'), 'utf8'))[0]
+    expect(n.status).toBe(at < recovered + 86_400_000 ? 'open' : 'done')
+    if (n.status === 'done') expect(n.closedReason).toBe('clear for 24h')
+  }
   expect(sent).toHaveLength(1)
 })
 
@@ -169,4 +177,28 @@ test('heartbeat file round-trips and rejects junk', () => {
   expect(readHeartbeat(f)).toBeNull()
   writeFileSync(f, 'garbage')
   expect(readHeartbeat(f)).toBeNull()
+})
+
+test('a missing or stale heartbeat resets the full-day recovery window', () => {
+  const state: DeadmanState = { clearSince: NOW - 86_400_000, lastCheckAt: NOW - CHECK_MS }
+  for (const hb of [null, beatAt(NOW - STALE_MS - 1)]) {
+    const next = evaluate(hb, state, NOW, { pidAlive: () => false }).state
+    expect(next.clearSince).toBeUndefined()
+    expect(evaluate(beatAt(NOW + CHECK_MS), next, NOW + CHECK_MS, { pidAlive: () => true }).state.clearSince).toBe(NOW + CHECK_MS)
+  }
+})
+
+test('deadman closes only its own open loops after a healthy day', async () => {
+  const dir = stateDir()
+  const notes = [
+    { id: 'system', source: 'system:deadman:incident' },
+    { id: 'legacy', source: 'deadman' },
+    { id: 'user', source: 'telegram' },
+    { id: 'reopened', source: 'system:deadman:incident', reopenedAt: new Date(NOW).toISOString() },
+  ].map(n => ({ kind: 'loop', status: 'open', text: 'outage: stopped responding', tags: [], createdAt: new Date(NOW - 2 * 86_400_000).toISOString(), ...n }))
+  writeFileSync(join(dir, 'notes.json'), JSON.stringify(notes))
+  writeFileSync(join(dir, 'deadman.json'), JSON.stringify({ clearSince: NOW - 86_400_000, lastCheckAt: NOW - CHECK_MS }))
+  writeHeartbeat(join(dir, 'heartbeat.json'), beatAt(NOW))
+  await runDeadman({ stateDir: dir, now: NOW, pidAlive: () => true, quiet: () => false, notify: async () => { throw new Error('must stay silent') } })
+  expect(JSON.parse(readFileSync(join(dir, 'notes.json'), 'utf8')).map((n: { status: string }) => n.status)).toEqual(['done', 'done', 'open', 'open'])
 })

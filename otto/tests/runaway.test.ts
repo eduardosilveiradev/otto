@@ -36,8 +36,8 @@ test('parseCpuTime reads ps time formats', () => {
 test('parsePs keeps padded days and comm spaces, skips junk', () => {
   const chrome = '/Applications/Google Chrome.app/Contents/Frameworks/Helper/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)'
   const out = [
-    '    1     0  16384 355:39.46 Sun Oct  4 09:38:37 2026     /sbin/launchd',
-    `  900   501 400000  12:00.10 Wed Oct 21 22:52:53 2026     ${chrome}`,
+    '    1     0  16384 355:39.46 Sun Oct  4 09:38:37 2026     /sbin/launchd 0 /sbin/launchd',
+    `  900   501 400000  12:00.10 Wed Oct 21 22:52:53 2026     ${chrome} 1 ${chrome}`,
     'not a process line',
   ].join('\n')
   const got = parsePs(out)
@@ -244,7 +244,7 @@ test('loadStatus', () => {
   const ok: LoadState = { ...fresh(), at: T0, sys: { swapUsedBytes: 7.3e9, pressure: 2, thermal: 0 } }
   const up = loadStatus(ok, T0 + MIN)
   expect(up.verdict).toBe('up')
-  expect(up.detail).toBe('swap 7.3 GB, pressure warn, thermal nominal')
+  expect(up.detail).toBe('swap 7.3 GB, pressure warn, thermal nominal; 0 automation orphans (0.0 GB RAM)')
   expect(loadStatus({ ...ok, swapHotSince: T0 }, T0 + MIN).verdict).toBe('degraded')
   expect(loadStatus(ok, T0 + 31 * MIN).verdict).toBe('degraded')
   const hot = loadStatus({ ...ok, procs: { a: { name: 'x', cpuSec: 1, rssKb: 1, at: T0, hotSince: T0 } } }, T0)

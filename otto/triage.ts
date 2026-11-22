@@ -11,8 +11,8 @@
  * of a workload, it is a property of a workload's hardest instance: reading a
  * price off a static page is Haiku work, reading a price off a page that moved
  * its layout is not, and a shadow evaluation of a drafted trigger is neither.
- * So the router looks at the item and picks a tier, and the cheap tier gets to
- * say "this needs a real turn" without being overruled.
+ * So the router looks at the item and picks a tier, and a cheap run that fails
+ * or comes back empty hands the item to the next tier up.
  *
  * Three tiers:
  *   haiku    mechanical, bounded, one rule, short input
@@ -102,36 +102,6 @@ export function routeModel(item: TriageItem): Route {
 // Escalation
 // ---------------------------------------------------------------------------
 
-/**
- * What a cheap tier is allowed to say back.
- *
- * `verdict` is the answer; `escalate` is the cheap model declining to be the
- * one who decides. Keeping those separate is what stops the tier from being a
- * quality downgrade: the small model's job includes recognising its own limit,
- * and the router honours that rather than second-guessing it.
- */
-export type CheapVerdict = {
-  /** Free text answer, or null when it refused to answer. */
-  verdict: string | null
-  /** The cheap model asking for a human-grade turn. */
-  escalate?: boolean
-  /** 0..1. Absent is treated as "did not say", not as "certain". */
-  confidence?: number
-  /** Set when the run itself broke — timeout, bad JSON, non-zero exit. */
-  error?: string
-}
-
-/** Below this a stated confidence is not worth acting on unreviewed. */
-const CONFIDENCE_FLOOR = 0.6
-
-export function shouldEscalate(v: CheapVerdict): boolean {
-  if (v.error) return true
-  if (v.escalate) return true
-  if (v.verdict === null) return true
-  if (v.confidence !== undefined && v.confidence < CONFIDENCE_FLOOR) return true
-  return false
-}
-
 /** The next tier up, or null when there is nowhere left to escalate. */
 export function nextTier(model: ModelId): ModelId | null {
   if (model === HAIKU) return SONNET
@@ -154,10 +124,4 @@ export function escalationPlan(item: TriageItem): Route[] {
     cur = next
   }
   return plan
-}
-
-/** For the spend line in the weekly changelog — never a cost estimate. */
-export function formatRoute(r: Route): string {
-  const name = r.model === MAIN ? 'main session' : r.model === HAIKU ? 'haiku' : 'sonnet'
-  return `${name} (${r.why})`
 }

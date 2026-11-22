@@ -44,11 +44,11 @@ export const IGNORE: Record<string, string> = {
 /** Hard ceiling the plugin instructions block must stay under. */
 export const INSTRUCTIONS_MAX = 2048
 
-// `state` is ~/.otto/state when the repo is cloned to ~/.otto: user data, not docs.
-const SKIP_DIRS = new Set(['node_modules', '.git', 'logs', 'runtime', 'state', '.venv', '__pycache__'])
+// `state` and `build` sit inside the clone at ~/.otto: user data and job clones, not docs.
+const SKIP_DIRS = new Set(['node_modules', '.git', 'logs', 'runtime', 'state', 'build', '.venv', '__pycache__'])
 const CODE_EXT = /\.(ts|py|sh|zsh|js|plist|json)$/
 
-function walk(root: string, dir = root, out: string[] = []): string[] {
+export function walk(root: string, dir = root, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     if (SKIP_DIRS.has(name)) continue
     const abs = join(dir, name)

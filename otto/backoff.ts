@@ -2,7 +2,7 @@
  * A cadence is a guess made once. The evidence it is wrong is six wakes in a
  * row with nothing to say, so the channel offers once to slow the trigger down:
  * [every 2h] / [daily] / [keep it]. This module only decides and rewrites a
- * copy; it never changes a trigger itself — the tap does (server.ts).
+ * copy; it never changes a trigger itself — the tap does (taps.ts).
  */
 import { Cron } from 'croner'
 import { gistOf } from './brief.ts'

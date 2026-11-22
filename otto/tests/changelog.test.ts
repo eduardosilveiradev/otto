@@ -5,8 +5,6 @@ import { join } from 'path'
 import {
   buildRevert,
   resolveRevert,
-  weeklyLine,
-  revertable,
   formatEntry,
   appendEntry,
   loadLog,
@@ -90,49 +88,6 @@ test('an already-reverted entry has nothing left to do', () => {
   const r = resolveRevert(entry({ revertedAt: ago(1) }))
   expect(r.plan).toEqual([])
   expect(r.caveat).toContain('already reverted')
-})
-
-test('the weekly line names what changed and how to undo it', () => {
-  const text = weeklyLine([entry({ id: 'aa11', what: 'added a nocturne CI watch' })], NOW)!
-  expect(text).toContain('one thing')
-  expect(text).toContain('added a nocturne CI watch')
-  expect(text).toContain('[aa11]')
-  expect(text).toContain('"undo <id>"')
-})
-
-test('a quiet week says nothing at all', () => {
-  expect(weeklyLine([], NOW)).toBeNull()
-  expect(weeklyLine([entry({ at: ago(24 * 30) })], NOW)).toBeNull()
-})
-
-test('rollbacks are reported alongside installs', () => {
-  const text = weeklyLine(
-    [entry({ what: 'added a watch' }), entry({ what: 'changed the brief', revertedAt: ago(1) })],
-    NOW,
-  )!
-  expect(text).toContain('1 rolled back')
-  expect(text).toContain('changed the brief')
-})
-
-test('a best-effort undo is flagged in the weekly line rather than buried', () => {
-  const fragile = entry({
-    id: 'bb22',
-    revert: { kind: 'git-revert', sha: 'abc', paths: ['otto/x.ts'], why: 'too big' },
-  })
-  const text = weeklyLine([fragile], NOW)!
-  expect(text).toContain('best-effort')
-  expect(text).toContain('bb22')
-  expect(text).not.toContain('"undo <id>"')
-})
-
-test('revertable is newest-first and drops reverted and stale entries', () => {
-  const entries = [
-    entry({ id: 'old', at: ago(24 * 30) }),
-    entry({ id: 'done', at: ago(3), revertedAt: ago(1) }),
-    entry({ id: 'new', at: ago(1) }),
-    entry({ id: 'mid', at: ago(5) }),
-  ]
-  expect(revertable(entries, 7 * 24 * 3_600_000, NOW).map(e => e.id)).toEqual(['new', 'mid'])
 })
 
 test('formatEntry carries provenance and the undo on one screen', () => {

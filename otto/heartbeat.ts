@@ -12,8 +12,8 @@
  *
  *   once per outage   an outage is identified by the last beat it followed, so a
  *                     checker that runs every five minutes for six hours raises
- *                     exactly one alert. A new beat closes the outage; the next
- *                     silence is a new one.
+ *                     exactly one alert. A new beat clears the outage; its loop
+ *                     closes after 24h healthy. The next silence is a new one.
  *   sleep is not an   a laptop lid closed for the night stops the server and the
  *   outage            checker alike, and the first thing the checker sees on wake
  *                     is a stale beat. A gap between checker runs that is much
@@ -79,6 +79,8 @@ export type Outage = {
 export type DeadmanState = {
   /** Epoch ms of the checker's previous run. */
   lastCheckAt?: number
+  /** First healthy check after the last outage; reset by any stale heartbeat. */
+  clearSince?: number
   outage?: Outage
 }
 
@@ -87,7 +89,7 @@ export type DeadmanAction =
   | { kind: 'none'; why: string }
   /** Tell the user, once. `pidAlive` says whether it is wedged or gone. */
   | { kind: 'raise'; since: number; silentMs: number; pidAlive: boolean }
-  /** The outage is over. Close its loop; say nothing. */
+  /** The outage is over. Start its quiet window; say nothing. */
   | { kind: 'recover'; outage: Outage }
 
 export type DeadmanVerdict = { action: DeadmanAction; state: DeadmanState }
@@ -107,12 +109,16 @@ export function evaluate(
   const checkMs = ctx.checkMs ?? CHECK_MS
   const next: DeadmanState = { ...state, lastCheckAt: now }
 
-  if (!hb) return { action: { kind: 'none', why: 'no heartbeat has ever been written' }, state: next }
+  if (!hb) {
+    delete next.clearSince
+    return { action: { kind: 'none', why: 'no heartbeat has ever been written' }, state: next }
+  }
 
   const silentMs = now - hb.at
   const fresh = silentMs <= staleMs
 
   if (fresh) {
+    next.clearSince ??= now
     if (state.outage && hb.at > state.outage.since) {
       delete next.outage
       // Never alerted, so there is nothing to close: the blip cleared itself.
@@ -121,6 +127,8 @@ export function evaluate(
     }
     return { action: { kind: 'none', why: 'beating' }, state: next }
   }
+
+  delete next.clearSince
 
   // Stale. Was the checker itself asleep? Then the server was too.
   const gap = state.lastCheckAt === undefined ? 0 : now - state.lastCheckAt

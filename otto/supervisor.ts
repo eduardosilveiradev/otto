@@ -13,6 +13,7 @@
 // in flight when a child died are answered with an error rather than left hanging.
 // Three deaths within 10s of starting each and it gives up: Claude Code then shows
 // the server as failed, which is the honest state.
+import { markRestart, failRestart, readRestart, restartStateDir } from './restart.ts'
 import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { createInterface } from 'readline'
@@ -27,7 +28,8 @@ let fastDeaths = 0
 let init: Record<string, unknown> | null = null
 let initialized: string | null = null
 const queue: string[] = []
-const inflight = new Set<string | number>()
+/** Requests the child hasn't answered, with what each one was (a tool's name). */
+const inflight = new Map<string | number, string>()
 
 const toClient = (msg: string) => process.stdout.write(msg + '\n')
 const log = (s: string) => process.stderr.write(`otto supervisor: ${s}\n`)
@@ -43,10 +45,20 @@ function start() {
   const replay = init !== null
   ready = !replay
   const c = spawn(process.execPath, [SERVER], {
-    stdio: ['pipe', 'pipe', 'inherit'],
+    stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, OTTO_SUPERVISED: '1' },
   })
   child = c
+  let errorAt = 0
+  let stderrTail = ''
+  c.stderr!.on('data', (chunk: Buffer) => {
+    process.stderr.write(chunk)
+    stderrTail = (stderrTail + chunk.toString()).slice(-8192)
+    if (/(?:Error|Exception)\s*:|uncaught|unhandled rejection/i.test(stderrTail)) {
+      errorAt = Date.now()
+      stderrTail = ''
+    }
+  })
 
   createInterface({ input: c.stdout! }).on('line', line => {
     const m = parse(line)
@@ -66,10 +78,13 @@ function start() {
 
   c.on('exit', (code, signal) => {
     if (child === c) { child = null; ready = false }
-    for (const id of inflight) {
-      toClient(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: 'otto restarted mid-request; try again' } }))
+    // A write may have landed before the exit (a job started, a message sent): a blind retry repeats it.
+    for (const [id, what] of inflight) {
+      toClient(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: `otto restarted while ${what} was running; it may already have taken effect, so check before trying again` } }))
     }
     inflight.clear()
+    const intent = readRestart(restartStateDir())
+    if ((code !== 0 && !(stopping && signal)) || (intent && errorAt >= intent.at)) failRestart(restartStateDir())
     if (stopping) process.exit(0)
     fastDeaths = Date.now() - started < 10_000 ? fastDeaths + 1 : 0
     if (fastDeaths >= 3) {
@@ -81,18 +96,38 @@ function start() {
   })
 }
 
-createInterface({ input: process.stdin })
+/** A T3 Code thread (a coding job or one of its council seats) never uses Otto's tools, and each
+ *  server it would start holds ~200 MB and a voice daemon. It gets an empty tool list instead.
+ *  OTTO_IN_T3=1 brings the real server back for a thread that needs it. */
+const inT3 = process.env.CLAUDE_CODE_ENTRYPOINT === 't3-code' && process.env.OTTO_IN_T3 !== '1'
+function serveNothing() {
+  createInterface({ input: process.stdin })
+    .on('line', line => {
+      const m = parse(line)
+      if (m?.id === undefined || !m.method) return
+      const result = m.method === 'initialize'
+        ? { protocolVersion: m.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'otto', version: 'off-in-t3' } }
+        : m.method === 'tools/list' ? { tools: [] } : null
+      toClient(JSON.stringify(result ? { jsonrpc: '2.0', id: m.id, result } : { jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'otto is off in T3 Code threads' } }))
+    })
+    .on('close', () => process.exit(0))
+}
+
+if (inT3) serveNothing()
+else createInterface({ input: process.stdin })
   .on('line', line => {
     const m = parse(line)
     if (m?.method === 'initialize') init = m
     else if (m?.method === 'notifications/initialized') initialized = line
-    if (m?.method !== undefined && m.id !== undefined) inflight.add(m.id)
+    if (m?.method !== undefined && m.id !== undefined) inflight.set(m.id, typeof m.params?.name === 'string' ? m.params.name : m.method)
     toChild(line)
   })
   .on('close', stop)
 
 function stop() {
+  if (inT3) process.exit(0)
   if (stopping) return
+  markRestart(restartStateDir(), 'supervisor stop')
   stopping = true
   if (!child) process.exit(0)
   child.stdin?.end()                       // server.ts shuts down when stdin ends
@@ -103,4 +138,4 @@ process.on('SIGTERM', stop)
 process.on('SIGINT', stop)
 process.on('SIGHUP', stop)
 
-start()
+if (!inT3) start()
