@@ -4,7 +4,7 @@
  * and only PATH from the real environment. The test plays Claude Code on its stdio, so every
  * notification the server would hand the session lands in `delivered`.
  */
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { delimiter, dirname, join } from 'path'
 import type { Subprocess } from 'bun'
@@ -115,4 +115,10 @@ export async function waitFor<T>(fn: () => T | undefined | false, ms = 15000): P
   const end = Date.now() + ms
   while (Date.now() < end) { const v = fn(); if (v) return v; await Bun.sleep(20) }
   return undefined
+}
+
+/** Turn self-edit on in a twin's access.json (it ships off); read per call, so no restart is needed. */
+export function selfEditOn(t: Twin): void {
+  const file = join(t.state, 'access.json')
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), selfEdit: true }))
 }

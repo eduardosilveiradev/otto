@@ -1,7 +1,7 @@
 /** How an approval ended reaches every open app, and one that was away can read it back. */
 import { test, expect, afterAll } from 'bun:test'
 import { createAppToken } from '../apptokens.ts'
-import { startTwin, phone, type Twin } from './apptwin.ts'
+import { startTwin, phone, selfEditOn, type Twin } from './apptwin.ts'
 
 const twins: Twin[] = []
 afterAll(async () => { for (const t of twins) await t.stop().catch(() => {}) })
@@ -10,6 +10,7 @@ const history = (t: Twin, q = '', auth = `Bearer ${t.token}`) => fetch(`${t.url}
 
 test('approval_done says approved, declined or expired, and the history read lists them newest first', async () => {
   const t = await startTwin(undefined, { OTTO_APPROVAL_TTL_MS: '1500' }); twins.push(t)
+  selfEditOn(t)
   const p = await phone(t)
   const other = await phone(t)
 

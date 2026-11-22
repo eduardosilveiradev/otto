@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test'
 import { chmodSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startTwin, waitFor, phone } from './apptwin.ts'
+import { startTwin, waitFor, phone, selfEditOn } from './apptwin.ts'
 import { startFakeT3 } from './faket3.ts'
 import { recordInbound } from '../redeliver.ts'
 
@@ -56,6 +56,7 @@ for (const event of ['job', 'email-scan', 'webhook']) {
 for (const armed of [false, true]) {
   test(`loadOrigin restores the unattended stamp; ask_approval window ${armed ? 'on' : 'off'}`, async () => {
     let t = await startTwin()
+    selfEditOn(t)
     let p: Awaited<ReturnType<typeof phone>> | undefined
     try {
       let windowId: string | undefined
