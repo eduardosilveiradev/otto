@@ -42,6 +42,14 @@ otto  →  a power bill came in, due friday. $214.
   warranty windows from receipts, promises you made in sent mail become open
   loops, and you hear about birthdays, expiring documents and domains a few
   days ahead.
+- **Coding jobs, if you use T3 Code.** Start jobs in your own projects, see
+  questions and PR status in the app, and organize the work on boards.
+- **App assistants.** Give a pip a role and selected tools. Use it directly
+  or bring it into a group conversation with Otto. The app also supports
+  a demo mode that hides personal context.
+- **Weekly and nightly upkeep.** Review open reminders, spending and merged
+  jobs in the app's week card. Otto can expire dated facts, surface memory for
+  review, and offer to clean up storage or apply tool updates.
 - **An iPhone app, if you want one.** The [Otto app](https://github.com/eduardosilveiradev/otto-app)
   (early beta, you build it yourself) is a second window onto the same chat,
   reached over Tailscale only — see [The iPhone app](#the-iphone-app).
@@ -202,6 +210,55 @@ read + control token. The calls pages answer 501 here: there is no phone
 relay in this repo. `bun otto/dash-dev.ts` runs the same API on a port of its
 own against your real state, with throwaway tokens, for working on a dashboard.
 
+## Optional integrations
+
+- **T3 Code.** Start T3 Code locally with your own projects and GitHub
+  account. Otto can use local T3 discovery or an explicitly configured
+  `OTTO_T3_URL`. Set `OTTO_T3_HOST` for a separate host you can reach over SSH.
+- **Voice and talk mode.** On Apple Silicon, run
+  `bash ~/.otto/otto/voice/setup.sh` to install local speech models. A
+  compatible app can stream microphone audio, receive partial transcripts
+  and play responses. On Linux, text works out of the box. To use the models
+  from Linux, run the voice sidecar on an Apple Silicon machine and connect
+  over an SSH tunnel. See [the voice setup](otto/voice/README.md).
+- **Mailbox follow-through.** Otto can summarize recurring charges and
+  offer to unsubscribe from supported newsletters. It shows a draft and waits
+  for your approval before sending email.
+- **Build slots.** Run heavy local commands with
+  `bun ~/.otto/otto/slots.ts run --name <label> -- <command>`. The default is
+  one build at a time. Set `slots.max` or `slots.load` in `access.json` to
+  change the concurrency or load threshold.
+- **Overnight work.** Start an overnight window from an authenticated app
+  message or button. The window lasts up to 24 hours and can defer Claude jobs
+  and pips near the plan limit. Only you can approve guarded changes or merges.
+- **Tool updates.** With `updates` in `access.json` (`{}` checks codex, claude,
+  bun, gh and brew; `tools` narrows the list), Otto checks once a week and
+  offers [apply tonight], which runs the updates in quiet hours.
+
+## Housekeeping Otto does by itself
+
+- **A fresh conversation every morning.** After the 04:00 memory pass, if the
+  session is idle, Otto asks it to save what is still open and then sends
+  `/clear` into its tmux pane. This needs `run.sh` running under tmux; without
+  tmux it skips. `"nightlyReset": false` in `access.json` turns it off.
+- **Memory review.** The same nightly job reviews the stored memories: it
+  merges duplicates and rewrites vague ones, at most 30 changes a night, and
+  archives every memory folder before the first write. Once a month Otto
+  measures how much memory every session loads before you type, and proposes
+  trims you approve in the app (`memoryDiet.enabled: false` turns that off).
+- **Dead modules.** Once a month it looks for tool-only modules nobody has
+  called in `deadSweep.idleDays` (default 60; `0` turns it off) and proposes a
+  branch that deletes them. Merging it is a guarded change you approve in the
+  app.
+- **The week card.** Sunday at 20:00 the app gets one recap of merged jobs,
+  spending and open reminders. Quiet weeks send nothing; `"weekCard": false`
+  turns it off.
+- **Storage.** Once a month Otto lists what developer work left behind and
+  nobody touched in 60 days (old T3 worktrees, build clones, caches, and on
+  macOS simulators and Xcode DerivedData) as one card with [evict] / [keep].
+  Nothing with uncommitted or unpushed work is listed, and nothing moves until
+  you tap. Evicted folders go to the Trash.
+
 ## Background work and your Claude plan
 
 Two things run on their own, on the Claude plan this computer is logged into:
@@ -235,10 +292,11 @@ session or an `/mcp` reconnect. Otto's own server is never listed.
 ## Messages a restart would have lost
 
 Every message you send is written to `~/.otto/state/inbound-journal.json`
-before Otto sees it, and crossed off once Otto replies or reacts in that chat.
-If Otto restarts before answering, it is handed the message again on the next
-start, at most once. Only messages younger than `redeliverHours` in
-`access.json` are replayed (default 6; `0` turns it off).
+before Otto sees it. On restart, Otto retries eligible messages whose delivery
+is unconfirmed. App messages and journaled events stop replaying once the session
+transcript confirms receipt. Messages known to be unread can have up to three
+replay attempts. Legacy and Telegram entries without read tracking get one.
+The default replay window is six hours. Set `redeliverHours` to `0` to turn it off.
 
 ## Always-on front door (optional)
 
@@ -413,8 +471,9 @@ reported about itself — `DOWN` when notifications are denied.
 
 **Voice (optional, Apple Silicon).** Off unless you run
 `bash ~/.otto/otto/voice/setup.sh`: then Telegram voice notes are transcribed
-on the Mac (Whisper) and Otto can answer out loud (Qwen3-TTS), both through
-MLX, nothing leaving the machine. Delete `~/.otto/state/voice/.venv` to turn it
+on the Mac (Parakeet, or Whisper for languages it lacks) and Otto can answer out
+loud (Qwen3-TTS), all through MLX, nothing leaving the machine. The app's live
+talk mode streams through the same sidecar. Delete `~/.otto/state/voice/.venv` to turn it
 off again. Details in [otto/voice/README.md](otto/voice/README.md).
 
 **Live flight status.** Off until `AERODATABOX_KEY` (AeroDataBox via RapidAPI,

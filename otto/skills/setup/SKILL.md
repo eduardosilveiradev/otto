@@ -238,7 +238,7 @@ And `access.json`, with what they answered:
 ```
 
 The timezone does **not** go here: the server reads the computer's own clock
-zone. It goes into `CLAUDE.md` in the next step. If the interview zone differs
+zone. It goes into CLAUDE.md in the next step. If the interview zone differs
 from this machine's zone (`readlink /etc/localtime` on macOS, `timedatectl
 show -p Timezone --value` on Linux), tell them — Otto follows the machine.
 
@@ -381,6 +381,12 @@ machine: `bash "$OTTO_HOME/scripts/uninstall.sh"` shows what it would remove,
 ---
 
 ## After installing
+
+If they use T3 Code, they can ask Otto to start jobs in their own projects.
+It is optional. On Apple Silicon, voice notes and live talk need
+`bash "$OTTO_HOME/otto/voice/setup.sh"`. Linux installs can keep using text
+or connect to an Apple Silicon voice sidecar over an SSH tunnel. The app uses
+the same tailnet-only listener in either case.
 
 Tell them, in one short message:
 
