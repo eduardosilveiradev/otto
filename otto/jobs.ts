@@ -43,12 +43,20 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from '
 import { randomBytes } from 'crypto'
 import { homedir } from 'os'
 import { join } from 'path'
-import { claudeBin, headlessMcpArgs, HEADLESS_SERVER_NAME } from './headless.ts'
+/** The GPT model new jobs and pips default to. Older ids (gpt-6.1-sol) stay valid when passed explicitly. */
+export const DEFAULT_GPT_MODEL = 'gpt-6.2-sol'
+/** Codex-run models: the default and the previous Sol. Never Astra. */
+export const isGptModel = (m?: string) => m === DEFAULT_GPT_MODEL || m === 'gpt-6.1-sol'
+
+import { claudeBin, headlessMcpArgs, headlessEnv, HEADLESS_SERVER_NAME } from './headless.ts'
 
 export type JobState = 'queued' | 'running' | 'parked' | 'done' | 'failed' | 'killed'
 
+export type TokenUsage = { inputTokens: number; outputTokens: number; cacheReadTokens: number }
+
 export type Job = {
   id: string
+  pip?: { overnightId?: string; codeJobsAllowed?: boolean; id: string; sessionId: string; resume: boolean; model: string; deadline: number; readyAt?: string; sessionStarted?: boolean; supervisorPid?: number }
   /** The prompt handed to the headless session, verbatim. */
   task: string
   state: JobState
@@ -63,6 +71,7 @@ export type Job = {
   wallClockMs: number
   tokenBudget: number
   tokensUsed: number
+  usage?: TokenUsage
   costUsd?: number
   pid?: number
   /** "overnight" defers to quiet hours; everything else is free-form labelling. */
@@ -221,7 +230,7 @@ export type JobEvent =
   | { type: 'wake' }
 
 const LEGAL: Record<JobState, JobState[]> = {
-  queued: ['running', 'parked', 'killed'],
+  queued: ['running', 'parked', 'failed', 'killed'],
   parked: ['queued', 'killed'],
   running: ['running', 'done', 'failed', 'killed'],
   done: [],
@@ -288,8 +297,9 @@ function targetState(job: Job, ev: JobEvent): JobState {
   }
 }
 
+/** Pips have no token ceiling (the user's call, 15 Nov 2026); their wake is still bounded by the wall clock. */
 export function budgetExceeded(job: Job): boolean {
-  return job.tokensUsed > job.tokenBudget
+  return !job.pip && job.tokensUsed > job.tokenBudget
 }
 
 export function overWallClock(job: Job, now: number): boolean {
@@ -393,6 +403,7 @@ export function scheduleJobs(
 
 export type StreamTally = {
   tokens: number
+  usage?: TokenUsage
   costUsd?: number
   /** Assistant prose so far — the partial return if this job gets killed. */
   text: string
@@ -435,6 +446,7 @@ export function tallyStream(prev: StreamTally, line: string): StreamTally {
     return {
       ...prev,
       tokens: prev.tokens + tokens,
+      usage: { inputTokens: (prev.usage?.inputTokens ?? 0) + (u.input_tokens ?? 0), outputTokens: (prev.usage?.outputTokens ?? 0) + (u.output_tokens ?? 0), cacheReadTokens: (prev.usage?.cacheReadTokens ?? 0) + (u.cache_read_input_tokens ?? 0) },
       text: text ? (prev.text ? `${prev.text}\n${text}` : text) : prev.text,
     }
   }
@@ -449,6 +461,7 @@ export function tallyStream(prev: StreamTally, line: string): StreamTally {
       // The result block restates the whole run's usage, so it replaces the
       // running count rather than adding to it.
       tokens: total || prev.tokens,
+      ...(total ? { usage: { inputTokens: u.input_tokens ?? 0, outputTokens: u.output_tokens ?? 0, cacheReadTokens: u.cache_read_input_tokens ?? 0 } } : {}),
       ...(typeof d.total_cost_usd === 'number' ? { costUsd: d.total_cost_usd } : {}),
       ...(typeof d.result === 'string' ? { result: d.result } : {}),
       ok: d.is_error !== true && d.subtype === 'success',
@@ -531,12 +544,11 @@ export const SCRATCH_ROOT = join(STATE_DIR, 'jobs')
  * Telegram token, leaving the real assistant deaf.
  */
 export function spawnJob(job: Job, o: { jobsFile?: string } = {}): number | undefined {
-  mkdirSync(job.scratchDir, { recursive: true, mode: 0o700 })
   // Typed loosely on purpose: a narrowed literal type would make the delete
   // below a compile error, and that delete is the line that matters most here.
-  const env: Record<string, string | undefined> = { ...process.env, OTTO_JOBS_FILE: o.jobsFile ?? JOBS_FILE }
-  delete env.OTTO_CHANNEL_HOST
+  const env = { ...headlessEnv(), OTTO_JOBS_FILE: o.jobsFile ?? JOBS_FILE }
   try {
+    mkdirSync(job.scratchDir, { recursive: true, mode: 0o700 })
     const proc = Bun.spawn(['bun', import.meta.path, '--run', job.id], {
       env,
       cwd: job.scratchDir,
@@ -571,41 +583,84 @@ export async function postResult(job: Job, o: { port: number; token: string }): 
  * built-ins are cut to the list with `--tools`, and otto's tools that act for the user are
  * refused unless the job named them.
  */
-const OTTO_WRITES = ['reply', 'react', 'edit_message', 'create_trigger', 'update_trigger', 'delete_trigger', 'remember', 'forget',
-  'burn', 'forge', 'revert_capability', 'reload', 'self_test', 'delegate', 'set_email_state', 'settings', 'snooze', 'note_contact',
-  'note_place', 'record_money', 'record_trip', 'record_document', 'mine_sent', 'consolidate_memory']
-export function jobToolArgs(tools: string[]): string[] {
+const OTTO_WRITES = ['overnight', 'reply', 'react', 'edit_message', 'delete_message', 'create_trigger', 'arm_draft_review', 'update_trigger', 'delete_trigger', 'remember', 'forget',
+  'code_job', 'code_job_answer', 'create_group', 'create_pip', 'add_to_group', 'pip_handoff', 'pip_activity', 'burn', 'forge', 'revert_capability', 'reload', 'self_test', 'delegate', 'set_email_state', 'settings', 'snooze', 'note_contact',
+  'note_place', 'pulse', 'record_money', 'record_split', 'key_expiry', 'record_trip', 'record_document', 'mine_sent', 'consolidate_memory']
+export function jobToolArgs(tools: string[], deny: string[] = []): string[] {
   const builtins = tools.filter(t => !t.startsWith('mcp__'))
-  const denied = OTTO_WRITES.map(t => `mcp__${HEADLESS_SERVER_NAME}__${t}`).filter(t => !tools.includes(t))
+  const denied = [...OTTO_WRITES.map(t => `mcp__${HEADLESS_SERVER_NAME}__${t}`).filter(t => !tools.includes(t)), ...deny]
   return ['--tools', builtins.join(','), '--allowedTools', tools.join(','), '--disallowedTools', denied.join(',')]
 }
 
-/** The supervisor. One job, from spawn to webhook, in its own process. */
+export const PIP_COMPACT_TOKENS = 120_000
+/** Codex gets only Otto's selected MCP tools; never the user's configured plugins or shell. */
+export function runnerArgs(job: Job, env: Record<string, string | undefined> = {}): string[] {
+  if (!isGptModel(job.pip?.model)) return ['-p', job.task, '--output-format', 'stream-json', '--verbose',
+    // A pip resumes one session forever, and the budget counts the whole context on every call: compact
+    // early so a long-lived pip doesn't spend its budget re-reading its own past (10 Nov 2026).
+    ...(job.pip ? ['--model', job.pip.model, job.pip.resume ? '--resume' : '--session-id', job.pip.sessionId, '--autocompact', String(PIP_COMPACT_TOKENS)] : []),
+    // A pip's Read/Grep/Glob stop at the state dir: it holds the .env and the webhook token, and a pip has WebFetch.
+    '--permission-mode', 'auto', ...jobToolArgs(job.tools, job.pip ? [`Read(/${STATE_DIR}/**)`] : []), ...headlessMcpArgs({ otto: true })]
+  const server = `mcp_servers.${HEADLESS_SERVER_NAME}`
+  const config = (key: string, value: unknown) => ['-c', `${key}=${JSON.stringify(value)}`]
+  const vars = ['OTTO_STATE_DIR', 'OTTO_PIP_ID', 'OTTO_PIP_JOB', 'OTTO_ORIGIN_PIN', 'OTTO_JOBS_FILE']
+    .filter(key => env[key] !== undefined).map(key => `${key}=${JSON.stringify(env[key])}`).join(',')
+  return ['exec', ...(job.pip.resume ? ['resume', job.pip.sessionId] : []), '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules',
+    '--model', job.pip.model, ...config('sandbox_mode', 'read-only'), ...config('approval_policy', 'never'),
+    ...config('features.shell_tool', false), ...config('features.apps', false), ...config('features.multi_agent', false), ...config('agents.enabled', false),
+    ...config('web_search', job.tools.includes('WebSearch') || job.tools.includes('WebFetch') ? 'live' : 'disabled'),
+    ...config(`${server}.command`, 'bun'), ...config(`${server}.args`, [join(import.meta.dir, 'server.ts')]),
+    ...config(`${server}.required`, true), ...config(`${server}.enabled_tools`, job.tools.filter(t => t.startsWith(`mcp__${HEADLESS_SERVER_NAME}__`)).map(t => t.split('__').at(-1))),
+    '-c', `${server}.env={${vars}}`, job.task]
+}
+
+export function tallyCodex(prev: StreamTally, line: string): StreamTally {
+  let d: any
+  try { d = JSON.parse(line) } catch { return prev }
+  if (d.type === 'item.completed' && d.item?.type === 'agent_message' && typeof d.item.text === 'string') return { ...prev, text: prev.text ? `${prev.text}\n${d.item.text}` : d.item.text, result: d.item.text }
+  if (d.type === 'turn.completed') return { ...prev, tokens: prev.tokens + (d.usage?.input_tokens ?? 0) + (d.usage?.output_tokens ?? 0), usage: { inputTokens: (prev.usage?.inputTokens ?? 0) + (d.usage?.input_tokens ?? 0), outputTokens: (prev.usage?.outputTokens ?? 0) + (d.usage?.output_tokens ?? 0), cacheReadTokens: (prev.usage?.cacheReadTokens ?? 0) + (d.usage?.cached_input_tokens ?? 0) }, ok: true }
+  if (d.type === 'turn.failed' || d.type === 'error') return { ...prev, ok: false, result: d.error?.message ?? d.message ?? 'Codex turn failed' }
+  return prev
+}
+
+/** A job's own otto is pinned tainted and is not the supervised session: it never reads or writes the live origin.json. */
+export function runnerEnv(job: Job, base: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...headlessEnv(base), OTTO_ORIGIN_PIN: 'external-content' }
+  if (job.pip) { env.OTTO_PIP_ID = job.pip.id; env.OTTO_PIP_JOB = job.id }
+  return env
+}
+
 async function runJob(id: string): Promise<void> {
   const file = process.env.OTTO_JOBS_FILE ?? JOBS_FILE
   const job = loadJobs(file).find(j => j.id === id)
-  if (!job) { process.stderr.write(`otto jobs: no job ${id}\n`); return }
+  if (!job || isTerminal(job.state)) { process.stderr.write(`otto jobs: no job ${id}\n`); return }
 
-  const claude = claudeBin()
-  if (!existsSync(claude)) {
-    updateJob(file, id, j => applyEvent(j, { type: 'fail', at: Date.now(), error: 'claude CLI not found' }))
+  if (job.pip && Date.now() >= job.pip.deadline) {
+    updateJob(file, id, j => applyEvent(j, { type: 'kill', at: Date.now(), reason: 'asked' })); return
+  }
+  const codex = isGptModel(job.pip?.model)
+  const cli = codex ? Bun.which('codex') : claudeBin()
+  if (!cli || !existsSync(cli)) {
+    updateJob(file, id, j => applyEvent(j, { type: 'fail', at: Date.now(), error: `${codex ? 'codex' : 'claude'} CLI not found` }))
     return
   }
 
-  // Its otto refuses self-edits and trigger writes: the task text may carry an email's words.
-  const env: Record<string, string | undefined> = { ...process.env, OTTO_ORIGIN_PIN: 'external-content' }
-  delete env.OTTO_CHANNEL_HOST
+  const env = runnerEnv(job)
 
-  const proc = Bun.spawn(
-    [claude, '-p', job.task, '--output-format', 'stream-json', '--verbose',
-      '--permission-mode', 'auto', ...jobToolArgs(job.tools), ...headlessMcpArgs({ otto: true })],
-    { env, cwd: job.scratchDir, stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' },
-  )
-  updateJob(file, id, j => applyEvent(j, { type: 'start', at: Date.now(), pid: proc.pid }))
+  let proc: ReturnType<typeof Bun.spawn>
+  try {
+    proc = Bun.spawn([cli, ...runnerArgs(job, env)], { env, cwd: job.scratchDir, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+  } catch (e) {
+    updateJob(file, id, j => applyEvent(j, { type: 'fail', at: Date.now(), error: `could not start runner: ${e}` })); return
+  }
+  const admitted = updateJob(file, id, j => isTerminal(j.state) ? j : ({ ...applyEvent(j, { type: 'start', at: Date.now(), pid: proc.pid }), ...(j.pip ? { pip: { ...j.pip, supervisorPid: process.pid, readyAt: new Date().toISOString() } } : {}) }))
+  if (!admitted || isTerminal(admitted.state)) { proc.kill(); return }
 
   let killedFor: 'wall-clock' | 'budget' | null = null
   const timer = setTimeout(() => { killedFor = 'wall-clock'; try { proc.kill() } catch {} }, job.wallClockMs)
 
+  // Drain stderr while the runner works; keep a bounded tail for visible failures.
+  const stderr = (async () => { let tail = ''; for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) tail = (tail + new TextDecoder().decode(chunk)).slice(-2000); return tail })()
   let tally = EMPTY_TALLY
   let buffer = ''
   try {
@@ -614,22 +669,29 @@ async function runJob(id: string): Promise<void> {
       const lines = buffer.split('\n')
       buffer = lines.pop() ?? ''
       for (const line of lines) {
-        tally = tallyStream(tally, line)
-        if (tally.tokens > job.tokenBudget && !killedFor) {
+        if (job.pip) {
+          try { const event = JSON.parse(line); if ((event.type === 'system' && event.subtype === 'init') || (codex && event.type === 'thread.started' && typeof event.thread_id === 'string')) updateJob(file, id, j => ({ ...j, pip: { ...j.pip!, ...(codex ? { sessionId: event.thread_id } : {}), sessionStarted: true } })) } catch {}
+        }
+        const previousTokens = tally.tokens
+        tally = codex ? tallyCodex(tally, line) : tallyStream(tally, line)
+        if (tally.tokens !== previousTokens || tally.costUsd !== undefined) updateJob(file, id, j => isTerminal(j.state) ? j : { ...j, tokensUsed: tally.tokens, usage: tally.usage, costUsd: tally.costUsd })
+        if (!job.pip && tally.tokens > job.tokenBudget && !killedFor) {
           killedFor = 'budget'
           try { proc.kill() } catch {}
         }
       }
     }
-    if (buffer) tally = tallyStream(tally, buffer)
+    if (buffer) tally = codex ? tallyCodex(tally, buffer) : tallyStream(tally, buffer)
   } catch {}
+  const code = await proc.exited, errorTail = await stderr
   clearTimeout(timer)
-  const code = await proc.exited
 
   const at = Date.now()
   const finished = updateJob(file, id, j => {
-    const withUsage = applyEvent(j, { type: 'progress', tokens: tally.tokens - j.tokensUsed, ...(tally.costUsd !== undefined ? { costUsd: tally.costUsd } : {}) })
+    if (isTerminal(j.state)) return j
+    const withUsage = applyEvent({ ...j, usage: tally.usage }, { type: 'progress', tokens: tally.tokens - j.tokensUsed, ...(tally.costUsd !== undefined ? { costUsd: tally.costUsd } : {}) })
     if (killedFor) return applyEvent(withUsage, { type: 'kill', at, reason: killedFor, partial: tally.text })
+    if (job.pip && (tally.ok !== true || code !== 0 || !(tally.result ?? tally.text).trim())) return applyEvent(withUsage, { type: 'fail', at, error: tally.result || errorTail || `runner exit ${code} without a successful result` })
     if (code !== 0 && !tally.result) return applyEvent(withUsage, { type: 'fail', at, error: `exit ${code}` })
     return applyEvent(withUsage, { type: 'finish', at, result: tally.result ?? tally.text })
   })

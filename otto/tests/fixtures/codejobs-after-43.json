@@ -1,0 +1,275 @@
+[
+  {
+    "id": "j61349d",
+    "title": "Example coding job",
+    "brief": "Complete the requested work in an isolated checkout.",
+    "project": "demo",
+    "projectId": "p1",
+    "branch": "feat/cmd-number-projects",
+    "threadId": "thread-j61349d",
+    "agent": "T3 Code",
+    "where": "local",
+    "model": "Opus 5.5",
+    "createdAt": "2026-11-05T17:09:44.039Z",
+    "startedAt": "2026-11-05T17:09:44.039Z",
+    "tokenBudget": 400000,
+    "steps": [
+      {
+        "ts": "2026-11-05T17:09:44.039Z",
+        "text": "Handed off to T3 Code",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T17:09:44.039Z",
+        "text": "Created worktree",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T17:41:29.399Z",
+        "text": "Opened PR #4",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T17:41:29.578Z",
+        "text": "Opened PR #4",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T17:41:30.016Z",
+        "text": "Opened PR #4",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:13:16.000Z",
+        "text": "Merged PR #4",
+        "note": "on GitHub"
+      }
+    ],
+    "repo": "example/demo-app",
+    "tokensUsed": 851767
+  },
+  {
+    "id": "j68e7f4",
+    "title": "Example coding job",
+    "brief": "Complete the requested work in an isolated checkout.",
+    "project": "demo",
+    "projectId": "p1",
+    "branch": "feat/usage-page",
+    "threadId": "thread-j68e7f4",
+    "agent": "T3 Code",
+    "where": "local",
+    "model": "Opus 5.5",
+    "createdAt": "2026-11-05T17:17:35.347Z",
+    "startedAt": "2026-11-05T17:17:35.347Z",
+    "tokenBudget": 400000,
+    "steps": [
+      {
+        "ts": "2026-11-05T17:17:35.347Z",
+        "text": "Handed off to T3 Code",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T17:17:35.347Z",
+        "text": "Created worktree",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T17:42:32.663Z",
+        "text": "Opened PR #5",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:14:25.000Z",
+        "text": "Merged PR #5",
+        "note": "on GitHub"
+      }
+    ],
+    "repo": "example/demo-app",
+    "tokensUsed": 587923
+  },
+  {
+    "id": "j8790b4",
+    "title": "Example coding job",
+    "brief": "Complete the requested work in an isolated checkout.",
+    "project": "demo",
+    "projectId": "p1",
+    "branch": "feat/cmd-number-projects",
+    "threadId": "thread-j8790b4",
+    "agent": "T3 Code",
+    "where": "local",
+    "model": "GPT 6.1 Sol",
+    "createdAt": "2026-11-05T17:44:05.425Z",
+    "startedAt": "2026-11-05T17:44:05.425Z",
+    "tokenBudget": 400000,
+    "steps": [
+      {
+        "ts": "2026-11-05T17:44:05.425Z",
+        "text": "Handed off to T3 Code",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T17:44:05.425Z",
+        "text": "Created worktree",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:13:16.000Z",
+        "text": "Merged PR #4",
+        "note": "on GitHub"
+      }
+    ],
+    "repo": "example/demo-app",
+    "tokensUsed": 73269
+  },
+  {
+    "id": "j2e29ca",
+    "title": "Example coding job",
+    "brief": "Complete the requested work in an isolated checkout.",
+    "project": "demo",
+    "projectId": "p1",
+    "branch": "feat/usage-page",
+    "threadId": "thread-j2e29ca",
+    "agent": "T3 Code",
+    "where": "local",
+    "model": "GPT 6.1 Sol",
+    "createdAt": "2026-11-05T17:44:07.479Z",
+    "startedAt": "2026-11-05T17:44:07.479Z",
+    "tokenBudget": 400000,
+    "steps": [
+      {
+        "ts": "2026-11-05T17:44:07.479Z",
+        "text": "Handed off to T3 Code",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T17:44:07.479Z",
+        "text": "Created worktree",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:14:25.000Z",
+        "text": "Merged PR #5",
+        "note": "on GitHub"
+      }
+    ],
+    "repo": "example/demo-app",
+    "tokensUsed": 65780
+  },
+  {
+    "id": "j2dcd76",
+    "title": "Example coding job",
+    "brief": "Complete the requested work in an isolated checkout.",
+    "project": "demo",
+    "projectId": "p1",
+    "branch": "otto/review-squash-merge-train-7-desktop-prs--2dcd76",
+    "threadId": "thread-j2dcd76",
+    "agent": "T3 Code",
+    "where": "local",
+    "model": "GPT 6.1 Sol",
+    "createdAt": "2026-11-05T18:08:56.723Z",
+    "startedAt": "2026-11-05T18:08:56.723Z",
+    "tokenBudget": 400000,
+    "steps": [
+      {
+        "ts": "2026-11-05T18:08:56.723Z",
+        "text": "Handed off to T3 Code",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:08:56.723Z",
+        "text": "Created worktree",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:17:52.937Z",
+        "text": "Opened PR #5",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:10:52.000Z",
+        "text": "Merged PR #5",
+        "note": "on GitHub"
+      }
+    ],
+    "repo": "example/otto-app",
+    "tokensUsed": 149576
+  },
+  {
+    "id": "j9b7417",
+    "title": "Example coding job",
+    "brief": "Complete the requested work in an isolated checkout.",
+    "project": "demo",
+    "projectId": "p1",
+    "branch": "feat/pr-timeline",
+    "threadId": "thread-j9b7417",
+    "agent": "T3 Code",
+    "where": "local",
+    "model": "Opus 5.5",
+    "createdAt": "2026-11-05T18:12:40.384Z",
+    "startedAt": "2026-11-05T18:12:40.384Z",
+    "tokenBudget": 400000,
+    "steps": [
+      {
+        "ts": "2026-11-05T18:12:40.384Z",
+        "text": "Handed off to T3 Code",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:12:40.384Z",
+        "text": "Created worktree",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:17:56.124Z",
+        "text": "Opened PR #45",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:52:46.000Z",
+        "text": "Merged PR #45",
+        "note": "on GitHub"
+      }
+    ],
+    "repo": "example/otto",
+    "tokensUsed": 195766
+  },
+  {
+    "id": "j2fe04b",
+    "title": "Example coding job",
+    "brief": "Complete the requested work in an isolated checkout.",
+    "project": "demo",
+    "projectId": "p1",
+    "branch": "otto/review-squash-merge-train-2-core-43-45-d-2fe04b",
+    "threadId": "thread-j2fe04b",
+    "agent": "T3 Code",
+    "where": "local",
+    "model": "GPT 6.1 Sol",
+    "createdAt": "2026-11-05T18:38:07.327Z",
+    "startedAt": "2026-11-05T18:38:07.327Z",
+    "tokenBudget": 400000,
+    "steps": [
+      {
+        "ts": "2026-11-05T18:38:07.327Z",
+        "text": "Handed off to T3 Code",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:38:07.327Z",
+        "text": "Created worktree",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:39:17.115Z",
+        "text": "Opened PR #11",
+        "note": "Example handoff"
+      },
+      {
+        "ts": "2026-11-05T18:54:32.000Z",
+        "text": "Merged PR #11",
+        "note": "on GitHub"
+      }
+    ],
+    "repo": "example/demo-app",
+    "tokensUsed": 149713
+  }
+]

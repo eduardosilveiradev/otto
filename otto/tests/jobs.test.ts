@@ -270,3 +270,9 @@ test('a job gets only its built-ins, and none of otto\'s writes it did not name'
   expect(denied).not.toContain('mcp__plugin_otto_otto__remember')
   expect(jobToolArgs(['mcp__plugin_otto_otto__recall']).slice(0, 2)).toEqual(['--tools', ''])
 })
+
+
+test('a runner that cannot start can fail while still queued', () => {
+  const job = createJob({ task: 'Check', tools: ['Read'] }, { scratchRoot: '/tmp/jobs', now: 0 })
+  expect(applyEvent(job, { type: 'fail', at: 1, error: 'CLI not found' })).toMatchObject({ state: 'failed', error: 'CLI not found' })
+})
