@@ -1,5 +1,5 @@
 {
-  "description": "Each tool call becomes a live status line and a step in the Otto app's typing bubble (server.ts handleStatus); screenshot tools also post their image, Stop marks the steps done, and UserPromptSubmit puts a prompt typed in the terminal into the app as a short system line. UserPromptSubmit also tells the channel which session the user last typed in (session id, cwd, transcript path and the prompt's first words, for the limit parachute); nothing else from other sessions is read. Silent and instant when the channel isn't running.",
+  "description": "Each tool call becomes a live status line and a step in the Otto app's typing bubble (http.ts handleStatus); screenshot tools and every Claude in Chrome call also post their result (image, page title and URL) for the app's screenshot and live browser tile, Bash posts its result so a simulator or emulator Otto drives shows in the same tile, Stop marks the steps done, and UserPromptSubmit puts a prompt typed in the terminal into the app as a short system line. UserPromptSubmit also tells the channel which session the user last typed in (session id, cwd, transcript path and the prompt's first words, for the limit parachute); nothing else from other sessions is read. Silent and instant when the channel isn't running. Write, Edit, MultiEdit and NotebookEdit in Otto's own session also ask the channel whether SELFEDIT.md allows the write (hooks/selfedit-gate.ts) and are refused with exit 2 when it doesn't. SessionStart after a compaction or /clear prints the user's rules (feedback memories, this project's first) back into context (hooks/rules-reload.ts).",
   "hooks": {
     "PreToolUse": [
       {
@@ -11,11 +11,21 @@
             "timeout": 2
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "OTTO_CLAUDE_PID=$PPID bun \"${CLAUDE_PLUGIN_ROOT}/hooks/selfedit-gate.ts\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__.*([Ss]creenshot|computer|zoom).*",
+        "matcher": "Bash|mcp__(claude-in-chrome__.*|.*([Ss]creenshot|computer|zoom).*)",
         "hooks": [
           {
             "type": "command",
@@ -43,6 +53,18 @@
             "type": "command",
             "command": "u=$(cat \"${OTTO_STATE_DIR:-$HOME/.otto/state}/status-url\" 2>/dev/null) && curl -s -m 0.3 -H \"X-Claude-Pid: $PPID\" -H 'X-Otto-Hook: prompt' -H 'Content-Type: application/json' --data-binary @- \"$u\" >/dev/null 2>&1; exit 0",
             "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/rules-reload.ts\"",
+            "timeout": 10
           }
         ]
       }
