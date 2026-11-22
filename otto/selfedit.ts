@@ -1,9 +1,10 @@
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { homedir } from 'node:os'
 /**
  * What Otto is allowed to change about Otto.
  *
- * Wave 3 hands the assistant a pen and points it at its own source. Everything
- * else in this wave — the forge, the miner, the changelog, the canary — is a
+ * Self-extension hands the assistant a pen and points it at its own source. Everything
+ * else in self-extension — the forge, the miner, the changelog, the canary — is a
  * way of producing a diff; this is the only thing standing between a produced
  * diff and a written file.
  *
@@ -42,7 +43,7 @@ export type Origin =
   | 'model-authored'
   /** A fired trigger or a scheduled scan. Nobody is in the loop this second. */
   | 'triggered'
-  /** Traces to email, a webhook, a fetched page, or an attachment. */
+  /** Contains email (including scans and mail attachments) or a webhook. */
   | 'external-content'
 
 export type Tier =
@@ -56,7 +57,8 @@ export type Tier =
 export type Proof =
   | { kind: 'none' }
   | { kind: 'tapped'; buttonData: string }
-  | { kind: 'typed'; text: string }
+  /** `paths`, when set, is all it clears: an app approval covers the files its screen listed and nothing else. */
+  | { kind: 'typed'; text: string; paths?: string[] }
 
 export type Decision = {
   /** What this change requires. */
@@ -102,7 +104,8 @@ export function matchesTypedPhrase(text: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Rules are matched against the NORMALISED path and anchored with `(^|/)`, so
+ * Rules are matched against the NORMALISED, LOWER-CASED path (the Mac's disk is
+ * case-insensitive, so `otto/Server.ts` is `otto/server.ts`) and anchored with `(^|/)`, so
  * one rule covers both `otto/server.ts` and the absolute form. Order matters:
  * first match wins, so the narrow guarded rules sit above the broad ones.
  */
@@ -111,39 +114,41 @@ type Rule = { re: RegExp; tier: Tier; why: string }
 const RULES: Rule[] = [
   // --- guarded: the channel, the rails, the credentials, the boot path ------
   { re: /(^|\/)otto\/server\.ts$/, tier: 'guarded', why: 'the channel and the send path' },
-  { re: /(^|\/)otto\/queue\.ts$/, tier: 'guarded', why: 'the hold policy — what reaches you and when' },
+  { re: /(^|\/)otto\/toolcalls\.ts$/, tier: 'guarded', why: 'the tool handlers and their provenance gates' },
+  { re: /(^|\/)otto\/http\.ts$/, tier: 'guarded', why: 'the webhook and the app\'s authenticated routes' },
+  { re: /(^|\/)otto\/taps\.ts$/, tier: 'guarded', why: 'taps the server carries out with proof of a tap' },
+  { re: /(^|\/)otto\/chores\.ts$/, tier: 'guarded', why: 'what the server starts on its own, installs and sweeps included' },
+  { re: /(^|\/)otto\/dispatch\.ts$/, tier: 'guarded', why: 'the walkers that apply the gates and offer checks' },
+  { re: /(^|\/)otto\/tools\.ts$/, tier: 'guarded', why: 'the tool descriptions the session acts on' },
+  { re: /(^|\/)otto\/(queue|send|delivery|buttons)\.ts$/, tier: 'guarded', why: 'the hold policy — what reaches you and when' },
   { re: /(^|\/)otto\/(tests\/)?selfedit\.(ts|test\.ts)$/, tier: 'guarded', why: 'the self-edit rails themselves' },
-  { re: /(^|\/)SELFEDIT\.md$/, tier: 'guarded', why: 'the self-edit rails themselves' },
+  { re: /(^|\/)selfedit\.md$/, tier: 'guarded', why: 'the self-edit rails themselves' },
   { re: /(^|\/)access\.json$/, tier: 'guarded', why: 'the Telegram allowlist' },
   { re: /(^|\/)\.env$/, tier: 'guarded', why: 'secrets' },
   { re: /(^|\/)bot\.pid$/, tier: 'guarded', why: 'the poller claim' },
   { re: /(^|\/)run\.sh$/, tier: 'guarded', why: 'the session boot path' },
-  { re: /(^|\/)launchd\//, tier: 'guarded', why: 'the launchd job' },
+  { re: /(^|\/)otto\/(session-loop\.sh|tmux\.conf|restart\.ts)$/, tier: 'guarded', why: 'run.sh executes it' },
   { re: /(^|\/)templates\/otto\.(service|plist)\.template$/, tier: 'guarded', why: 'the service definition' },
-  { re: /(^|\/)scripts\/(install|otto-ctl|migrate-state)\.sh$/, tier: 'guarded', why: 'the install and service path' },
-  { re: /(^|\/)allow-channel-plugin\.sh$/, tier: 'guarded', why: 'the channel-plugin permission' },
+  { re: /(^|\/)scripts\/(install|uninstall|otto-ctl|migrate-state)\.sh$/, tier: 'guarded', why: 'the install and service path' },
+  { re: /(^|\/)scripts\/allow-channel-plugin\.sh$/, tier: 'guarded', why: 'the channel-plugin permission' },
   { re: /(^|\/)\.claude-plugin\//, tier: 'guarded', why: 'the plugin manifest' },
   { re: /(^|\/)otto\/(package\.json|bun\.lock)$/, tier: 'guarded', why: 'the dependency supply chain' },
   { re: /(^|\/)otto\/\.mcp\.json$/, tier: 'guarded', why: 'the MCP server wiring' },
-  { re: /(^|\/)scripts\/hooks\//, tier: 'guarded', why: 'git hooks run without asking' },
-  { re: /(^|\/)scripts\/canary-deploy\.sh$/, tier: 'guarded', why: 'it holds the deploy revert' },
   { re: /(^|\/)\.claude\/settings(\.local)?\.json$/, tier: 'guarded', why: 'harness permissions' },
   // The rest of the rails: who a request is from, how installs run, who holds a token.
-  { re: /(^|\/)otto\/(origin|forge|supervisor|headless|jobs|redact|apptokens|pairing|dash|capability)\.ts$/, tier: 'guarded', why: 'the safety rails and the credentials' },
+  { re: /(^|\/)otto\/(origin|overnight|forge|supervisor|headless|jobs|redact|apptokens|pairing|dash|capability)\.ts$/, tier: 'guarded', why: 'the safety rails and the credentials' },
   { re: /(^|\/)hooks(\/|\.json$)/, tier: 'guarded', why: 'hooks run shell on every tool call' },
   { re: /(^|\/)node_modules\//, tier: 'guarded', why: 'the dependency supply chain' },
   { re: /(^|\/)\.claude\/(agents|commands|plugins|skills)\//, tier: 'guarded', why: 'it changes every Claude session on this machine' },
-  { re: /(^|\/)\.claude\/CLAUDE\.md$/, tier: 'guarded', why: 'it changes every Claude session on this machine' },
+  { re: /(^|\/)\.claude\/claude\.md$/, tier: 'guarded', why: 'it changes every Claude session on this machine' },
 
   // --- confirmed: prose, recipes, and the rest of the module tree -----------
   { re: /(^|\/)\.claude\/memory\//, tier: 'confirmed', why: 'durable memory' },
-  { re: /(^|\/)(CLAUDE|README|AGENTS)\.md$/, tier: 'confirmed', why: 'standing instructions' },
+  { re: /(^|\/)(claude|readme|agents)\.md$/, tier: 'confirmed', why: 'standing instructions' },
   { re: /(^|\/)otto\/skills\//, tier: 'confirmed', why: 'a recipe or skill' },
   { re: /(^|\/)otto\/[^/]+\.ts$/, tier: 'confirmed', why: 'an Otto module' },
   { re: /(^|\/)otto\//, tier: 'confirmed', why: 'Otto internals' },
   { re: /(^|\/)scripts\//, tier: 'confirmed', why: 'a repo script' },
-  { re: /(^|\/)(music|voice|frontdesk|power)\//, tier: 'confirmed', why: 'a sidecar tool' },
-  { re: /(^|\/)WIRING-[^/]+\.md$/, tier: 'confirmed', why: 'wiring notes' },
   // The /settings page. Pseudo-paths minted only by otto/settings.ts, each
   // naming one field; an id the page does not mint falls through to guarded.
   { re: /^setting:(scan|quiet|voice|busy|trigger-[a-z0-9-]+)$/i, tier: 'confirmed', why: 'a switch on the settings page' },
@@ -156,14 +161,11 @@ const RULES: Rule[] = [
   { re: /^recipe-param:/, tier: 'unattended', why: 'recipe parameters' },
 ]
 
-/** Roots we recognise. A path resolving outside all of them is guarded. */
-const KNOWN_ROOT = /(^|\/)(otto|scripts|templates|launchd|music|voice|frontdesk|power|logs|runtime|\.claude|\.claude-plugin)(\/|$)/
-
 /**
  * Collapse `.`, `..`, duplicate separators and a `~` prefix, so that
  * `otto/../otto/server.ts` and `./otto/server.ts` cannot dodge a rule that
  * `otto/server.ts` matches. A path that climbs above its own root keeps the
- * leading `..`, which fails the KNOWN_ROOT check below — which is the point.
+ * leading `..`, which tierForPath refuses before any rule — which is the point.
  */
 export function normalizePath(raw: string): string {
   let p = raw.trim().replace(/\\/g, '/')
@@ -183,26 +185,73 @@ export function normalizePath(raw: string): string {
 }
 
 /** The repo this file lives in. An absolute or ~ path outside it is guarded, whatever it looks like. */
-const REPO_ROOT = normalizePath(join(import.meta.dir, '..'))
+const REPO_ROOT = normalizePath(join(import.meta.dir, '..')).toLowerCase()
 
 /** The tier one path demands, and the sentence explaining why. */
 export function tierForPath(raw: string): { tier: Tier; why: string } {
-  const p = normalizePath(raw)
+  let p = normalizePath(raw).toLowerCase()
   if (!p) return { tier: 'guarded', why: 'an empty path' }
   const t = raw.trim()
-  if ((t.startsWith('/') || t.startsWith('~')) && !p.startsWith(REPO_ROOT + '/') && !/(^|\/)\.claude\/memory\//.test(p)) {
+  // Rules see the repo-relative path: on a home like /test-home/otto, `(^|/)otto/` would match the home dir itself.
+  if (p.startsWith(REPO_ROOT + '/')) p = p.slice(REPO_ROOT.length + 1)
+  else if ((t.startsWith('/') || t.startsWith('~')) && !/(^|\/)\.claude\/memory\//.test(p)) {
     return { tier: 'guarded', why: 'outside the Otto repo' }
   }
+  // Before the rules: `../other/scripts/x.sh` is not this repo's scripts/.
+  if (p.startsWith('..')) return { tier: 'guarded', why: 'outside every path Otto is supposed to touch' }
   for (const r of RULES) {
     if (r.re.test(p)) return { tier: r.tier, why: r.why }
   }
   // Fail closed. A path nobody has thought about is more likely to be a rename
   // that outran this table than something genuinely harmless, and the cost of
   // being wrong in the two directions is not remotely symmetrical.
-  if (!KNOWN_ROOT.test(p) || p.startsWith('..')) {
-    return { tier: 'guarded', why: 'outside every path Otto is supposed to touch' }
-  }
-  return { tier: 'confirmed', why: 'an unrecognised file inside the repo' }
+  return { tier: 'guarded', why: 'a path no rule names' }
+}
+
+/** One spelling per file: relative paths are the repo's, `~` is home, case folded. */
+function pathKey(raw: string): string {
+  const t = raw.trim().replace(/\\/g, '/')
+  return normalizePath(resolve(REPO_ROOT, t.startsWith('~/') ? join(homedir(), t.slice(2)) : t)).toLowerCase()
+}
+
+/** The file a Write/Edit/NotebookEdit hook call touches, absolute: a relative one is the session's cwd's, not the repo's. */
+export function hookPath(h: { cwd?: unknown; tool_input?: Record<string, unknown> } | undefined): string {
+  const p = String(h?.tool_input?.file_path ?? h?.tool_input?.notebook_path ?? '').trim()
+  return p && !p.startsWith('/') && !p.startsWith('~') && typeof h?.cwd === 'string' ? join(h.cwd, p) : p
+}
+
+/**
+ * The state files a session Write may not touch freely: the allowlist, secrets, the poller claim, the origin stamp with its proof,
+ * the address the write hook asks, the app's token hashes (a token approves in the app), forge drafts and the capability log
+ * (an install tap installs the draft's files as stored, a revert writes an entry's undo bytes back), the T3 tokens (minted by
+ * the server) and the app release key (the owner's release script writes it; it keeps the IPA off the open internet).
+ * The server writes all of these itself, which this hook never sees.
+ */
+const STATE_GATED = /^(access\.json|\.env|bot\.pid|origin\.json|status-url|app-tokens\.json|app-token|forge\/.*|capability-log\.json|t3-token|t3-usage-token|app-release\/key)$/
+
+/**
+ * How the session's own Write or Edit of `abs` is gated (the PreToolUse hook,
+ * hooks/selfedit-gate.ts):
+ *
+ *   'gated'    classify() decides: anything in the repo, STATE_GATED in the
+ *              state dir, and under ~/.claude what a guarded rule names
+ *              (settings, hooks, skills, agents, plugins, CLAUDE.md)
+ *   'routine'  every other state file (triggers, boards, backups): written
+ *              freely, except by a request
+ *              that read outside content, since the server re-reads them as
+ *              instructions and undo payloads
+ *   null       not the gate's business, memory included
+ *
+ * Rules see the path relative to home, never the absolute one.
+ */
+export function writeScope(abs: string, stateDir: string, home: string): 'gated' | 'routine' | null {
+  const p = pathKey(abs)
+  const rel = (root: string) => { const r = pathKey(root) + '/'; return p.startsWith(r) ? p.slice(r.length) : null }
+  const s = rel(stateDir)
+  if (s !== null) return STATE_GATED.test(s) ? 'gated' : 'routine'
+  if (rel(REPO_ROOT) !== null || (process.env.OTTO_HOME && rel(process.env.OTTO_HOME) !== null)) return 'gated'
+  const h = rel(home)
+  return h !== null && h.startsWith('.claude/') && RULES.some(r => r.tier === 'guarded' && r.re.test(h)) ? 'gated' : null
 }
 
 /** The maximum over all touched paths. One guarded file guards the change. */
@@ -232,11 +281,19 @@ export function requiredTier(paths: string[]): { tier: Tier; because: string[] }
  * where the second lock lives: buttons are authored by Otto, and Otto may have
  * been reading something hostile when it wrote the label.
  */
-function satisfied(tier: Tier, origin: Origin, proof: Proof): boolean {
+function satisfied(tier: Tier, origin: Origin, proof: Proof, paths: string[]): boolean {
   if (tier === 'unattended') return origin !== 'external-content'
   if (origin !== 'user-typed') return false
+  if (!covers(proof, paths)) return false
   if (tier === 'confirmed') return proof.kind === 'tapped' || proof.kind === 'typed'
   return proof.kind === 'typed' && matchesTypedPhrase(proof.text)
+}
+
+/** A proof scoped to paths clears only those paths. */
+function covers(proof: Proof, paths: string[]): boolean {
+  if (proof.kind !== 'typed' || !proof.paths) return true
+  const ok = new Set(proof.paths.map(pathKey))
+  return paths.every(p => ok.has(pathKey(p)))
 }
 
 /**
@@ -247,9 +304,9 @@ export function classify(paths: string[], origin: Origin, proof: Proof = { kind:
   const { tier, because } = requiredTier(paths)
   const ceiling = CEILING[origin]
   const withinCeiling = ceiling !== null && RANK[tier] <= RANK[ceiling]
-  const allowed = withinCeiling && satisfied(tier, origin, proof)
+  const allowed = withinCeiling && satisfied(tier, origin, proof, paths)
 
-  return { tier, ceiling, allowed, because, reason: explain(tier, origin, ceiling, withinCeiling, proof, because) }
+  return { tier, ceiling, allowed, because, reason: explain(tier, origin, ceiling, withinCeiling, proof, because, covers(proof, paths)) }
 }
 
 function explain(
@@ -259,6 +316,7 @@ function explain(
   withinCeiling: boolean,
   proof: Proof,
   because: string[],
+  covered: boolean,
 ): string {
   const head = because[0] ?? 'nothing'
   if (origin === 'external-content') {
@@ -266,6 +324,9 @@ function explain(
   }
   if (!withinCeiling) {
     return `refused: a ${origin} request tops out at ${ceiling}, and this needs ${tier} — ${head}.`
+  }
+  if (tier !== 'unattended' && !covered) {
+    return `refused: the approval covered other files, not this one. Ask again for ${head}.`
   }
   if (tier === 'guarded' && proof.kind !== 'typed') {
     return `needs the typed phrase "${TYPED_PHRASE}" — ${head}.`
@@ -280,18 +341,6 @@ function explain(
   }
   if (tier === 'confirmed') return `cleared: confirmed change to ${head}.`
   return because.length ? `unattended: ${head}.` : 'unattended: nothing to guard.'
-}
-
-/**
- * Throwing form for the install path. Callers get a message they can send the user
- * verbatim, which matters: a refused self-install is information, not an error
- * to swallow — either Otto reached for something it should not have, or a tier
- * is miscalibrated, and both are worth one line.
- */
-export function assertInstallable(paths: string[], origin: Origin, proof: Proof = { kind: 'none' }): Decision {
-  const d = classify(paths, origin, proof)
-  if (!d.allowed) throw new Error(`self-edit blocked — ${d.reason}`)
-  return d
 }
 
 /** Shown alongside a draft so the tap is informed rather than reflexive. */

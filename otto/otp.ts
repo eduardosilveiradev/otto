@@ -250,14 +250,23 @@ export function extractOtps(text: string): Otp[] {
   return out
 }
 
-/** The first code in the text, or null. */
-export function extractOtp(text: string): Otp | null {
-  return extractOtps(text)[0] ?? null
-}
-
 /** What the user sees. No markup: the sender name is not ours. */
 export function formatOtp(o: Otp): string {
   return o.sender ? `${o.sender}: ${o.code}` : o.code
+}
+
+/** What history and the app's bubble keep: that a code came, never the code. */
+export function maskOtp(o: Otp): string {
+  return o.sender ? `${o.sender}: ••••••` : '••••••'
+}
+
+/** The app's live frame for a code: the masked line for the bubble, the code for its drawer.
+ * Quiet, since the fast lane sends the one Bark push itself. Never written to disk. */
+export function otpAppFrame(id: string, o: Otp, ts: string): string {
+  return JSON.stringify({
+    type: 'message', id, text: maskOtp(o), ts, buttons: [], quiet: true,
+    otp: o.sender ? { code: o.code, sender: o.sender } : { code: o.code },
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +278,8 @@ export type OtpConfig = {
   enabled?: boolean
   /** Delete the Telegram message after this long. Default 10; 0 keeps it. */
   deleteAfterMinutes?: number
+  /** Default true; false sends codes to the app only, never to Telegram. */
+  telegram?: boolean
 }
 
 export const OTP_DEDUPE_MS = 10 * 60_000
@@ -278,11 +289,12 @@ export const OTP_BURST_MAX = 5
 /** Telegram refuses to delete a bot's message older than 48h. */
 export const OTP_DELETE_GIVE_UP_MS = 48 * 3_600_000
 
-export function otpSettings(cfg: OtpConfig | undefined): { enabled: boolean; deleteAfterMs: number } {
+export function otpSettings(cfg: OtpConfig | undefined): { enabled: boolean; deleteAfterMs: number; telegram: boolean } {
   const mins = cfg?.deleteAfterMinutes
   const valid = typeof mins === 'number' && Number.isFinite(mins) && mins >= 0
   return {
     enabled: cfg?.enabled !== false,
+    telegram: cfg?.telegram !== false,
     deleteAfterMs: (valid ? mins : 10) * 60_000,
   }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Voice sidecar for the otto channel — Whisper STT in, Qwen3-TTS out.
+Voice sidecar for the otto channel — Parakeet or Whisper STT in, Qwen3-TTS out.
 
 Runs as a long-lived localhost HTTP daemon rather than a per-request process
 because both models cost seconds to load and gigabytes to hold: paying that on
@@ -10,10 +10,15 @@ an idle otto session is a ~60MB Python process, not a 5GB one.
 
 Protocol (JSON over HTTP, 127.0.0.1 only, bearer token):
     GET  /health -> {ok, stt_loaded, tts_loaded, idle_seconds}
-    POST /stt    {path, language?}            -> {text, language, seconds}
-    POST /tts    {text, speaker?, instruct?, language?, format?} -> {path, seconds}
+    POST /stt    {path | audio_b64+ext, language?} -> {text, language, seconds}
+    POST /stt/stream?model=&language=  chunked PCM s16le mono 16 kHz -> NDJSON partials and final
+    POST /tts/stream {text, voice settings} -> NDJSON {audio_b64,ext:"wav"}, {done:true,engine:"qwen3"}
+    POST /tts    {text, speaker?, instruct?, language?, format?, inline?} -> {path | audio_b64+ext, seconds}
 
-The port is ephemeral and, with the token, written to the info file named by
+audio_b64 and inline carry the audio in the JSON for a server on another machine
+(through an SSH tunnel), which cannot read this disk nor this daemon its.
+
+The port is ephemeral unless OTTO_VOICE_PORT fixes it and, with the token, written to the info file named by
 OTTO_VOICE_INFO once the socket is listening. stdout is NOT part of the
 protocol: mlx-audio prints progress there ("Initialized encoder codebooks"),
 which is exactly the kind of thing that corrupts a stdout handshake. Everything
@@ -21,13 +26,17 @@ the parent needs comes from the info file; everything else goes to stderr.
 
 Env:
     OTTO_VOICE_TOKEN    required — bearer token the parent generated
-    OTTO_VOICE_INFO     required — path to write {pid, port, token}
+    OTTO_VOICE_INFO     optional — path to write {pid, port, token}; default ~/.otto/state/voice-daemon.json
+    OTTO_VOICE_PORT     optional — fixed port (for a tunnel); default ephemeral
     OTTO_VOICE_CONFIG   optional — JSON config blob (see CONFIG defaults)
-    OTTO_VOICE_PARENT   optional — pid to follow; daemon exits when it dies
+    OTTO_VOICE_PARENT   optional — pid to follow; daemon exits when it dies. Without
+                        it (standalone, under launchd) it never exits for idleness.
 """
 from __future__ import annotations
 
+import base64
 import gc
+import io
 import json
 import os
 import re
@@ -38,11 +47,16 @@ import threading
 import time
 import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 warnings.filterwarnings("ignore")
 
+PARAKEET = "mlx-community/parakeet-tdt-0.6b-v3"
+WHISPER = "mlx-community/whisper-large-v3-turbo"
+PARAKEET_LANGUAGES = frozenset("bg hr cs da nl en et fi fr de el hu it lv lt mt pl pt ro sk sl es sv ru uk".split())
+
 CONFIG = {
-    "stt_model": "mlx-community/whisper-large-v3-turbo",
+    "stt_model": PARAKEET,
     "tts_model": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16",
     # Cloning runs on the Base model instead, from a fixed reference clip.
     "clone_model": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
@@ -61,11 +75,12 @@ CONFIG = {
 CONFIG.update(json.loads(os.environ.get("OTTO_VOICE_CONFIG") or "{}"))
 
 TOKEN = os.environ.get("OTTO_VOICE_TOKEN") or ""
-INFO_PATH = os.environ.get("OTTO_VOICE_INFO") or ""
+INFO_PATH = os.environ.get("OTTO_VOICE_INFO") or os.path.expanduser("~/.otto/state/voice-daemon.json")
 PARENT_PID = int(os.environ.get("OTTO_VOICE_PARENT") or 0)
+PORT = int(os.environ.get("OTTO_VOICE_PORT") or 0)
 
-if not TOKEN or not INFO_PATH:
-    print("voiced: OTTO_VOICE_TOKEN and OTTO_VOICE_INFO are required", file=sys.stderr)
+if not TOKEN:
+    print("voiced: OTTO_VOICE_TOKEN is required", file=sys.stderr)
     sys.exit(2)
 
 OUT_DIR = os.path.join(tempfile.gettempdir(), "otto-voice")
@@ -103,7 +118,10 @@ _lock = threading.Lock()
 _last_use = time.time()
 _tts_model = None
 _tts_name: str | None = None
-_stt_loaded = False
+_whisper_loaded = False
+_parakeet_model = None
+_parakeet_name = None
+_stt_streams = 0
 
 
 def _touch() -> None:
@@ -111,12 +129,37 @@ def _touch() -> None:
     _last_use = time.time()
 
 
-def load_stt(model: str):
-    global _stt_loaded
-    import mlx_whisper
+def stt_choice(req: dict) -> tuple[str, str, str | None]:
+    name = req.get("model") or CONFIG["stt_model"]
+    language = req.get("language") or None
+    if "parakeet" in name.lower():
+        supported = {"en"} if "v2" in name.lower() else PARAKEET_LANGUAGES
+        if not language or language.lower() in supported:
+            return "parakeet", name, language
+        return "whisper", WHISPER, language
+    return "whisper", name, language
 
-    _stt_loaded = True
-    return mlx_whisper
+
+def load_parakeet(name: str):
+    global _parakeet_model, _parakeet_name
+    if _parakeet_model is None or name != _parakeet_name:
+        import mlx.core as mx
+        from parakeet_mlx import from_pretrained
+
+        log(f"loading stt {name}")
+        model = from_pretrained(name)
+        mx.eval(model.parameters())
+        _parakeet_model, _parakeet_name = model, name
+    return _parakeet_model
+
+
+def warm_whisper(name: str):
+    global _whisper_loaded
+    import mlx.core as mx
+    from mlx_whisper.transcribe import ModelHolder
+
+    ModelHolder.get_model(name, mx.float16)
+    _whisper_loaded = True
 
 
 _last_tts_name: str | None = None  # survives an idle unload, so warm_tts knows what to bring back
@@ -152,12 +195,13 @@ def warm_tts() -> None:
 
 
 def unload_all() -> None:
-    """Drop both models. Whisper caches its own holder inside mlx_whisper, so
+    """Drop the models. Whisper caches its own holder inside mlx_whisper, so
     clearing our reference is not enough — reach into the holder too."""
-    global _tts_model, _tts_name, _stt_loaded
+    global _tts_model, _tts_name, _whisper_loaded, _parakeet_model, _parakeet_name
     _tts_model = None
     _tts_name = None
-    if _stt_loaded:
+    _parakeet_model = _parakeet_name = None
+    if _whisper_loaded:
         try:
             from mlx_whisper.transcribe import ModelHolder
 
@@ -165,7 +209,7 @@ def unload_all() -> None:
             ModelHolder.model_path = None
         except Exception:
             pass
-        _stt_loaded = False
+        _whisper_loaded = False
     gc.collect()
     try:
         import mlx.core as mx
@@ -188,13 +232,14 @@ def janitor() -> None:
             except OSError:
                 log(f"parent {PARENT_PID} is gone — exiting")
                 os._exit(0)
-        if exit_after and idle > exit_after:
+        if exit_after and PARENT_PID and idle > exit_after:
             log("idle too long — exiting")
             os._exit(0)
-        if idle_unload and idle > idle_unload and (_tts_model is not None or _stt_loaded):
+        if idle_unload and idle > idle_unload and (_tts_model is not None or _whisper_loaded or _parakeet_model is not None):
             if _lock.acquire(blocking=False):
                 try:
-                    unload_all()
+                    if not _stt_streams and time.time() - _last_use > idle_unload:
+                        unload_all()
                 finally:
                     _lock.release()
 
@@ -210,47 +255,124 @@ def janitor() -> None:
 SILENCE_RMS = 0.002  # ≈ -54 dBFS
 
 
-def is_silent(path: str) -> bool:
-    try:
-        from mlx_whisper.audio import load_audio
+def is_silent(audio) -> bool:
+    import numpy as np
 
-        audio = load_audio(path)
-        if audio.size == 0:
-            return True
-        import numpy as np
+    return not audio.size or np.mean(np.square(audio)) < SILENCE_RMS ** 2
 
-        rms = float(np.sqrt(np.mean(np.square(audio))))
-        peak = float(np.max(np.abs(audio)))
-        log(f"level rms={rms:.5f} peak={peak:.5f}")
-        return rms < SILENCE_RMS
-    except Exception as err:
-        # Never let the guard itself swallow a real recording.
-        log(f"silence check failed ({err}) — transcribing anyway")
-        return False
+
+def whisper_stt(audio, model: str, language: str | None) -> dict:
+    global _whisper_loaded
+    import mlx_whisper
+
+    _whisper_loaded = True
+    # Prevent a loop of repeated words from conditioning the next window.
+    result = mlx_whisper.transcribe(audio, path_or_hf_repo=model, language=language, condition_on_previous_text=False)
+    return {"text": result["text"].strip(), "language": result.get("language"), "engine": "whisper"}
+
+
+def load_stt_audio(path: str):
+    from mlx_whisper.audio import load_audio
+
+    return load_audio(path)
 
 
 def do_stt(req: dict) -> dict:
+    if req.get("audio_b64"):
+        ext = re.sub(r"[^a-z0-9]", "", str(req.get("ext") or "ogg").lower())[:5] or "ogg"
+        fd, path = tempfile.mkstemp(suffix=f".{ext}", dir=OUT_DIR)
+        with os.fdopen(fd, "wb") as f:
+            f.write(base64.b64decode(req["audio_b64"]))
+        try:
+            return do_stt({**req, "audio_b64": None, "path": path})
+        finally:
+            os.remove(path)
     path = req["path"]
     if not os.path.exists(path):
         raise FileNotFoundError(path)
-    if is_silent(path):
-        log("silent recording — not transcribing")
+    audio = load_stt_audio(path)
+    if is_silent(audio):
         return {"text": "", "language": None, "seconds": 0, "silent": True}
-    mlx_whisper = load_stt(CONFIG["stt_model"])
-    t0 = time.time()
-    # Without previous-text conditioning a loop can't feed itself: trailing silence
-    # otherwise came back as one word repeated hundreds of times.
-    kwargs = {"path_or_hf_repo": CONFIG["stt_model"], "condition_on_previous_text": False}
-    if req.get("language"):
-        kwargs["language"] = req["language"]
-    result = mlx_whisper.transcribe(path, **kwargs)
-    text = (result.get("text") or "").strip()
-    log(f"stt {time.time() - t0:.1f}s -> {len(text)} chars")
-    return {
-        "text": text,
-        "language": result.get("language"),
-        "seconds": round(time.time() - t0, 2),
-    }
+    engine, name, language = stt_choice(req)
+    t0 = time.monotonic()
+    if engine == "parakeet":
+        import mlx.core as mx
+        from parakeet_mlx.audio import get_logmel
+
+        model = load_parakeet(name)
+        if audio.size > 120 * 16000:
+            transcript = model.transcribe(path, chunk_duration=120)
+        else:
+            mel = get_logmel(mx.array(audio), model.preprocessor_config)
+            transcript = model.generate(mel)[0]
+        result = {"text": transcript.text.strip(), "language": None, "engine": engine}
+    else:
+        result = whisper_stt(audio, name, language)
+    seconds = time.monotonic() - t0
+    log(f"stt[{engine}] {seconds:.2f}s -> {len(result['text'])} chars")
+    return {**result, "seconds": round(seconds, 2)}
+
+
+PCM_LIMIT = 1_920_000
+# Feed one batch every 480 ms. Smaller calls waste time on overlapping draft tokens.
+PCM_BATCH = 15_360
+
+
+def pcm_audio(pcm):
+    import numpy as np
+
+    return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
+
+
+def stream_stt(req, chunks, emit):
+    global _stt_streams
+    engine, name, language = stt_choice(req)
+    with _lock:
+        _stt_streams += 1
+        _touch()
+    try:
+        if engine == "whisper":
+            with _lock:
+                warm_whisper(name)
+            audio = pcm_audio(b"".join(chunks))
+            with _lock:
+                result = {"text": "", "engine": engine} if is_silent(audio) else whisper_stt(audio, name, language)
+        else:
+            import mlx.core as mx
+
+            with _lock:
+                # Keep attention unchanged so overlapping turns and voice notes can
+                # share the weights. Each decoder owns its audio and encoder cache.
+                decoder = load_parakeet(name).transcribe_stream(context_size=(128, 32), keep_original_attention=True)
+            pending = bytearray()
+            heard_sound = False
+            text = ""
+            for chunk in chunks:
+                pending.extend(chunk)
+                while len(pending) >= PCM_BATCH:
+                    audio = pcm_audio(pending[:PCM_BATCH])
+                    del pending[:PCM_BATCH]
+                    heard_sound |= not is_silent(audio)
+                    if heard_sound:
+                        with _lock:
+                            decoder.add_audio(mx.array(audio))
+                            partial = decoder.result.text.strip()
+                        if partial != text and partial:
+                            emit({"type": "partial", "text": partial})
+                        text = partial
+            audio = pcm_audio(pending)
+            if heard_sound or not is_silent(audio):
+                # The encoder consumes whole 80 ms frames. Pad the final
+                # fragment, including any leftover features from the last batch.
+                with _lock:
+                    decoder.add_audio(mx.pad(mx.array(audio), (0, (-len(audio) % 1280) + 1280)))
+                    text = decoder.result.text.strip()
+            result = {"text": text, "engine": engine}
+        emit({"type": "final", **result})
+    finally:
+        with _lock:
+            _stt_streams -= 1
+            _touch()
 
 
 def encode(wav: str, fmt: str, speed: float) -> str:
@@ -357,7 +479,7 @@ def probe_tts(req: dict) -> dict:
     return {"engine": "qwen3", "model": name, "fallback": False}
 
 
-def do_tts(req: dict) -> dict:
+def do_tts(req: dict, emit=None) -> dict:
     import numpy as np
     import soundfile as sf
 
@@ -369,7 +491,7 @@ def do_tts(req: dict) -> dict:
     speaker = req.get("speaker") or CONFIG["speaker"]
     instruct = req.get("instruct") or CONFIG["instruct"]
     language = req.get("language") or CONFIG["language"]
-    ref_audio = req.get("ref_audio") or CONFIG["ref_audio"]
+    ref_audio = os.path.expanduser(req.get("ref_audio") or CONFIG["ref_audio"])
     ref_text = req.get("ref_text") or CONFIG["ref_text"]
 
     # Three ways to fix a voice, in the order they take precedence:
@@ -387,19 +509,26 @@ def do_tts(req: dict) -> dict:
     model = load_tts(name)
 
     def speak(line: str, max_tokens: int):
+        streaming = {"stream": True, "streaming_interval": 0.3} if emit else {}
         if mode == "clone":
             gen = model.generate(
-                text=line, ref_audio=ref_audio, ref_text=ref_text or None, max_tokens=max_tokens
+                text=line, ref_audio=ref_audio, ref_text=ref_text or None, max_tokens=max_tokens, **streaming
             )
         elif hasattr(model, "generate_custom_voice"):
             gen = model.generate_custom_voice(
                 text=line, speaker=speaker, language=language, instruct=instruct,
-                max_tokens=max_tokens,
+                max_tokens=max_tokens, **streaming,
             )
         else:
             gen = model.generate_voice_design(
-                text=line, instruct=instruct, language=language, max_tokens=max_tokens
+                text=line, instruct=instruct, language=language, max_tokens=max_tokens, **streaming
             )
+        if emit:
+            for part in gen:
+                wav = io.BytesIO()
+                sf.write(wav, np.array(part.audio), getattr(part, "sample_rate", 24000), format="WAV", subtype="PCM_16")
+                emit({"audio_b64": base64.b64encode(wav.getvalue()).decode(), "ext": "wav"})
+            return None
         return list(gen)[0]
 
     t0 = time.time()
@@ -409,6 +538,8 @@ def do_tts(req: dict) -> dict:
     lines = [text]
     max_tokens = token_budget(text)
     out = speak(text, max_tokens)
+    if emit:
+        return {"engine": "qwen3", "fallback": False, "done": True}
     sr = getattr(out, "sample_rate", 24000)
     audio = np.array(out.audio)
     if len(audio) / sr >= 0.9 * max_tokens / TOKENS_PER_SECOND and len(split_sentences(text)) > 1:
@@ -433,6 +564,16 @@ def do_tts(req: dict) -> dict:
     log(f"tts[{mode}] {name.split('/')[-1]} ref={os.path.basename(ref_audio) or '-'} ref_text={'yes' if ref_text else 'no'}"
         f" {len(text)} chars {time.time() - t0:.1f}s -> {dur:.1f}s audio at {speed}x ({len(lines)} sentences, budget {max_tokens} tokens)")
     return {"engine": "qwen3", "fallback": False, "path": out_path, "seconds": round(dur, 2), "took": round(time.time() - t0, 2)}
+
+
+def inline_audio(result: dict) -> dict:
+    """Swap a result's file path for the file itself, for a caller on another machine."""
+    path = result.pop("path")
+    with open(path, "rb") as f:
+        result["audio_b64"] = base64.b64encode(f.read()).decode()
+    os.remove(path)
+    result["ext"] = os.path.splitext(path)[1].lstrip(".")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -465,21 +606,97 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send(200, {
                 "ok": True,
-                "stt_loaded": _stt_loaded,
+                "stt_loaded": _whisper_loaded or _parakeet_model is not None,
                 "tts_loaded": _tts_model is not None,
                 "idle_seconds": round(time.time() - _last_use, 1),
             })
         else:
             self._send(404, {"error": "not found"})
 
+    def _pcm_chunks(self):
+        total = 0
+        while True:
+            line = self.rfile.readline(64)
+            if not line.endswith(b"\r\n"):
+                raise ValueError("incomplete PCM stream")
+            size = int(line, 16)
+            if size == 0:
+                if total % 2 or self.rfile.read(2) != b"\r\n":
+                    raise ValueError("invalid PCM stream terminator")
+                return
+            total += size
+            if size < 0 or total > PCM_LIMIT:
+                raise ValueError("invalid PCM chunk or 60 second limit exceeded")
+            while size:
+                count = min(size, PCM_BATCH)
+                pcm = self.rfile.read(count)
+                if len(pcm) != count:
+                    raise ValueError("incomplete PCM chunk")
+                yield pcm
+                size -= count
+            if self.rfile.read(2) != b"\r\n":
+                raise ValueError("incomplete PCM chunk")
+
+    def _stt_stream(self, query: str) -> None:
+        self.close_connection = True
+        if self.headers.get("Transfer-Encoding", "").lower() != "chunked" or self.headers.get("Content-Length") is not None:
+            self._send(400, {"error": "send PCM with chunked transfer encoding"})
+            return
+        self.connection.settimeout(75)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def emit(frame):
+            self.wfile.write(json.dumps(frame).encode() + b"\n")
+            self.wfile.flush()
+
+        try:
+            req = {key: values[0] for key, values in parse_qs(query).items() if key in ("model", "language")}
+            stream_stt(req, self._pcm_chunks(), emit)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+        except Exception as err:
+            log(f"stt stream failed: {type(err).__name__}: {err}")
+            try:
+                emit({"error": "streaming transcription failed"})
+            except OSError:
+                pass
+
     def do_POST(self) -> None:
         if not self._authed():
+            self.close_connection = True
+            return
+        url = urlsplit(self.path)
+        if url.path == "/stt/stream":
+            self._stt_stream(url.query)
             return
         try:
             n = int(self.headers.get("Content-Length") or 0)
             req = json.loads(self.rfile.read(n) or b"{}")
         except Exception as err:
             self._send(400, {"error": f"bad request: {err}"})
+            return
+
+        if self.path == "/tts/stream":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            def emit(frame):
+                self.wfile.write(json.dumps(frame).encode() + b"\n")
+                self.wfile.flush()
+            try:
+                with _lock:
+                    _touch()
+                    emit(do_tts(req, emit))
+                    _touch()
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # cut: generation unwinds and releases the MLX lock
+            except Exception:
+                emit({"error": "configured speech unavailable"})
             return
 
         handler = {"/stt": do_stt, "/tts": do_tts, "/probe": probe_tts}.get(self.path)
@@ -491,6 +708,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with _lock:
                 result = handler(req)
+            if req.get("inline") and result.get("path"):
+                result = inline_audio(result)
             _touch()
             self._send(200, result)
             if handler is do_stt and result.get("text"):
@@ -501,7 +720,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     port = server.server_address[1]
     tmp = INFO_PATH + ".tmp"
     with open(tmp, "w") as f:

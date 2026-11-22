@@ -14,10 +14,12 @@
  * How an outage is raised: the channel that normally speaks is the thing that
  * is down, so the alert goes out directly over Telegram — once — and a loop
  * note is filed so the brief carries it as soon as the session is back. The
- * loop has no due date, so the escalation curve leaves it alone: one message is
- * the whole interruption budget for an outage.
+ * loop closes silently after 24 hours of healthy checks. It has no due date,
+ * so the escalation curve leaves it alone: one message is the whole
+ * interruption budget for an outage.
  */
 
+import { readRestart, plannedRestart } from './restart.ts'
 import { existsSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
@@ -61,6 +63,11 @@ export async function runDeadman(deps: DeadmanDeps): Promise<DeadmanResult> {
 
   const hb: Heartbeat | null = readHeartbeat(hbFile)
   const state = loadDeadmanState(stateFile)
+  const restart = readRestart(stateDir)
+  if (plannedRestart(restart, now) && restart.consumedAt === undefined && hb && restart.at >= hb.at && !state.outage?.raisedAt) {
+    saveDeadmanState(stateFile, { lastCheckAt: now })
+    return { did: 'none', why: 'deliberate restart' }
+  }
   const quietHours = readAccess(stateDir).quietHours
   const { action, state: next } = evaluate(hb, state, now, {
     pidAlive: deps.pidAlive,
@@ -81,7 +88,7 @@ export async function runDeadman(deps: DeadmanDeps): Promise<DeadmanResult> {
         kind: 'loop',
         text: `outage: I stopped responding at ${new Date(action.since).toISOString()}. ${describeOutage(action)}`,
         tags: ['outage', tag],
-        source: 'deadman',
+        source: `system:deadman:${action.since}`,
       }).note
       saveNotes(notesFile, notes)
     }
@@ -94,13 +101,19 @@ export async function runDeadman(deps: DeadmanDeps): Promise<DeadmanResult> {
       result = { did: 'notify-failed', why: String(err).slice(0, 120) }
     }
   } else if (action.kind === 'recover') {
-    const notes = loadNotes(notesFile)
-    const id = action.outage.noteId
-    if (id && notes.some(n => n.id === id)) {
-      upsertNote(notes, { id, status: 'done' })
-      saveNotes(notesFile, notes)
-    }
     result = { did: 'recovered' }
+  }
+
+  if (next.clearSince !== undefined && now - next.clearSince >= 86_400_000) {
+    const notes = loadNotes(notesFile)
+    let changed = false
+    for (const n of notes) {
+      if (n.kind !== 'loop' || (n.status ?? 'open') !== 'open' || n.reopenedAt) continue
+      if (!n.source?.startsWith('system:deadman:') && n.source !== 'deadman') continue
+      upsertNote(notes, { id: n.id, status: 'done', closedReason: 'clear for 24h', closedBy: 'hygiene', closedAt: new Date(now).toISOString() })
+      changed = true
+    }
+    if (changed) saveNotes(notesFile, notes)
   }
 
   persist(next)

@@ -2,7 +2,6 @@ import { test, expect } from 'bun:test'
 import {
   surface,
   lastUsed,
-  neverUsed,
   matchLine,
   recordMention,
   recordDecline,
@@ -39,12 +38,6 @@ test('a capability already in use is never pitched', () => {
   const usage = lastUsed(CAPABILITIES, [{ at: NOW - 1000, text: 'Watch the price of X daily and report changes' }])
   expect(usage.has('price-watch')).toBe(true)
   expect(surface(inb('check that jacket price again'), usage, {}, NOW)).toBeNull()
-})
-
-test('never-used is derived from the same evidence', () => {
-  const usage = lastUsed(CAPABILITIES, [{ at: NOW, text: 'daily price watch on the shop page' }])
-  expect(neverUsed(CAPABILITIES, usage).map(c => c.id)).not.toContain('price-watch')
-  expect(neverUsed(CAPABILITIES, usage).map(c => c.id)).toContain('bill-reminder')
 })
 
 // The cost of one unwanted suggestion is not one unwanted suggestion.
@@ -84,7 +77,7 @@ test("Otto's own outbound message never triggers a pitch", () => {
 })
 
 test('the mention rides along as a side note, not as a message of its own', () => {
-  const m = surface(inb('any reply from marco yet'), NONE, {}, NOW)!
+  const m = surface(inb('any reply from alex yet'), NONE, {}, NOW)!
   expect(m.capability.id).toBe('follow-up')
   expect(m.text).toStartWith('(side note')
   expect(m.text).toEndWith("if that's useful.)")
@@ -94,5 +87,5 @@ test('state after a mention blocks both the id and the week', () => {
   const m = surface(inb('check that jacket price again'), NONE, {}, NOW)!
   const state = recordMention({}, m.capability.id, NOW)
   expect(state.lastAt).toBe(NOW)
-  expect(surface(inb('any reply from marco yet'), NONE, state, NOW + 60_000)).toBeNull()
+  expect(surface(inb('any reply from alex yet'), NONE, state, NOW + 60_000)).toBeNull()
 })

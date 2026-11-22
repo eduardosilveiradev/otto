@@ -17,7 +17,7 @@ command -v ffmpeg >/dev/null || { echo "ffmpeg is required: brew install ffmpeg"
 
 mkdir -p "$VOICE_HOME/refs"
 uv venv --python 3.12 "$VOICE_HOME/.venv"
-uv pip install --python "$VOICE_HOME/.venv/bin/python" mlx-whisper mlx-audio soundfile numpy
+uv pip install --python "$VOICE_HOME/.venv/bin/python" mlx-whisper mlx-audio soundfile numpy parakeet-mlx==0.7.0
 
 echo
 echo "voice installed at $VOICE_HOME"

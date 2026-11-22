@@ -21,28 +21,33 @@
  * from the Telegram plumbing, because it is the part worth testing.
  */
 
-import { readFileSync, writeFileSync, renameSync } from 'fs'
+import type { Message } from './pips.ts'
+import type { Card } from './cards.ts'
+import { loadState } from './statefile.ts'
+import { writeFileSync, renameSync } from 'fs'
 
 export type Priority = 'urgent' | 'normal'
 
 export type QueuedMessage = {
+  conversation?: Message
   id: string
   chat_id: string
   text: string
   queuedAt: string
   reason: HoldReason
-  /** Held messages carrying buttons or files are delivered on their own rather
+  /** Held messages carrying buttons, files or a card are delivered on their own rather
    * than folded into the digest — coalescing would strip the very thing that
    * makes them actionable. */
-  buttons?: { label: string; data?: string; url?: string }[]
+  buttons?: { label: string; data?: string; url?: string; copy?: string }[]
   files?: string[]
+  card?: Card
   /** Attribution at enqueue time, so the flushed message can still answer "Why this?" (why.ts). */
   src?: string
   why?: string
 }
 
 export function isRich(m: QueuedMessage): boolean {
-  return Boolean(m.buttons?.length || m.files?.length)
+  return Boolean(m.conversation || m.buttons?.length || m.files?.length || m.card)
 }
 
 export type HoldReason = 'snooze' | 'inflight' | 'busy' | 'quiet'
@@ -96,13 +101,10 @@ export function holdUntil(state: HoldState, reason: HoldReason): string | undefi
   return undefined
 }
 
+/** An unreadable file is moved aside (statefile.ts), not read as empty: the next save would
+ * otherwise overwrite every held message without a word. */
 export function loadQueue(file: string): QueuedMessage[] {
-  try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8'))
-    return Array.isArray(parsed) ? (parsed as QueuedMessage[]) : []
-  } catch {
-    return []
-  }
+  return loadState<QueuedMessage[]>(file, () => [], Array.isArray)
 }
 
 export function saveQueue(file: string, q: QueuedMessage[]): void {
@@ -124,6 +126,12 @@ const COALESCE_LIMIT = 3500
  * sat on something, and saying so costs one line.
  */
 export function coalesce(messages: QueuedMessage[]): string[] {
+  return coalesceChunks(messages).map(c => c.text)
+}
+
+/** coalesce, with the messages each send carries: a flush that fails on the second send puts back
+ * only those, not the first send's too (which already went). */
+export function coalesceChunks(messages: QueuedMessage[]): { text: string; messages: QueuedMessage[] }[] {
   if (!messages.length) return []
   // Anything held for a flight makes the whole flush a landing digest — it is
   // one send either way, and "while you were in the air" says why it waited.
@@ -132,18 +140,31 @@ export function coalesce(messages: QueuedMessage[]): string[] {
     messages.length === 1
       ? `\n\n(held while you were ${place})`
       : `\n\n(${messages.length} held while you were ${place})`
-  const out: string[] = []
-  let current = ''
+  const out: { text: string; messages: QueuedMessage[] }[] = []
+  let current = '', carried: QueuedMessage[] = []
 
   for (const m of messages) {
     const piece = messages.length === 1 ? m.text : `— ${m.text}`
     if (current && current.length + piece.length + 2 + footer.length > COALESCE_LIMIT) {
-      out.push(current)
+      out.push({ text: current, messages: carried })
       current = piece
+      carried = [m]
     } else {
       current = current ? `${current}\n\n${piece}` : piece
+      carried.push(m)
     }
   }
-  out.push(current + footer)
+  out.push({ text: current + footer, messages: carried })
   return out
+}
+
+/**
+ * The queue after a flush: what it couldn't send, then anything queued while it was sending.
+ * A flush works from a snapshot and awaits the network, so saving only its leftovers would
+ * erase a message enqueued in between.
+ */
+export function afterFlush(latest: QueuedMessage[], taken: QueuedMessage[], failed: QueuedMessage[]): QueuedMessage[] {
+  const took = new Set(taken.map(m => m.id)), retry = new Set(failed.map(m => m.id))
+  // The latest copy of each: one burned or deleted while the flush was sending stays that way.
+  return [...latest.filter(m => retry.has(m.id)), ...latest.filter(m => !took.has(m.id))]
 }

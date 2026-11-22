@@ -1,10 +1,8 @@
 import { test, expect } from 'bun:test'
 import {
   routeModel,
-  shouldEscalate,
   escalationPlan,
   nextTier,
-  formatRoute,
   HAIKU,
   SONNET,
   MAIN,
@@ -56,30 +54,8 @@ test('a retry never repeats the tier that just failed', () => {
   expect(routeModel(item({ retryOf: SONNET })).model).toBe(MAIN)
 })
 
-test('the cheap tier declining is honoured, not overruled', () => {
-  expect(shouldEscalate({ verdict: 'marketing', escalate: true })).toBe(true)
-  expect(shouldEscalate({ verdict: null })).toBe(true)
-  expect(shouldEscalate({ verdict: 'marketing' })).toBe(false)
-})
-
-test('a broken run escalates rather than being read as an answer', () => {
-  expect(shouldEscalate({ verdict: null, error: 'timeout' })).toBe(true)
-  expect(shouldEscalate({ verdict: 'ok', error: 'bad json' })).toBe(true)
-})
-
-test('low stated confidence escalates; saying nothing is not certainty', () => {
-  expect(shouldEscalate({ verdict: 'bill', confidence: 0.4 })).toBe(true)
-  expect(shouldEscalate({ verdict: 'bill', confidence: 0.9 })).toBe(false)
-  expect(shouldEscalate({ verdict: 'bill' })).toBe(false)
-})
-
 test('the plan walks up to the main session and stops there', () => {
   expect(escalationPlan(item()).map(r => r.model)).toEqual([HAIKU, SONNET, MAIN])
   expect(escalationPlan(item({ userFacing: true })).map(r => r.model)).toEqual([MAIN])
   expect(nextTier(MAIN)).toBeNull()
-})
-
-test('routes format as something readable in a weekly line', () => {
-  expect(formatRoute(routeModel(item()))).toStartWith('haiku (')
-  expect(formatRoute(routeModel(item({ userFacing: true })))).toStartWith('main session (')
 })

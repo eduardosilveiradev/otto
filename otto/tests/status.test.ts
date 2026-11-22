@@ -14,7 +14,7 @@ function setup(files: Record<string, unknown>, over: Partial<StatusDeps> = {}) {
   const dir = mkdtempSync(join(tmp, 's-'))
   for (const [name, v] of Object.entries(files)) writeFileSync(join(dir, name), JSON.stringify(v))
   const deps: StatusDeps = {
-    stateDir: dir, now: NOW,
+    stateDir: dir, usageHome: dir, now: NOW,
     http: async () => ({ status: 405 }),
     run: async () => true,
     pidAlive: () => true,
@@ -63,6 +63,15 @@ test('dependency advisories: unknown until the first run, up after a clean one',
   expect(row(await collectStatus(setup({}).deps), 'depwatch').verdict).toBe('unknown')
   const clean = { lastRunAt: new Date(NOW - min(60)).toISOString(), told: {}, open: [], deps: 10 }
   expect(row(await collectStatus(setup({ 'depwatch.json': clean }).deps), 'depwatch').verdict).toBe('up')
+})
+
+test('nightly reset: unknown until it runs, then the last clear or why it skipped; off when disabled', async () => {
+  expect(row(await collectStatus(setup({}).deps), 'nightly-reset').verdict).toBe('unknown')
+  const skipped = { nightlyReset: { at: new Date(NOW - min(300)).toISOString(), reset: false, reason: 'a turn is in progress' } }
+  expect(row(await collectStatus(setup({ 'runtime.json': skipped }).deps), 'nightly-reset').detail).toBe('skipped 5 h ago: a turn is in progress')
+  const cleared = { nightlyReset: { at: new Date(NOW - min(300)).toISOString(), reset: true, reason: 'cleared' } }
+  expect(row(await collectStatus(setup({ 'runtime.json': cleared }).deps), 'nightly-reset').detail).toBe('last cleared 5 h ago')
+  expect(row(await collectStatus(setup({ 'access.json': { nightlyReset: false } }).deps), 'nightly-reset').verdict).toBe('off')
 })
 
 test('email scan: last error newer than last run degrades; overdue is down; disabled is off', async () => {
@@ -198,4 +207,51 @@ test('the phone row appears only once a device has reported', async () => {
   const rows = await collectStatus(deps)
   expect(row(rows, 'phone:abc')).toMatchObject({ verdict: 'down', label: 'Phone (phone)' })
   expect(formatStatus(rows, NOW)).toMatch(/DOWN\s+Phone \(phone\)/)
+})
+
+
+test('PR merges reports last check, delivery and error, with quiet-hours allowance', async () => {
+  expect(row(await collectStatus(setup({}).deps), 'prmerges').verdict).toBe('unknown')
+  const state = {
+    delivered: {}, cursor: new Date(NOW).toISOString(),
+    lastCheck: new Date(NOW - min(2)).toISOString(), lastDelivered: new Date(NOW - min(10)).toISOString(),
+  }
+  const good = row(await collectStatus(setup({ 'prmerges.json': state }).deps), 'prmerges')
+  expect(good.verdict).toBe('up')
+  expect(good.detail).toContain(state.lastCheck)
+  expect(good.detail).toContain(state.lastDelivered)
+  const failed = row(await collectStatus(setup({ 'prmerges.json': {
+    ...state, lastError: { at: state.lastCheck, message: 'gh offline' },
+  } }).deps), 'prmerges')
+  expect(failed.verdict).toBe('degraded')
+  expect(failed.detail).toContain('gh offline')
+  const old = { ...state, lastCheck: new Date(NOW - min(60)).toISOString() }
+  expect(row(await collectStatus(setup({ 'prmerges.json': old }).deps), 'prmerges').verdict).toBe('down')
+  expect(row(await collectStatus(setup({ 'prmerges.json': old, 'access.json': { quietHours: '23:00-08:00' } }).deps), 'prmerges').verdict).toBe('up')
+})
+
+test('voice fallback status includes the onset and recovery clears it', async () => {
+  const checkedAt = new Date(NOW).toISOString()
+  const bad = await collectStatus(setup({ 'voice-health.json': { checkedAt, since: checkedAt, problem: 'fell back to system voice' } }).deps)
+  expect(row(bad, 'voice').verdict).toBe('down')
+  expect(row(bad, 'voice').detail).toContain('fell back to system voice since ')
+  expect(row(bad, 'voice').at).toBe(NOW)
+  expect(formatStatus(bad, NOW)).toContain('Voice')
+  const good = await collectStatus(setup({ 'voice-health.json': { checkedAt } }).deps)
+  expect(row(good, 'voice').verdict).toBe('up')
+})
+
+test('plan row includes local month tokens even without a plan reading', async () => {
+  const { deps, dir } = setup({})
+  const logs = join(dir, '.claude', 'projects', 'fixture')
+  mkdirSync(logs, { recursive: true })
+  writeFileSync(join(logs, 'session.jsonl'), JSON.stringify({ timestamp: new Date(NOW).toISOString(), message: { id: 'fixture', usage: { input_tokens: 1234 } } }) + '\n')
+  const r = row(await collectStatus(deps), 'plan-usage')
+  expect(r.detail).toContain('1.2K tokens this month')
+  expect(r.verdict).toBe('unknown')
+})
+
+test('GitHub calls shows the rolling hour and excludes expired and future evidence', async () => {
+  const { deps } = setup({ 'github-calls.json': { calls: [NOW - min(61), NOW - min(60), NOW - min(59), NOW, NOW + 1] } })
+  expect(row(await collectStatus(deps), 'github-calls')).toMatchObject({ label: 'GitHub calls', verdict: 'up', at: NOW, detail: '2 in the past hour (cap 300 / 10 min)' })
 })

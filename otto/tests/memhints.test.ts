@@ -43,3 +43,10 @@ test('a reload keeps what this session already saw, and only this session', () =
   const seen = seenFromLog(JSON.stringify({ sess: 7, returned: [memHandle(lights)] }), 7)
   expect(memHints(pool, 'turn off the bedroom lights with smartthings, desk lamp too', seen, Date.now(), 0)).toBe('')
 })
+
+test('an expired memory is never offered as a hint', () => {
+  const m: Memory = { name: 'gpt-limit', description: 'gpt maxed out quota limit reached until reset tonight', type: 'project', body: 'gpt quota limit maxed', scope: 'global', path: '/x/gpt-limit.md', mtimeMs: 0, links: [], expires: '2000-01-01' }
+  const msg = 'is gpt still maxed out on its quota limit or did it reset tonight already'
+  expect(memHints([m], msg, new Set(), Date.now(), 0)).toBe('')
+  expect(memHints([{ ...m, expires: undefined }], msg, new Set(), Date.now(), 0)).not.toBe('')
+})

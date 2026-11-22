@@ -112,10 +112,10 @@ test('journal: a burned entry still redelivers, as "[burned]"', () => {
 })
 
 test('journal: a capped text is handed back without its ellipsis, so it is a substring of the original', () => {
-  const long = 'k'.repeat(4000)
+  const long = 'k'.repeat(70_000)
   const j = recordInbound([], { chat_id: CHAT, message_id: '9', text: long, meta: {} }, NOW)
   const r = burnJournal(j, { message_id: '9' })
-  expect(r.texts[0].length).toBe(1500)
+  expect(r.texts[0].length).toBe(64_000)
   expect(long.includes(r.texts[0])).toBe(true)
 })
 

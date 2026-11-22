@@ -146,9 +146,3 @@ export function redactSecrets(input: string, opts: RedactOptions = {}): RedactRe
   })
   return { text, hits }
 }
-
-/** The one line the model reads: "redacted 2 secret(s): GitHub token, IBAN". */
-export function redactionNote(hits: string[]): string {
-  if (!hits.length) return ''
-  return `redacted ${hits.length} secret(s): ${[...new Set(hits)].join(', ')}`
-}

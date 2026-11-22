@@ -24,9 +24,11 @@ export type Scope = 'read' | 'write'
 // ---------------------------------------------------------------------------
 
 /** GET ping — answers any origin, says only whether this one is allowlisted. */
-export type Ping = { ok: true; origin: 'allowed' | 'blocked' }
+/** `native`: the server pairs a native app by code; an older server leaves it out. */
+export type Ping = { ok: true; origin: 'allowed' | 'blocked'; native: true }
 
-export type PairStartRequest = { scope: Scope; label?: string }
+/** A browser sends `scope`. A native app sends `client: "native"` and no Origin header, and gets a native token. */
+export type PairStartRequest = { scope: Scope; label?: string } | { client: 'native'; label?: string }
 /** `user_code` is shown as "XKQ4-7MPD"; seconds throughout. */
 export type PairStart = { device_code: string; user_code: string; expires_in: number; interval: number }
 
@@ -39,6 +41,8 @@ export type PairPoll =
       /** With a control (write) approval: a long-lived read token to fall back on once control lapses or the tab closes. */
       read?: { token: string; id: string; expires: string }
     }
+  /** A native app's: no scope, no origin, no expiry. */
+  | { status: 'approved'; token: string; id: string }
 
 // ---------------------------------------------------------------------------
 // Tokens and devices
@@ -143,6 +147,12 @@ export type DashMemory = {
 /** [index into DashMemory.items, score], best first. */
 export type MemorySearch = { results: [number, number][] }
 export type MemoryRebuild = { started: true }
+export type MemoryForgetRequest = { id: string }
+/** `generatedAt`: the snapshot's new stamp, with the memory already out of it. */
+export type MemoryForgotten = { forgotten: true; generatedAt: string }
+export type MemoryEditRequest = { id: string; body: string }
+/** The memory as it now reads, and the snapshot's new stamp. */
+export type MemoryItemEdited = MemoryItemDetail & { generatedAt: string }
 
 /** Someone the user explained, in their words. No addresses, phones or handles. */
 export type PersonCard = {
@@ -214,6 +224,10 @@ export type TriggerRow = {
 }
 
 export type Triggers = { triggers: TriggerRow[] }
+export type TriggerRequest = { id: string }
+export type TriggerToggleRequest = { id: string; enabled: boolean }
+export type TriggerStarted = { started: true }
+export type TriggerDeleted = { deleted: true }
 
 /** Something written down while answering, shown as a card on that reply ("recorded" on the message frame).
  * `action` is a tap the app sends back as is, like a button. */
@@ -224,6 +238,8 @@ export type RecordedCard = {
   detail?: string
   body?: string
   action?: { label: string; data: string }
+  /** /app/history only: the label of the action once it was used, on any device. */
+  done?: string
 }
 
 /** The whole action, for the one trigger the user opened. */
@@ -325,7 +341,14 @@ export type Capabilities = { entries: CapRow[] }
 
 export type JobState = 'queued' | 'running' | 'parked' | 'done' | 'failed' | 'killed'
 
+export type SlotWait = { since: string; position: number; load: number; limit: number }
+export type JobSpan = { state: 'run' | 'wait' | 'review' | 'merged' | 'stopped' | 'failed'; from: string; to: string | null }
+export type MacLoad = { load: number; limit: number; waiting: number }
+
 export type JobRow = {
+  activity: string | null
+  slotWait: SlotWait | null
+  spans: JobSpan[]
   id: string
   task: string
   state: JobState
@@ -346,7 +369,7 @@ export type JobRow = {
   notBefore?: string
 }
 
-export type Jobs = { jobs: JobRow[] }
+export type Jobs = { jobs: JobRow[]; mac: MacLoad | null }
 
 // ---------------------------------------------------------------------------
 // Trips
@@ -429,13 +452,13 @@ export type ChatSendRequest = { thread: 'app'; id: string; text: string }
 export type ChatSent = { id: string; duplicate?: true }
 
 // ---------------------------------------------------------------------------
-// Calls (callbot's live view)
+// Calls (reserved for compatible clients)
 // ---------------------------------------------------------------------------
 
 /** One side's speech: `assistant` is the bot, `user` the person it called. */
 export type CallLine = { role: 'assistant' | 'user'; text: string }
 
-/** A call placed by callbot, live or ended in the last two hours. Times are epoch ms. */
+/** A call, live or ended in the last two hours. Times are epoch ms. */
 export type DashCall = {
   id: string
   to: string
@@ -480,6 +503,10 @@ export type DashRoutes = {
   'GET memory': { scope: 'read'; res: DashMemory }
   'GET memory/item': { scope: 'read'; query: { id: string }; res: MemoryItemDetail }
   'POST memory/rebuild': { scope: 'write'; res: MemoryRebuild }
+  /** 404 not_found. Through the store the `forget` tool uses. */
+  'POST memory/forget': { scope: 'write'; req: MemoryForgetRequest; res: MemoryForgotten }
+  /** A new body. 404 not_found, 400 body, 409 conflict (a file Otto didn't write). Only with a native token (403 native_only): a browser may forget a memory, never reword one. */
+  'POST memory/item': { scope: 'write'; req: MemoryEditRequest; res: MemoryItemEdited }
   'GET memory/search': { scope: 'read'; query: { q: string }; res: MemorySearch }
   'GET people': { scope: 'read'; res: People }
   'GET settings': { scope: 'read'; res: DashSettings }
@@ -498,6 +525,12 @@ export type DashRoutes = {
   'GET jobs': { scope: 'read'; res: Jobs }
   'GET triggers': { scope: 'read'; res: Triggers }
   'GET triggers/item': { scope: 'read'; query: { id: string }; res: TriggerDetail }
+  /** 202: fired now, as its schedule would, the schedule untouched. 404 not_found, 409 running, 400 type (an email watcher). */
+  'POST triggers/run': { scope: 'write'; req: TriggerRequest; res: TriggerStarted }
+  /** 404 not_found. Through `delete_trigger`'s own removal; leaves a note that undoes it. */
+  'POST triggers/delete': { scope: 'write'; req: TriggerRequest; res: TriggerDeleted }
+  /** Any kind, one-shots and email watchers included. 404 not_found, 409 past (a one-shot whose time has gone). */
+  'POST triggers/toggle': { scope: 'write'; req: TriggerToggleRequest; res: TriggerRow }
   'GET chat': { scope: 'read'; query: { thread: ChatThread; after?: string }; res: DashChat }
   'POST chat': { scope: 'write'; req: ChatSendRequest; res: ChatSent }
   /** Without `id`, every call; with it, that call once `seq` passes `after` (long-poll, about 25 s). */

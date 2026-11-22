@@ -1,7 +1,7 @@
 /**
  * What changed about Otto, and how to put it back.
  *
- * Wave 3 lets Otto install things. Installing without a written record is how
+ * Self-extension lets Otto install things. Installing without a written record is how
  * you get a Tuesday where the user asks why the morning brief now mentions the
  * weather and nobody — the user, Otto, git — can say when that started or what it
  * replaced. `git log` is the wrong record: it captures the diff and loses the
@@ -39,10 +39,13 @@ export type RevertPayload =
   | { kind: 'delete-trigger'; triggerId: string }
   /** The whole trigger as it was, so an edit can be undone without git at all. */
   | { kind: 'restore-trigger'; trigger: Record<string, unknown> }
-  /** Honest about being irreversible. Rare, and worth seeing in the weekly line. */
+  /** A memory file's old bytes, and its old MEMORY.md line, put back without touching the rest of the index. */
+  | { kind: 'restore-memory'; path: string; before: string; indexLine?: string }
+  /** Honest about being irreversible. Rare, and worth seeing in the log. */
   | { kind: 'none'; why: string }
 
 export type CapEntry = {
+  windowId?: string
   id: string
   at: string
   /** One line, plain language, written for the user and not for a diff viewer. */
@@ -52,10 +55,10 @@ export type CapEntry = {
   paths: string[]
   tier: Tier
   origin: Origin
-  /** Which Wave 3 module installed it — forge, repetition, canary, watchdog. */
+  /** Which self-extension module installed it — forge, repetition, canary, watchdog. */
   by: string
   revert: RevertPayload
-  /** Set once the entry has been reverted, so the weekly line can say so. */
+  /** Set once the entry has been reverted, so the log can say so. */
   revertedAt?: string
 }
 
@@ -175,61 +178,11 @@ export function resolveRevert(entry: CapEntry): Resolution {
         selfContained: true,
         plan: [`restore trigger ${String(r.trigger.id ?? '?')} to: ${JSON.stringify(r.trigger)}`],
       }
+    case 'restore-memory':
+      return { selfContained: true, plan: [`write ${r.before.length} bytes back to ${r.path}${r.indexLine ? ' and put its MEMORY.md line back' : ''}`] }
     case 'none':
       return { plan: [], selfContained: false, caveat: `cannot be undone automatically — ${r.why}` }
   }
-}
-
-/** Everything still standing, newest first. What "undo that" searches. */
-export function revertable(entries: CapEntry[], withinMs: number, now: number): CapEntry[] {
-  return entries
-    .filter(e => !e.revertedAt)
-    .filter(e => {
-      const at = Date.parse(e.at)
-      return !Number.isNaN(at) && now - at <= withinMs
-    })
-    .sort((a, b) => b.at.localeCompare(a.at))
-}
-
-// ---------------------------------------------------------------------------
-// The weekly line
-// ---------------------------------------------------------------------------
-
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000
-
-/**
- * One short paragraph a week: what changed about Otto, in words the user would use.
- *
- * Returns null on a quiet week, and that matters more than the formatting —
- * "nothing changed this week" is a proactive message about nothing, and the
- * whole point of the high interrupt bar is that Otto is allowed to say nothing.
- */
-export function weeklyLine(entries: CapEntry[], now: number, windowMs = WEEK_MS): string | null {
-  const since = now - windowMs
-  const recent = entries.filter(e => {
-    const at = Date.parse(e.at)
-    return !Number.isNaN(at) && at >= since
-  })
-  const installed = recent.filter(e => !e.revertedAt)
-  const rolled = recent.filter(e => e.revertedAt)
-  if (!installed.length && !rolled.length) return null
-
-  const lines: string[] = []
-  if (installed.length) {
-    lines.push(`this week I changed ${installed.length === 1 ? 'one thing' : `${installed.length} things`} about myself:`)
-    for (const e of installed) lines.push(`— ${e.what} [${e.id}]`)
-  }
-  if (rolled.length) {
-    lines.push(`${rolled.length} rolled back: ${rolled.map(e => e.what).join('; ')}`)
-  }
-
-  const fragile = installed.filter(e => !resolveRevert(e).selfContained)
-  if (fragile.length) {
-    lines.push(`heads up — ${fragile.map(e => e.id).join(', ')} can only be undone best-effort.`)
-  } else if (installed.length) {
-    lines.push('any of them: "undo <id>".')
-  }
-  return lines.join('\n')
 }
 
 /** One entry, for when the user asks about a specific id. */

@@ -10,8 +10,9 @@
 // so it must not be able to make the phone buzz. The user starts the claim.
 //
 // Each button carries a fresh random nonce, minted when the code is claimed and
-// kept only as a hash. It never appears in a pair/start or pair/poll response,
-// a log line, or history, and validateButtons refuses model-sent `pair ` data,
+// kept only as a hash. It never appears in a pair/start or pair/poll response
+// or a log line (the app thread's history keeps the button it was offered on,
+// which only a native token can read), and validateButtons refuses model-sent `pair ` data,
 // so the session cannot forge an approval. Nor can it relay a code: reply and
 // edit_message refuse text carrying one that is pending (carriesPairingCode), so
 // the only way a code reaches the user is the dashboard's own screen.
@@ -19,6 +20,17 @@
 // The Origin a pairing names is whatever the client sent, and curl can send
 // anything; the approval message says "claiming to be" for that reason, and the
 // client's label is shown only as a quote.
+//
+// A native app (the Mac app, with Otto on another machine) pairs the same way,
+// with no Origin and `client: "native"`: the code is claimed and approved from a
+// surface the user already holds (the paired app, or their own chat), exactly as
+// above. What it gets is a native token, which reaches every /app route and the
+// socket and never expires, so its approval message says "full access" on its
+// one approve button, and a request that carries an Origin can never ask for
+// one: a web page cannot leave Origin off a POST, so no page can obtain it. The
+// token is minted when the app collects it, not at the tap, so an approval
+// nobody collects leaves nothing behind. With no origin to match, the
+// device_code alone says who started the pairing.
 //
 // All state is one in-memory Map: a restart drops pending pairings and the
 // dashboard's next poll says `expired`, which it answers with "try again".
@@ -29,7 +41,8 @@ import { createAppToken, loadAppTokens, revokeAppToken, type Scope } from './app
 type Button = { label: string; data: string }
 export type Send = (text: string, buttons: Button[]) => unknown
 /** What the HTTP layer hands in about the request; dash.ts has already checked Host and Origin. */
-export type PairContext = { origin: string; ip: string; via: 'funnel' | 'direct' }
+/** `origin` absent: no Origin header, the only way a native app pairs. */
+export type PairContext = { origin?: string; ip: string; via: 'funnel' | 'direct' }
 export type PairResult = { status: number; body: Record<string, unknown> }
 
 const EXPIRES_IN = 300            // seconds a code is good for, and an approved token waits for its poll
@@ -41,7 +54,8 @@ const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' // no 0/O, 1/I/L
 type Entry = {
   userCode: string                // 8 chars, no dash
   codeHash: string                // sha256 of the device_code
-  origin: string; scope: Scope; ua?: string; ip: string; via: PairContext['via']
+  origin?: string                 // absent: a native app, which gets a native token
+  scope: Scope; ua?: string; ip: string; via: PairContext['via']
   expiresAt: number
   lastPollAt: number
   nonceHash?: { read: string; write?: string } // set when the user claims the code
@@ -62,7 +76,7 @@ export function coarseIp(ip: string): string {
 }
 
 function log(event: string, e: Pick<Entry, 'origin' | 'ip' | 'via'>, id?: string): void {
-  process.stderr.write(`[dash] ${event} origin=${e.origin} ip=${coarseIp(e.ip)} via=${e.via}${id ? ` id=${id}` : ''}\n`)
+  process.stderr.write(`[dash] ${event} origin=${e.origin ?? 'native'} ip=${coarseIp(e.ip)} via=${e.via}${id ? ` id=${id}` : ''}\n`)
 }
 
 /** Drop what has run out. An approved token nobody collected is revoked, so it can't linger in /devices. */
@@ -101,8 +115,10 @@ export function carriesPairingCode(text: string): boolean {
 /** POST pair/start. Per-IP rate limits are the caller's; the global cap is here. */
 export function startPairing(body: unknown, ctx: PairContext): PairResult {
   sweep()
-  const b = (body ?? {}) as { scope?: unknown; label?: unknown }
-  const scope = b.scope ?? 'read'
+  const b = (body ?? {}) as { scope?: unknown; label?: unknown; client?: unknown }
+  // A native token only without an Origin, and only when asked for by name: never to a browser.
+  if ((b.client === 'native') !== !ctx.origin || (b.client !== undefined && b.client !== 'native')) return { status: 400, body: { error: 'client' } }
+  const scope = ctx.origin ? b.scope ?? 'read' : 'write'
   if (scope !== 'read' && scope !== 'write') return { status: 400, body: { error: 'scope' } }
   if (pairings.size >= MAX_PENDING) {
     // Full: the oldest code nobody has claimed makes room, so a flood can't lock
@@ -124,7 +140,7 @@ export function startPairing(body: unknown, ctx: PairContext): PairResult {
   return { status: 200, body: { device_code: deviceCode, user_code: shown(userCode), expires_in: EXPIRES_IN, interval: INTERVAL } }
 }
 
-/** POST pair/poll. Only the origin that started a pairing can collect it. */
+/** POST pair/poll. Only the origin that started a pairing can collect it; a native one, only a caller with no Origin. */
 export function pollPairing(body: unknown, ctx: Pick<PairContext, 'origin'>): PairResult {
   sweep()
   const code = (body as { device_code?: unknown } | null)?.device_code
@@ -139,6 +155,12 @@ export function pollPairing(body: unknown, ctx: Pick<PairContext, 'origin'>): Pa
   if (e.status === 'pending') return { status: 200, body: { status: 'pending' } }
   pairings.delete(e.userCode)
   if (e.status === 'denied') return { status: 200, body: { status: 'denied' } }
+  if (!e.origin) {
+    // Minted now, as `apptokens.ts new` mints one: no origin, no scope, no expiry.
+    const { id, token } = createAppToken(e.ua ?? 'native app')
+    log('pair-collect', e, id)
+    return { status: 200, body: { status: 'approved', token, id } }
+  }
   log('pair-collect', e, e.minted!.id)
   return { status: 200, body: { status: 'approved', ...e.minted! } }
 }
@@ -159,12 +181,24 @@ export async function pairingCommand(text: string, send: Send): Promise<boolean>
   }
   // Fresh nonces on every claim: typing the code again kills the older buttons.
   const nonce = () => randomBytes(16).toString('base64url')
-  const read = nonce(), write = e.scope === 'write' ? nonce() : undefined
+  const read = nonce(), write = e.origin && e.scope === 'write' ? nonce() : undefined
   e.nonceHash = { read: sha(read), ...(write ? { write: sha(write) } : {}) }
   log('pair-claim', e)
   const mins = Math.max(1, Math.ceil((e.expiresAt - Date.now()) / 60_000))
   const wants = e.scope === 'write' ? 'read + control' : 'read-only'
   const where = `${e.via === 'funnel' ? 'via tailscale serve' : 'direct'} from ${coarseIp(e.ip)}`
+  if (!e.origin) {
+    await send(
+      [
+        `App pairing ${shown(e.userCode)}`,
+        `a Mac app claiming to be ${e.ua ? `"${e.ua}"` : 'Otto (it gave no name)'}`,
+        `wants full access, the same as your phone, with no expiry · ${where}`,
+        `Approve only if this code is on your own screen right now. Expires in ${mins} min.`,
+      ].join('\n'),
+      [{ label: 'approve full access', data: `pair ok ${read}` }, { label: 'deny', data: `pair no ${read}` }],
+    )
+    return true
+  }
   await send(
     [
       `Dashboard pairing ${shown(e.userCode)}`,
@@ -200,6 +234,13 @@ export function pairingButton(data: string): string | null {
     e.status = 'denied'
     log('pair-deny', e)
     return `denied ${shown(e.userCode)}`
+  }
+  if (!e.origin) {
+    // Nothing is minted yet: the app's next poll mints its token (pollPairing), within the same window a code gets.
+    e.status = 'approved'
+    e.expiresAt = Date.now() + EXPIRES_IN * 1000
+    log('pair-approve', e)
+    return `paired ✓ ${e.ua ? `"${e.ua}"` : 'the app'} (full access) · it is listed by bun otto/apptokens.ts list once it connects; revoke it there`
   }
   const name = `dashboard ${new URL(e.origin).hostname}`
   const { id, token } = createAppToken(name, { scope, origin: e.origin, ua: e.ua })

@@ -43,7 +43,7 @@ export type Note = {
   /** loop: why it was closed, when a pass closed it on evidence. Absent when a
    * person closed it — they know why. */
   closedReason?: string
-  /** loop: who closed it. Only ever set by the nightly hygiene pass. */
+  /** loop: who closed it. Set by hygiene and system-health passes. */
   closedBy?: 'hygiene'
   closedAt?: string
   /** loop: set when a closed loop is reopened. A reopened loop is never
@@ -59,6 +59,34 @@ export type Note = {
   confirmedAt?: string
   /** fact: the id of the fact that replaced this one. Kept on disk, hidden from search. */
   supersededBy?: string
+  /** fact or saved: true only until this ISO date or datetime. After it, hidden
+   * like a superseded fact: kept on disk, out of search. */
+  expires?: string
+}
+
+/** When `expires` passes, in ms. A date alone lasts to the end of that day on
+ * the local clock. NaN when unset or unreadable, which never expires. */
+export function expiryMs(expires: string | undefined): number {
+  if (!expires) return NaN
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(expires)
+  if (d) return Number.isNaN(Date.parse(expires)) ? NaN : new Date(+d[1], +d[2] - 1, +d[3], 23, 59, 59, 999).getTime()
+  // ISO only: Date.parse reads "15 Nov 22:03" as 2001, which would hide it at once.
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(expires) ? Date.parse(expires) : NaN
+}
+
+export function isExpired(x: { expires?: string }, now = Date.now()): boolean {
+  return expiryMs(x.expires) <= now
+}
+
+/** " (until 15 Nov)" while it holds, " (expired 15 Nov)" after, '' with no expiry. */
+export function expiryLabel(x: { expires?: string }, now = Date.now()): string {
+  const at = expiryMs(x.expires)
+  if (Number.isNaN(at)) return ''
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(x.expires!)
+  const when = new Date(at).toLocaleString('en-GB', dateOnly
+    ? { day: 'numeric', month: 'short' }
+    : { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })
+  return ` (${at <= now ? 'expired' : 'until'} ${when})`
 }
 
 /** More than this is a loop nobody is going to finish; the tail adds nothing. */
@@ -127,12 +155,14 @@ export function upsertNote(
       ...(patch.key !== undefined ? { key: patch.key } : {}),
       ...(patch.supersededBy !== undefined ? { supersededBy: patch.supersededBy } : {}),
       ...(patch.confirmedAt !== undefined ? { confirmedAt: patch.confirmedAt } : {}),
+      ...(patch.expires !== undefined ? { expires: patch.expires } : {}),
       // Rewriting a fact's text is saying it again.
       ...(existing.kind === 'fact' && patch.text !== undefined && patch.confirmedAt === undefined ? { confirmedAt: now } : {}),
       updatedAt: now,
     })
     // An empty due clears it: "still live" keeps the loop without a date.
     if (patch.due === '') delete existing.due
+    if (patch.expires === '') delete existing.expires
     return { notes, note: existing, created: false }
   }
   if (!patch.kind) throw new Error('kind is required when creating a note')
@@ -153,6 +183,7 @@ export function upsertNote(
     ...(patch.source ? { source: patch.source } : {}),
     ...(patch.undo ? { undo: patch.undo } : {}),
     ...(patch.key ? { key: patch.key } : {}),
+    ...(patch.expires ? { expires: patch.expires } : {}),
     ...(patch.kind === 'fact' ? { confirmedAt: patch.confirmedAt ?? now } : {}),
   }
   notes.push(note)
@@ -167,9 +198,9 @@ export function upsertNote(
  */
 export function searchNotes(
   notes: Note[],
-  opts: { query?: string; kind?: NoteKind; tag?: string; includeClosed?: boolean; includeSuperseded?: boolean; limit?: number } = {},
+  opts: { query?: string; kind?: NoteKind; tag?: string; includeClosed?: boolean; includeSuperseded?: boolean; includeExpired?: boolean; now?: number; limit?: number } = {},
 ): Note[] {
-  const { query, kind, tag, includeClosed = false, includeSuperseded = false, limit = 20 } = opts
+  const { query, kind, tag, includeClosed = false, includeSuperseded = false, includeExpired = false, now = Date.now(), limit = 20 } = opts
   const terms = (query ?? '')
     .toLowerCase()
     .split(/\s+/)
@@ -181,6 +212,8 @@ export function searchNotes(
     if (!includeClosed && n.status && n.status !== 'open') return false
     // A replaced fact is history, not an answer.
     if (!includeSuperseded && n.supersededBy) return false
+    // So is one whose date has passed.
+    if (!includeExpired && isExpired(n, now)) return false
     if (!terms.length) return true
     const hay = `${n.text} ${n.tags.join(' ')} ${n.source ?? ''} ${n.key ?? ''}`.toLowerCase()
     return terms.every(t => hay.includes(t))
@@ -204,6 +237,7 @@ export function formatNote(n: Note): string {
   if (n.supersededBy) bits.push(`(superseded by ${n.supersededBy})`)
   if (n.key) bits.push(`{${n.key}}`)
   if (n.due) bits.push(`due ${n.due}`)
+  if (n.expires) bits.push(expiryLabel(n).trim())
   if (n.tags.length) bits.push(`#${n.tags.join(' #')}`)
   const head = bits.join(' ')
   const tail = (n.undo ? `\n      undo: ${n.undo}` : '') +

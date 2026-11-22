@@ -184,3 +184,12 @@ test('prepare clears stale digests so nothing is consolidated twice', () => {
   expect(files).not.toContain('leftover.md')
   expect(plan.digestDir).toBe(digests)
 })
+
+test('the nightly memory review is excluded by its prompt and its cwd', async () => {
+  const { REVIEW_PROMPT } = await import('../memreview.ts')
+  const path = write('review.jsonl', [userTurn(REVIEW_PROMPT.slice(0, 400)), assistantTurn([{ type: 'text', text: 'plan ready' }])])
+  expect(digestTranscript(path, '-x-elsewhere')).toBeNull()
+  const plain = write('review2.jsonl', [userTurn('anything'), assistantTurn([{ type: 'text', text: 'ok' }])])
+  expect(digestTranscript(plain, '-Users-x--otto-state-memreview')).toBeNull()
+  expect(digestTranscript(plain, '-Users-x--otto-state-digests')).toBeNull()
+})

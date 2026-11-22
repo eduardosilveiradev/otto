@@ -248,7 +248,7 @@ test('nightly never throws: an unreadable key is a failed night, not a crash', a
 
 async function statusRow(stateDir: string, now: number) {
   const deps: StatusDeps = {
-    stateDir, now, launchAgentsDir: join(tmp, 'no-agents'), relayPort: 4590,
+    stateDir, usageHome: tmp, now,
     http: async () => ({ status: 200 }), run: async () => true, pidAlive: () => true,
   }
   return (await collectStatus(deps)).find(r => r.id === 'backup')!

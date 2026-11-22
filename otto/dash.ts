@@ -1,3 +1,5 @@
+import { slotSnapshot } from './slots.ts'
+import { jobSpans } from './job-overview.ts'
 // Dashboard API — /app/dash/*, for the otto-dash web app.
 //
 // A browser on another origin reads Otto's state through here, over the same
@@ -7,7 +9,7 @@
 //
 // The order inside handleDash is the security model, and it is fixed:
 //   Host (421, against DNS rebinding) → ping (any origin) → Origin allowlist
-//   (403, no CORS headers) → OPTIONS → pair/* (unauthenticated) → bearer token
+//   (403, no CORS headers) → OPTIONS → pair/* (unauthenticated; with no Origin, a native app only) → bearer token
 //   (401) → expiry (401) → token bound to this Origin (403) → scope (403) → route.
 //
 // The allowlist is dash.json in the state dir (OTTO_DASH_CONFIG overrides the
@@ -26,7 +28,7 @@ import { findAppToken, hasScope, isDashToken, isExpired, listAppTokens, revokeAp
 import { coarseIp, pollPairing, startPairing } from './pairing.ts'
 import { collectStatus, recentRepairLines, type StatusDeps } from './status.ts'
 import { gistOf, type BriefData } from './brief.ts'
-import { VIEWER_JSON, peopleCards, readNotes, readPeople, scopeLabel, searchMemory, type Graph, type Item } from './memviewer.ts'
+import { VIEWER_JSON, peopleCards, startRebuild, readNotes, readPeople, scopeLabel, searchMemory, type Graph, type Item } from './memviewer.ts'
 import { loadMoney, queryMoney, totalsByCategory, totalsByCurrency, totalsByMonth } from './money.ts'
 import { PLACE_KINDS, PLACE_STATUSES, fold, queryPlaces, readPlaces } from './places.ts'
 import { proactivityReport } from './ledger.ts'
@@ -36,6 +38,10 @@ import { activePackages, carrierName, loadPackages, markDelivered, trackingUrl, 
 import { currentOrNextTrip } from './triplife.ts'
 import { loadLog } from './changelog.ts'
 import { loadJobs } from './jobs.ts'
+import { t3UsageClient } from './t3.ts'
+import { PLAN_WINDOWS, liveWindows, type PlanKey, type PlanUsage } from './spend.ts'
+import { readUsage } from './usagelog.ts'
+import { type Showoff, hidden, showoffLive } from './showoff.ts'
 import { recentClosures, resolveConfig, runHygiene } from './hygiene.ts'
 import type { Note } from './store.ts'
 
@@ -46,7 +52,7 @@ export type DashTrigger = {
   tz?: string; condition?: string; createdAt: string
 }
 
-/** What server.ts hands in. Writes go through its existing /app handlers, untouched. */
+/** What server.ts hands in. Writes go through the existing /app handlers (http.ts), untouched. */
 export type DashDeps = {
   stateDir: string
   brief: () => BriefData | null
@@ -60,12 +66,20 @@ export type DashDeps = {
   search?: (q: string) => Promise<{ results: [number, number][] } | { error: string }>
   /** Defaults to a detached `bun memviewer.ts --refresh`; tests and dash-dev stub it. */
   rebuild?: () => { exited: Promise<unknown> }
+  /** The `forget` tool's own path (toolcalls.ts) for one listed memory; false when the store no longer has it. Absent (dash-dev), the route answers 501. */
+  forget?: (it: Item) => boolean
+  /** A new body through the memory store, as `remember` writes one; false when the store has no such memory, a throw when it can't be changed there. */
+  rewrite?: (it: Item, body: string) => boolean
+  /** Fires one now, as its schedule would (server.ts runTriggerNow). Absent (dash-dev), the trigger writes answer 501. */
+  runTrigger?: (id: string) => Promise<'started' | 'not_found' | 'running' | 'type' | 'unsaved'>
+  /** `delete_trigger`'s own removal (toolcalls.ts); false when there is no such trigger. */
+  deleteTrigger?: (id: string) => boolean
+  /** Switches one on or off; null when there is none, 'past' for a one-shot whose time has gone. */
+  toggleTrigger?: (id: string, enabled: boolean) => DashTrigger | null | 'past'
   /** The live feed recordHistory fills; dash-dev tails history.jsonl into one. */
   chat: ChatFeed
   /** Delivers a dashboard-typed message into the app thread. Absent (dash-dev), POST chat answers 501 preview. */
   sendApp?: (text: string, id: string) => Promise<void>
-  /** callbot's relay, which owns live calls. Defaults to it on loopback; tests stub it. */
-  relay?: (path: string, init?: RequestInit) => Promise<Response>
 }
 
 /** Bun.Server, as far as clientIp needs it. */
@@ -279,6 +293,40 @@ function readViewer(stateDir: string): Viewer | null {
   return viewerCache.data
 }
 
+/**
+ * The snapshot with one memory dropped (no `body`) or its text replaced, under a new
+ * generatedAt, so the list and memory/search stay in step without a rebuild: search re-reads
+ * the file when it changes and stamps its results with the same generatedAt. Edges, clusters
+ * and mentions are positions in `items`, so a drop renumbers them. Null when the id isn't listed.
+ */
+function patchViewer(stateDir: string, id: string, body?: string): { v: Viewer; it: Item } | null {
+  const file = join(stateDir, VIEWER_JSON)
+  let v: Viewer & { people?: { mentions?: number[] }[] }
+  try { v = JSON.parse(readFileSync(file, 'utf8')) } catch { return null }
+  const k = v.items.findIndex(i => publicId(i) === id)
+  if (k < 0) return null
+  let it = v.items[k]
+  if (body !== undefined) {
+    it = v.items[k] = { ...it, body, updated: new Date().toISOString(), ...(it.store === 'notes' ? { name: body.split('\n')[0].slice(0, 90) } : {}) }
+  } else {
+    const at = (i: number) => (i > k ? i - 1 : i)
+    const keep = <T extends number[]>(es: T[]) => es.filter(e => e[0] !== k && e[1] !== k).map(e => [at(e[0]), at(e[1]), ...e.slice(2)] as T)
+    const g = v.graph
+    v.items.splice(k, 1)
+    g.links = keep(g.links)
+    g.similar = keep(g.similar)
+    if (g.c) { const [was] = g.c.splice(k, 1); const cl = g.clusters?.find(c => c.id === was); if (cl) cl.size-- }
+    if (g.noise) g.noise = g.noise.filter(i => i !== k).map(at)
+    for (const p of v.people ?? []) if (p.mentions) p.mentions = p.mentions.filter(i => i !== k).map(at)
+  }
+  v.generatedAt = new Date().toISOString()
+  writeFileSync(file + '.tmp', JSON.stringify(v).replace(/</g, '\\u003c'), { mode: 0o600 })
+  renameSync(file + '.tmp', file)
+  return { v, it }
+}
+
+const MEMORY_BODY_MAX = 20_000
+
 const graphDto = (g: Graph): D.MemoryGraph => ({
   ...pick(g, ['links', 'similar', 'floor', 'c', 'noise', 'note']),
   ...(g.clusters ? { clusters: g.clusters.map(c => pick(c, ['id', 'size', 'label', 'terms', 'x', 'y'])) } : {}),
@@ -293,6 +341,8 @@ type Ctx = {
   origin?: string; ip: string; via: 'funnel' | 'direct'
   cors: Record<string, string>
   token: AppToken
+  /** When show-off mode began, while it is live (showoff.ts). */
+  showoffSince?: string
 }
 
 const REASON: Record<number, string> = { 400: 'bad_request', 404: 'not_found', 405: 'method', 409: 'conflict', 501: 'not_implemented' }
@@ -326,8 +376,6 @@ export function rateKey(ip: string): string {
 }
 
 const days = (v: string | null, dflt: number) => Math.min(Math.max(1, Number(v) || dflt), 365)
-
-let rebuilding = false
 
 type Route = { scope: Scope; run: (c: Ctx) => unknown | Promise<unknown> }
 
@@ -398,13 +446,46 @@ const routes: Record<string, Route> = {
 
   'POST memory/rebuild': {
     scope: 'write', run: c => {
-      if (rebuilding) return reply(c, { error: 'running' }, 409)
-      const proc = (c.deps.rebuild ?? (() => Bun.spawn(['bun', join(import.meta.dir, 'memviewer.ts'), '--refresh'], {
-        env: { ...process.env, OTTO_STATE_DIR: c.deps.stateDir }, stdio: ['ignore', 'ignore', 'ignore'],
-      })))()
-      rebuilding = true
-      void proc.exited.catch(() => {}).finally(() => { rebuilding = false })
+      if (!startRebuild(c.deps.stateDir, c.deps.rebuild)) return reply(c, { error: 'running' }, 409)
       return reply(c, { started: true } satisfies D.MemoryRebuild, 202)
+    },
+  },
+
+  // Both go through the memory store (deps), never a file write of their own, and then patch the snapshot the list is read from.
+  'POST memory/forget': {
+    scope: 'write', run: async c => {
+      const r = await readJson(c.req)
+      if (!('body' in r)) return reply(c, { error: r.error }, r.status)
+      const it = readViewer(c.deps.stateDir)?.items.find(i => publicId(i) === r.body.id)
+      if (typeof r.body.id !== 'string' || !it) return reply(c, { error: 'not_found' }, 404)
+      if (!c.deps.forget) return reply(c, { error: 'preview' }, 501)
+      // Already gone from the store (the snapshot is a night old): it still leaves the list.
+      c.deps.forget(it)
+      const p = patchViewer(c.deps.stateDir, r.body.id)
+      if (!p) return reply(c, { error: 'not_found' }, 404)
+      log('memory-forget', c, c.token.id)
+      return { forgotten: true, generatedAt: p.v.generatedAt } satisfies D.MemoryForgotten
+    },
+  },
+
+  'POST memory/item': {
+    scope: 'write', run: async c => {
+      const r = await readJson(c.req)
+      if (!('body' in r)) return reply(c, { error: r.error }, r.status)
+      const { id, body } = r.body
+      const it = readViewer(c.deps.stateDir)?.items.find(i => publicId(i) === id)
+      if (typeof id !== 'string' || !it) return reply(c, { error: 'not_found' }, 404)
+      if (typeof body !== 'string' || !body.trim() || body.length > MEMORY_BODY_MAX) return reply(c, { error: 'body' }, 400)
+      // What a memory says is read back later as the user's own word (a durable one as a rule in every session, a
+      // fact by recall): its text is changed only from their own app, never with a token that lives in a browser.
+      if (isDashToken(c.token)) return reply(c, { error: 'native_only' }, 403)
+      if (!c.deps.rewrite) return reply(c, { error: 'preview' }, 501)
+      let ok: boolean
+      try { ok = c.deps.rewrite(it, body.trim()) } catch { return reply(c, { error: 'conflict' }, 409) }
+      const p = ok ? patchViewer(c.deps.stateDir, id, body.trim()) : null
+      if (!p) return reply(c, { error: 'not_found' }, 404)
+      log('memory-edit', c, c.token.id)
+      return { ...listItem(p.it, p.v.scopes), body: p.it.body, generatedAt: p.v.generatedAt } satisfies D.MemoryItemEdited
     },
   },
 
@@ -503,17 +584,19 @@ const routes: Record<string, Route> = {
       const feed = c.deps.chat
       const typing = () => thread === 'app' && feed.typing
       const after = c.url.searchParams.get('after')
+      // Show-off mode: only what was said since it began.
+      const shown = (es: ChatEntry[]) => chatRows(c.showoffSince ? es.filter(e => e.ts >= c.showoffSince!) : es)
       if (after === null) {
-        return { thread, messages: chat_id ? chatRows(c.deps.readHistory(chat_id, CHAT_LIMIT)) : [], cursor: feed.seq, typing: typing() } satisfies D.DashChat
+        return { thread, messages: chat_id ? shown(c.deps.readHistory(chat_id, CHAT_LIMIT)) : [], cursor: feed.seq, typing: typing() } satisfies D.DashChat
       }
       const n = Number(after)
       if (!/^\d+$/.test(after) || !Number.isSafeInteger(n)) return reply(c, { error: 'after' }, 400)
       // A cursor ahead of ours is from before a restart: the client reloads history.
       if (n > feed.seq) return { thread, messages: [], cursor: feed.seq, typing: typing(), reset: true } satisfies D.DashChat
-      let rows = chat_id ? chatRows(feed.since(n, chat_id)) : []
+      let rows = chat_id ? shown(feed.since(n, chat_id)) : []
       if (!rows.length) {
         await feed.wait(CHAT_WAIT_MS, c.req.signal)
-        rows = chat_id ? chatRows(feed.since(n, chat_id)) : []
+        rows = chat_id ? shown(feed.since(n, chat_id)) : []
       }
       return { thread, messages: rows, cursor: feed.seq, typing: typing() } satisfies D.DashChat
     },
@@ -538,43 +621,9 @@ const routes: Record<string, Route> = {
     },
   },
 
-  'GET calls': {
-    scope: 'read', run: async c => {
-      const id = c.url.searchParams.get('id'), after = c.url.searchParams.get('after')
-      if (id !== null && !CALL_ID_RE.test(id)) return reply(c, { error: 'id' }, 400)
-      if (after !== null && !/^\d{1,9}$/.test(after)) return reply(c, { error: 'after' }, 400)
-      const r = await toRelay(c, id ? `/calls/${id}${after !== null ? `?after=${after}` : ''}` : '/calls', { signal: c.req.signal })
-      if (r instanceof Response) return r
-      return id ? callDto(r) : { calls: (r.calls ?? []).map(callDto) } satisfies D.DashCalls
-    },
-  },
-
-  'POST calls/control': {
-    scope: 'write', run: async c => {
-      const b = await readJson(c.req)
-      if (!('body' in b)) return reply(c, { error: b.error }, b.status)
-      const { id, action, text } = b.body
-      if (typeof id !== 'string' || !CALL_ID_RE.test(id)) return reply(c, { error: 'id' }, 400)
-      if (!['say', 'tell', 'end', 'takeover'].includes(action as string)) return reply(c, { error: 'action' }, 400)
-      if (text !== undefined && (typeof text !== 'string' || text.length > 500)) return reply(c, { error: 'text' }, 400)
-      const r = await toRelay(c, `/calls/${id}/control`, { method: 'POST', body: JSON.stringify({ action, text }) }, true)
-      if (r instanceof Response) return r
-      log(`call-${action}`, c, c.token.id)
-      return { ok: !!r.ok, ...(r.error ? { error: String(r.error) } : {}) } satisfies D.CallControlResult
-    },
-  },
-
-  'POST calls/listen': {
-    // Live audio of a call is control, not a read: the 90-day read token must not be able to listen in.
-    scope: 'write', run: async c => {
-      const b = await readJson(c.req)
-      if (!('body' in b)) return reply(c, { error: b.error }, b.status)
-      if (typeof b.body.id !== 'string' || !CALL_ID_RE.test(b.body.id)) return reply(c, { error: 'id' }, 400)
-      const r = await toRelay(c, `/calls/${b.body.id}/ticket`, { method: 'POST' })
-      if (r instanceof Response) return r
-      return { url: String(r.url) } satisfies D.CallListen
-    },
-  },
+  'GET calls': { scope: 'read', run: c => reply(c, { error: 'calls' }, 501) },
+  'POST calls/control': { scope: 'write', run: c => reply(c, { error: 'calls' }, 501) },
+  'POST calls/listen': { scope: 'write', run: c => reply(c, { error: 'calls' }, 501) },
 
   'GET proactivity': {
     scope: 'read', run: c => {
@@ -626,7 +675,19 @@ const routes: Record<string, Route> = {
     },
   },
 
-  'GET jobs': { scope: 'read', run: c => ({ jobs: loadJobs(join(c.deps.stateDir, 'jobs.json')).map(j => pick(j, JOB_KEYS)) }) satisfies D.Jobs },
+  'GET jobs': { scope: 'read', run: async c => ({
+    jobs: loadJobs(join(c.deps.stateDir, 'jobs.json')).map(j => ({ ...pick(j, JOB_KEYS), activity: null, slotWait: null, spans: jobSpans(j, j.state === 'killed' ? 'stopped' : j.state) })),
+    mac: (await slotSnapshot(c.deps.stateDir).catch(() => null))?.mac ?? null,
+  }) satisfies D.Jobs },
+
+  /** Plan usage over time (usagelog.ts): `since` (ISO), default the last 14 days. */
+  'GET usage/history': {
+    scope: 'read', run: c => {
+      const since = c.url.searchParams.get('since') || new Date(Date.now() - 14 * 86_400_000).toISOString()
+      if (!Number.isFinite(Date.parse(since))) return reply(c, { error: 'since' }, 400)
+      return { rows: readUsage(join(c.deps.stateDir, 'usage-history.jsonl'), new Date(since).toISOString()) }
+    },
+  },
 
   'GET triggers': { scope: 'read', run: c => ({ triggers: triggerRows(c.deps.loadTriggers()) }) satisfies D.Triggers },
 
@@ -637,6 +698,51 @@ const routes: Record<string, Route> = {
       return { ...triggerRows([t])[0], ...pick(t, ['action', 'condition', 'tz', 'createdAt']) } satisfies D.TriggerDetail
     },
   },
+
+  'POST triggers/run': {
+    scope: 'write', run: async c => {
+      const b = await triggerBody(c)
+      if (b instanceof Response) return b
+      if (!c.deps.runTrigger) return reply(c, { error: 'preview' }, 501)
+      const r = await c.deps.runTrigger(b.id)
+      if (r !== 'started') return reply(c, { error: r }, { not_found: 404, running: 409, type: 400, unsaved: 503 }[r])
+      log('trigger-run', c, c.token.id)
+      return reply(c, { started: true } satisfies D.TriggerStarted, 202)
+    },
+  },
+
+  'POST triggers/delete': {
+    scope: 'write', run: async c => {
+      const b = await triggerBody(c)
+      if (b instanceof Response) return b
+      if (!c.deps.deleteTrigger) return reply(c, { error: 'preview' }, 501)
+      if (!c.deps.deleteTrigger(b.id)) return reply(c, { error: 'not_found' }, 404)
+      log('trigger-delete', c, c.token.id)
+      return { deleted: true } satisfies D.TriggerDeleted
+    },
+  },
+
+  'POST triggers/toggle': {
+    scope: 'write', run: async c => {
+      const b = await triggerBody(c)
+      if (b instanceof Response) return b
+      if (typeof b.enabled !== 'boolean') return reply(c, { error: 'bad_request' }, 400)
+      if (!c.deps.toggleTrigger) return reply(c, { error: 'preview' }, 501)
+      const t = c.deps.toggleTrigger(b.id, b.enabled)
+      if (t === 'past') return reply(c, { error: 'past' }, 409)
+      if (!t) return reply(c, { error: 'not_found' }, 404)
+      log(`trigger-${b.enabled ? 'on' : 'off'}`, c, c.token.id)
+      return triggerRows([t])[0] satisfies D.TriggerRow
+    },
+  },
+}
+
+/** A trigger write's body, its `id` checked, or the response to send instead. */
+async function triggerBody(c: Ctx): Promise<{ id: string; enabled?: unknown } | Response> {
+  const r = await readJson(c.req)
+  if (!('body' in r)) return reply(c, { error: r.error }, r.status)
+  const { id, enabled } = r.body
+  return typeof id === 'string' && /^[\w-]{1,64}$/.test(id) ? { id, enabled } : reply(c, { error: 'bad_request' }, 400)
 }
 
 /** Events newest first and without their source: a source can carry a mail id. */
@@ -675,46 +781,8 @@ function revokeDevice(c: Ctx, id: string): Response {
 }
 
 // ---------------------------------------------------------------------------
-// Calls: proxied to callbot's relay
 // ---------------------------------------------------------------------------
 
-const CALL_ID_RE = /^[\w-]{8,64}$/
-
-const defaultRelay = (path: string, init: RequestInit = {}) => fetch(`http://127.0.0.1:${process.env.RELAY_PORT ?? 4590}${path}`, {
-  ...init, headers: { 'x-vapi-secret': process.env.VAPI_SERVER_SECRET ?? '', 'content-type': 'application/json' },
-})
-
-/**
- * The relay's JSON, or the Response to send instead. `passError` lets a
- * control's own refusal ("the call has ended") through as a 200 with ok:false.
- */
-async function toRelay(c: Ctx, path: string, init?: RequestInit, passError = false): Promise<any | Response> {
-  if (!c.deps.relay && !process.env.VAPI_SERVER_SECRET) return reply(c, { error: 'calls' }, 501)
-  let r: Response
-  try {
-    r = await (c.deps.relay ?? defaultRelay)(path, init)
-  } catch {
-    if (c.req.signal.aborted) return reply(c, { error: 'aborted' }, 499)
-    return reply(c, { error: 'relay' }, 503)
-  }
-  const j = await r.json().catch(() => null)
-  if (r.ok || (passError && j && 'ok' in j)) return j ?? {}
-  return reply(c, { error: r.status === 404 ? 'not_found' : 'relay' }, r.status === 404 ? 404 : 503)
-}
-
-function callDto(j: any): D.DashCall {
-  return {
-    ...pick(j, ['id', 'to', 'task', 'status', 'seq', 'createdAt', 'startedAt', 'endedAt', 'endedReason', 'takeover']),
-    lines: (j.lines ?? []).map((l: D.CallLine) => pick(l, ['role', 'text'])),
-    partial: pick(j.partial ?? {}, ['assistant', 'user']),
-  } as D.DashCall
-}
-
-// ---------------------------------------------------------------------------
-// The router
-// ---------------------------------------------------------------------------
-
-/** Anything under /app/dash/, answered; anything else, undefined, for handleApp to carry on with. */
 export function handleDash(req: Request, server: DashServer, deps: DashDeps): Promise<Response> | undefined {
   const url = new URL(req.url)
   if (!url.pathname.startsWith('/app/dash/')) return undefined
@@ -728,7 +796,8 @@ async function dispatch(req: Request, url: URL, server: DashServer, deps: DashDe
   const origin = req.headers.get('origin') ?? undefined
   const allowed = !!origin && originAllowed(cfg, origin)
   // Answers any origin, so the setup screen can tell "unreachable" from "not allowlisted yet".
-  if (path === 'ping') return json({ ok: true, origin: allowed ? 'allowed' : 'blocked' } satisfies D.Ping, 200, { 'access-control-allow-origin': '*' })
+  // `native`: this server pairs a native app by code (pair/start with no Origin and client "native").
+  if (path === 'ping') return json({ ok: true, origin: allowed ? 'allowed' : 'blocked', native: true } satisfies D.Ping, 200, { 'access-control-allow-origin': '*' })
 
   const c = { req, url, deps, origin, ...clientIp(req, server), cors: allowed ? corsHeaders(origin!) : {} }
   /** 401s and 403s are logged and limited per IP: past 20 a minute they turn into 429s. */
@@ -742,10 +811,11 @@ async function dispatch(req: Request, url: URL, server: DashServer, deps: DashDe
   try {
     if (path === 'pair/start' || path === 'pair/poll') {
       if (req.method !== 'POST') return reply(c, { error: 'method' }, 405)
-      // Only an allowlisted browser origin may pair: the token is bound to it.
-      if (!origin) return deny(403, 'origin')
       const r = await readJson(req)
       if (!('body' in r)) return reply(c, { error: r.error }, r.status)
+      // A browser pairs only from an allowlisted origin (checked above), and its token is bound to it. With no
+      // Origin only a native app pairs, and it says so; collecting needs nothing but the device_code (pairing.ts).
+      if (!origin && path === 'pair/start' && r.body.client !== 'native') return deny(403, 'origin')
       if (path === 'pair/start' && !rateLimit(`pair:${rateKey(c.ip)}`, 5, 3600_000)) return reply(c, { error: 'rate_limited' }, 429)
       const out = path === 'pair/start' ? startPairing(r.body, { origin, ip: c.ip, via: c.via }) : pollPairing(r.body, { origin })
       return reply(c, out.body, out.status)
@@ -772,7 +842,10 @@ async function dispatch(req: Request, url: URL, server: DashServer, deps: DashDe
     }
     if (!hasScope(token, route.scope)) return deny(403, 'scope', token.id)
     touchAppToken(token.id)
-    const out = await route.run(ctx)
+    const so = showoffLive(readJsonFile<{ showoff?: Showoff }>(join(deps.stateDir, 'access.json')))
+    const veiled = so && hidden(`${req.method} ${path}`)
+    if (veiled) return reply(c, veiled)
+    const out = await route.run({ ...ctx, showoffSince: so?.since })
     return out instanceof Response ? out : reply(c, out)
   } catch (err) {
     process.stderr.write(`[dash] ${req.method} ${path} failed: ${err}\n`)

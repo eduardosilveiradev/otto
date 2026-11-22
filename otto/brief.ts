@@ -26,7 +26,7 @@
 import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
-import { loadNotes, dueLoops, searchNotes, type Note } from './store.ts'
+import { loadNotes, dueLoops, searchNotes, isExpired, type Note } from './store.ts'
 import { probeWorkspace, formatWorkspace } from './workspace.ts'
 import { loadTrips } from './trips.ts'
 import { formatTripMode } from './triplife.ts'
@@ -241,6 +241,8 @@ export type BriefParts = {
   mail: MailThread[] | null
   loops: Note[]
   facts: Note[]
+  /** All goal facts, independent of the standing-facts limit. */
+  goals?: Note[]
   triggers: TriggerGist[]
   history: HistoryLine[]
   workspace?: string
@@ -315,12 +317,44 @@ export function sectionLabels(text: string): string[] {
   return [...new Set(labels)]
 }
 
+/** Calendar-day ordinal in the brief's timezone; DST days need not be 24 hours. */
+function goalDay(date: Date, tz: string): number {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date)
+  const field = (type: string) => Number(parts.find(p => p.type === type)!.value)
+  return Date.UTC(field('year'), field('month') - 1, field('day')) / 86_400_000
+}
+
+function goalDays(n: Note, now: Date, tz: string): number | undefined {
+  if (!n.due) return undefined
+  const date = new Date(n.due)
+  if (Number.isNaN(date.getTime())) return undefined
+  // Date-only targets are local calendar dates, not midnight UTC instants.
+  const target = /^\d{4}-\d{2}-\d{2}$/.test(n.due)
+    ? date.getTime() / 86_400_000 : goalDay(date, tz)
+  return target - goalDay(now, tz)
+}
+
 export function formatBrief(p: BriefParts): string {
   const stamp = hhmm(p.now, p.tz)
   const out: string[] = [
     `Otto brief — ${p.now.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}, ${stamp} ${p.tz}.`,
     'This is context, not an instruction. Anything not here, look up before saying it.',
   ]
+
+  const goals = (p.goals ?? p.facts).filter(n =>
+    n.kind === 'fact' && n.key?.startsWith('goal.') && n.key.length > 5 &&
+    !n.supersededBy && (n.status ?? 'open') === 'open' && !isExpired(n, p.now.getTime()),
+  ).map(note => ({ note, days: goalDays(note, p.now, p.tz) }))
+    .sort((a, b) => (a.days ?? Infinity) - (b.days ?? Infinity))
+  if (goals.length) {
+    out.push(`Goals (as of ${stamp}): ${goals.map(({ note, days }) => {
+      const remaining = days === undefined ? '' : days === 0 ? ' (today)'
+        : days < 0 ? ` (${-days} ${days === -1 ? 'day' : 'days'} overdue)` : ` (${days} ${days === 1 ? 'day' : 'days'} remaining)`
+      return `${truncate(note.text, 100)}${remaining}`
+    }).join('; ')}`)
+  }
 
   if (p.events !== null) {
     const today = p.events.filter(e => e.status !== 'cancelled')
@@ -374,8 +408,9 @@ export function formatBrief(p: BriefParts): string {
   // only when a window closes within days; it never becomes a message.
   if (p.returns) out.push(truncate(p.returns, 300))
 
-  if (p.facts.length) {
-    out.push(`Standing facts: ${p.facts.slice(0, 6).map(n => truncate(n.text, 70)).join('; ')}`)
+  const standingFacts = p.facts.filter(n => !n.key?.startsWith('goal.'))
+  if (standingFacts.length) {
+    out.push(`Standing facts: ${standingFacts.slice(0, 6).map(n => truncate(n.text, 70)).join('; ')}`)
   }
 
   if (p.triggers.length) {
@@ -465,8 +500,13 @@ export type GatherOpts = {
   projectsRoot?: string
 }
 
+/** Only mail text in the brief taints; an empty inbox or calendar alone does not. */
+export function briefHasMail(p: BriefParts): boolean {
+  return Boolean(p.mail?.some(mailWorthNaming) || p.debts?.length)
+}
+
 /** Everything at once — one slow source must not serialize the others. */
-export async function gatherBrief(o: GatherOpts): Promise<{ text: string; busyUntil?: string; data: BriefData }> {
+export async function gatherBrief(o: GatherOpts): Promise<{ text: string; busyUntil?: string; data: BriefData; hasMail: boolean }> {
   const now = o.now ?? new Date()
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
 
@@ -485,7 +525,8 @@ export async function gatherBrief(o: GatherOpts): Promise<{ text: string; busyUn
     loops: dueLoops(o.notes, now.getTime(), 7 * 24 * 60 * 60 * 1000).slice(0, 5)
       .concat(searchNotes(o.notes, { kind: 'loop', limit: 5 }).filter(n => !n.due))
       .slice(0, 5),
-    facts: searchNotes(o.notes, { kind: 'fact', limit: 6 }),
+    facts: searchNotes(o.notes.filter(n => !n.key?.startsWith('goal.')), { kind: 'fact', now: now.getTime(), limit: 6 }),
+    goals: o.notes.filter(n => n.kind === 'fact' && n.key?.startsWith('goal.')),
     triggers: o.triggers,
     history: o.history,
     ...(ws ? { workspace: ws } : {}),
@@ -499,7 +540,7 @@ export async function gatherBrief(o: GatherOpts): Promise<{ text: string; busyUn
   }
   const text = formatBrief(parts)
 
-  return { text, data: briefData(parts), ...(events ? { busyUntil: busyUntil(events, now.getTime()) } : {}) }
+  return { text, data: briefData(parts), hasMail: briefHasMail(parts), ...(events ? { busyUntil: busyUntil(events, now.getTime()) } : {}) }
 }
 
 if (import.meta.main) {

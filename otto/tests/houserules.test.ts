@@ -73,12 +73,13 @@ test('unrelated corrections are not merged just for sharing a word', () => {
   expect(c.rules).toHaveLength(2)
 })
 
-test('only global feedback counts, and never the compiler’s own output', () => {
+test('only global, unexpired feedback counts, and never the compiler’s own output', () => {
   const c = compileHouseRules([
     fb('g', 'Answer in the terminal when typed there'),
     fb('p', 'Use tabs in this repo', 'x', { scope: '-some-project' }),
     fb('u', 'A user memory', 'x', { type: 'user' }),
     fb(HOUSE_RULES_NAME, 'Compiled house rules'),
+    fb('e', 'Skip the gym reminders this week', 'x', { expires: '2000-01-01' }),
   ])
   expect(c.rules.map(r => r.from)).toEqual(['g'])
 })
@@ -119,4 +120,23 @@ test('a memory of that name the pass did not write is never overwritten', () => 
   const r = writeHouseRules(load(), { dir })
   expect(r.result).toBe('foreign-memory')
   expect(readFileSync(path, 'utf8')).toContain('hand written')
+})
+
+test('session rules: this project first, other projects out, duplicates folded, capped', async () => {
+  const { sessionRules, projectScopes } = await import('../houserules.ts')
+  expect([...projectScopes('/test-home/u/.otto/repo/runtime')]).toContain('-test-home-u--otto-repo')
+  const mems = [
+    fb('g1', 'Never use emoji in your replies'),
+    fb('g2', 'Never use emoji in replies'),
+    fb('p1', 'Say on it before slow work', 'x', { scope: '-test-home-u--otto-repo' }),
+    fb('o1', 'Rule from another project', 'x', { scope: '-home-u-other' }),
+  ]
+  const out = sessionRules(mems, '/test-home/u/.otto/repo/runtime')
+  const lines = out.split('\n').slice(1)
+  expect(lines[0]).toBe('- Say on it before slow work')
+  expect(lines.filter(l => l.includes('emoji'))).toEqual(['- Never use emoji in replies'])
+  expect(out).not.toContain('another project')
+  const tight = sessionRules(mems, '/test-home/u/.otto/repo', 140)
+  expect(tight).toContain("1 older rules didn't fit")
+  expect(sessionRules([], '/x')).toBe('')
 })

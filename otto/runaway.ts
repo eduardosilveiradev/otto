@@ -7,7 +7,8 @@
  * and kernel memory pressure (`sysctl`) and the thermal state (NSProcessInfo),
  * and writes only when a line is crossed. The text is final: no model.
  *
- * Three lines:
+ * Four lines:
+ *  - 3+ hour-old orphaned automation browsers: once per set, at most daily;
  *  - a process averaging over `cpuPercent` for `hours` straight: once per
  *    process, ever (keyed by pid + start time, so a reused pid is a new one);
  *  - swap past `swapGb`, or critical memory pressure, for 20 minutes;
@@ -29,6 +30,7 @@
  * ps, sysctl, kill and the clock are parameters, so the tests never touch the machine.
  */
 
+import { createHash } from 'node:crypto'
 import { run } from './workspace.ts'
 import { loadState, saveState } from './statefile.ts'
 
@@ -46,12 +48,12 @@ export function resolveRunawayConfig(raw?: { cpuPercent?: unknown; hours?: unkno
   return { cpuPercent: pick('cpuPercent'), hours: pick('hours'), swapGb: pick('swapGb'), ignore }
 }
 
-export type ProcSample = { pid: number; uid: number; rssKb: number; cpuSec: number; start: number; comm: string }
+export type ProcSample = { pid: number; uid: number; rssKb: number; cpuSec: number; start: number; comm: string; ppid?: number; args?: string }
 
-export const PS_ARGS = ['ps', process.platform === 'darwin' ? '-axo' : '-eo', 'pid=,uid=,rss=,time=,lstart=,comm=']
+export const PS_ARGS = ['ps', '-ww', process.platform === 'darwin' ? '-axo' : '-eo', 'pid=,uid=,rss=,time=,lstart=,comm=,ppid=,args=']
 
 const LSTART = String.raw`(\w{3} \w{3}\s+\d{1,2} \d\d:\d\d:\d\d \d{4})`
-const PS_LINE = new RegExp(String.raw`^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+${LSTART}\s+(.+)$`)
+const PS_LINE = new RegExp(String.raw`^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+${LSTART}\s+(.+?)\s+(\d+)\s+(.+)$`)
 const PS_ONE = new RegExp(String.raw`^\s*(\d+)\s+${LSTART}\s+(.+)$`)
 
 /** `[dd-][hh:]mm:ss[.xx]` to seconds; macOS prints `655:44.54`, minutes past 59 included. */
@@ -71,7 +73,7 @@ export function parsePs(out: string): ProcSample[] {
     const cpuSec = parseCpuTime(m[4]!)
     const start = epoch(m[5]!)
     if (cpuSec === undefined || !Number.isFinite(start)) continue
-    procs.push({ pid: Number(m[1]), uid: Number(m[2]), rssKb: Number(m[3]), cpuSec, start, comm: m[6]!.trimEnd() })
+    procs.push({ pid: Number(m[1]), uid: Number(m[2]), rssKb: Number(m[3]), cpuSec, start, comm: m[6]!.trimEnd(), ppid: Number(m[7]), args: m[8]!.trimEnd() })
   }
   return procs
 }
@@ -135,6 +137,10 @@ export type LoadState = {
   at?: number
   /** `${pid}:${start}` to its last sample. */
   procs: Record<string, ProcEntry>
+  orphans?: { keys: string[]; rssKb: number }
+  orphanToldSet?: string
+  orphanToldAt?: number
+  orphanOffers?: Record<string, string[]>
   sys?: SystemSample
   swapHotSince?: number
   swapToldAt?: number
@@ -155,10 +161,22 @@ export const SYS_HOT_MS = 20 * 60_000
 export const SYS_COOLDOWN_MS = 24 * 3_600_000
 export const OFFERED_MAX = 50
 
-export type LoadAlert = { kind: 'cpu' | 'swap' | 'thermal'; text: string; buttons: { label: string; data: string }[] }
+export type LoadAlert = { kind: 'cpu' | 'swap' | 'thermal' | 'orphan'; text: string; buttons: { label: string; data: string }[] }
 
 export const quitButton = (pid: number, start: number) => ({ label: 'quit it', data: `quit pid ${pid} ${start}` })
 export const QUIT_RE = /^quit pid (\d+) (\d+)$/
+
+export const CLEAR_ORPHANS_RE = /^clear orphans ([a-f0-9]{24})$/
+
+/** Browser children carry --type; only the browser root represents an instance. */
+export function isAutomationOrphan(p: ProcSample, now: number): boolean {
+  const args = p.args ?? ''
+  const browser = /(?:^|\/)(?:Google Chrome(?: for Testing| Canary)?|Chromium|chrome|chromium|chrome-headless-shell|headless_shell)$/i.test(p.comm)
+  const temporaryProfile = /(?:^|\s)--user-data-dir(?:=|\s+)["']?(?:\/tmp\/|\/private\/tmp\/|\/(?:private\/)?var\/folders\/)[^\s"']+/i.test(args)
+  return p.ppid === 1 && now / 1000 - p.start >= 3600 && browser
+    && !/(?:^|\s)--type(?:=|\s)/.test(args)
+    && (/(?:^|\s)--headless(?:[=\s]|$)/.test(args) || temporaryProfile)
+}
 
 const gb = (b: number): string => (b / 1e9).toFixed(1)
 
@@ -194,6 +212,18 @@ export function assessLoad(procs: ProcSample[], sys: SystemSample, state: LoadSt
     }
     next[key] = e
     eligible.push({ key, p, e })
+  }
+
+  const orphans = eligible.filter(({ p }) => isAutomationOrphan(p, now))
+  const keys = orphans.map(({ key }) => key).sort()
+  const set = createHash('sha256').update(keys.join(',')).digest('hex').slice(0, 24)
+  const rssKb = orphans.reduce((sum, { p }) => sum + p.rssKb, 0)
+  state.orphans = { keys, rssKb }
+  if (keys.length >= 3 && set !== state.orphanToldSet && (state.orphanToldAt === undefined || now - state.orphanToldAt >= SYS_COOLDOWN_MS)) {
+    alerts.push({ kind: 'orphan', text: `${keys.length} orphaned automation browsers using ${gb(rssKb * 1024)} GB RAM.`, buttons: [{ label: 'clear them', data: `clear orphans ${set}` }] })
+    state.orphanToldSet = set
+    state.orphanToldAt = now
+    state.orphanOffers = Object.fromEntries(Object.entries({ ...state.orphanOffers, [set]: keys }).slice(-OFFERED_MAX))
   }
 
   // A streak that starts on a broken sample starts at that sample.
@@ -279,6 +309,17 @@ export async function quitProcess(pid: number, start: number, o: {
   return `${name} ignored quit — force-killed it.`
 }
 
+/** Resolve the saved snapshot, never the current set: an old tap cannot kill new arrivals. */
+export async function clearOrphans(set: string, state: LoadState, o: Omit<Parameters<typeof quitProcess>[2], 'offered'>): Promise<string> {
+  const keys = state.orphanOffers?.[set]
+  if (!keys) return "that button wasn't one i made — left it alone."
+  const results = await Promise.all(keys.map(key => {
+    const [pid, start] = key.split(':').map(Number)
+    return quitProcess(pid!, start!, { ...o, offered: keys })
+  }))
+  return results.join('\n')
+}
+
 const PRESSURE: Record<number, string> = { 1: 'normal', 2: 'warn', 4: 'critical' }
 const THERMAL = ['nominal', 'fair', 'serious', 'critical']
 
@@ -288,6 +329,8 @@ export function loadStatus(state: LoadState, now: number): { verdict: 'up' | 'de
   const sys = state.sys ?? {}
   const detail = `swap ${sys.swapUsedBytes === undefined ? '?' : gb(sys.swapUsedBytes)} GB, pressure ${PRESSURE[sys.pressure ?? 0] ?? '?'}, thermal ${THERMAL[sys.thermal ?? -1] ?? '?'}`
     + (hotProcs ? `; ${hotProcs} process${hotProcs === 1 ? '' : 'es'} over the CPU line` : '')
+  const orphanCount = state.orphans?.keys.length ?? 0
+  const orphanDetail = `; ${orphanCount} automation orphan${orphanCount === 1 ? '' : 's'} (${gb((state.orphans?.rssKb ?? 0) * 1024)} GB RAM)`
   const stale = now - state.at > GAP_MS
-  return { verdict: stale || state.swapHotSince || state.thermalHotSince ? 'degraded' : 'up', at: state.at, detail }
+  return { verdict: stale || orphanCount >= 3 || state.swapHotSince || state.thermalHotSince ? 'degraded' : 'up', at: state.at, detail: detail + orphanDetail }
 }

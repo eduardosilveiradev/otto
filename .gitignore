@@ -21,3 +21,6 @@ bun.lockb
 # part of the repo.
 /otto/tests/regressions/
 __pycache__/
+
+# Clones coding jobs build from when a project lives somewhere T3 can't use.
+/build/

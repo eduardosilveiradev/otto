@@ -147,7 +147,7 @@ export class WhatsApp {
   /** On the very first start, offset=0 replays up to 30 days; anything older than this is that backlog. */
   private readonly skipBefore: number
 
-  constructor(private token: string, private stateFile: string, private fetchFn: typeof fetch = fetch) {
+  constructor(private token: string, private stateFile: string, private fetchFn: typeof fetch = fetch, private report: (event: string, status?: number | 'network') => void = () => {}) {
     this.state = loadState<WaState>(stateFile, () => ({}), x => typeof x === 'object' && x !== null && !Array.isArray(x))
     this.to = this.state.owner
     this.skipBefore = this.state.offset == null ? Date.now() - 60_000 : 0
@@ -155,15 +155,19 @@ export class WhatsApp {
 
   private auth(): Record<string, string> { return { Authorization: `Bearer ${this.token}` } }
 
-  /** A send: retried on 429 and on 503 (not accepted, so not sent); never on a 500, which may have landed. */
+  /** Retry one network failure and rejected 429/503 sends; a 500 may have landed. */
   private async post(path: string, body: object | FormData): Promise<Record<string, unknown>> {
     for (let attempt = 0; ; attempt++) {
-      const res = await this.fetchFn(`${API}${path}`, {
+      let res: Response
+      try { res = await this.fetchFn(`${API}${path}`, {
         method: 'POST',
         headers: body instanceof FormData ? this.auth() : { ...this.auth(), 'Content-Type': 'application/json' },
         body: body instanceof FormData ? body : JSON.stringify(body),
         signal: AbortSignal.timeout(60_000),
-      })
+      }) } catch (err) {
+        if (attempt === 0) continue
+        throw err
+      }
       const json = await res.json().catch(() => ({})) as Record<string, unknown> & { error?: { code?: number; message?: string } }
       if (res.ok) return json
       if ((res.status === 429 || res.status === 503) && attempt < 3) { await sleep(2_000 * 2 ** attempt); continue }
@@ -228,6 +232,11 @@ export class WhatsApp {
 
   /** Fetch an inbound attachment into `dir`; returns its path. */
   async download(mediaId: string, ext: string, dir: string): Promise<string> {
+    try { return await this.downloadOnce(mediaId, ext, dir) }
+    catch { return this.downloadOnce(mediaId, ext, dir) }
+  }
+
+  private async downloadOnce(mediaId: string, ext: string, dir: string): Promise<string> {
     const meta = await this.fetchFn(`${API}/media/${encodeURIComponent(mediaId)}`, { headers: this.auth(), signal: AbortSignal.timeout(30_000) })
     if (!meta.ok) throw new Error(`media lookup HTTP ${meta.status}`)
     const { url } = await meta.json() as { url?: string }
@@ -246,8 +255,11 @@ export class WhatsApp {
     // offset=0 the first time, never "no offset": an offset-less poll re-resolves the head and can
     // skip whatever lands between polls. The backlog that replays is skipped by timestamp below.
     const q = new URLSearchParams({ offset: String(this.state.offset ?? 0), limit: '100', timeout: String(POLL_TIMEOUT_S) })
-    const res = await this.fetchFn(`${API}/updates?${q}`, { headers: this.auth(), signal: AbortSignal.timeout((POLL_TIMEOUT_S + 20) * 1000) })
+    let res: Response
+    try { res = await this.fetchFn(`${API}/updates?${q}`, { headers: this.auth(), signal: AbortSignal.timeout((POLL_TIMEOUT_S + 20) * 1000) }) }
+    catch (err) { this.report('whatsapp.poll', 'network'); throw err }
     if (res.status === 204) return Math.max(0, POLL_GAP_MS - (Date.now() - started))
+    if (!res.ok && res.status !== 204) this.report('whatsapp.poll', res.status)
     if (res.status === 409) { log('poll replaced by a newer one — is a second Otto polling?'); return 30_000 }
     if (res.status === 400 || res.status === 401) { log(`token rejected (HTTP ${res.status}) — regenerate the agent's API key`); return 300_000 }
     if (!res.ok) throw new Error(`poll HTTP ${res.status}`)
@@ -257,7 +269,7 @@ export class WhatsApp {
       if (Number(m.timestamp) * 1000 < this.skipBefore) continue
       if (!gate(this.state, m.from)) { log(`dropped a message from an unknown sender — if the user's id changed, delete "owner" in ${basename(this.stateFile)}`); continue }
       this.to = m.from
-      try { await onMessage(m) } catch (err) { log(`inbound ${m.id} failed: ${err}`) }
+      await onMessage(m) // A rejected journal write must leave the poll offset unchanged.
     }
     if ((nextOffset != null && nextOffset !== this.state.offset) || this.state.owner !== ownerBefore) {
       if (nextOffset != null) this.state.offset = nextOffset
@@ -275,6 +287,7 @@ export class WhatsApp {
         backoff = 0
       } catch (err) {
         backoff = Math.min(60_000, Math.max(2_000, backoff * 2))
+        this.report('whatsapp.poll.failed')
         log(`poll failed: ${err} — retrying in ${backoff / 1000}s`)
         await sleep(backoff)
       }

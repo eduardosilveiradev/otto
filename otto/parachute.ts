@@ -39,7 +39,6 @@ export type ParachuteState = { live?: LiveSession; note?: ParkedNote; sent?: Par
 
 const validState = (x: unknown): boolean => !!x && typeof x === 'object' && !Array.isArray(x)
 export const loadParachute = (file: string): ParachuteState => loadState(file, () => ({}), validState)
-export const peekParachute = (file: string): ParachuteState => loadState(file, () => ({}), validState, { peek: true })
 export const saveParachute = (file: string, s: ParachuteState): void => saveState(file, s)
 
 export const DEFAULT_PERCENT = 95

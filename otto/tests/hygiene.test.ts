@@ -44,29 +44,29 @@ test('parses exactly what selftriage.bugNote writes', () => {
 
 test('a weeks-old crash loop with no recurrence closes itself, with the reason', () => {
   const notes = [crash('c1', '2026-08-20T10:00:00Z')]
-  const plan = planHygiene(notes, fresh(), { now: NOW })
+  const plan = planHygiene(notes, fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW })
   expect(plan.close).toHaveLength(1)
   expect(plan.close[0]).toMatchObject({ id: 'c1', status: 'done' })
-  expect(plan.close[0].reason).toContain('no crash recorded for 39 days')
-  expect(plan.close[0].reason).toContain('last 2026-08-20')
+  expect(plan.close[0].reason).toContain('no crash recorded for 3 days')
+  expect(plan.close[0].reason).toContain('last 2026-09-26')
 })
 
 test('a crash inside the window keeps the old one open', () => {
-  const notes = [crash('old', '2026-08-01T10:00:00Z', 'A'), crash('recent', '2026-09-25T10:00:00Z', 'B')]
-  const plan = planHygiene(notes, fresh(), { now: NOW })
+  const notes = [crash('old', '2026-08-01T10:00:00Z', 'A'), crash('recent', '2026-09-29T04:30:00Z', 'B')]
+  const plan = planHygiene(notes, fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW })
   expect(plan.close).toEqual([])
 })
 
 test('the window is configurable', () => {
   const notes = [crash('c1', '2026-09-20T10:00:00Z')]
-  expect(planHygiene(notes, fresh(), { now: NOW }).close).toEqual([])
-  const short = resolveConfig({ crashQuietDays: 5 })
-  expect(planHygiene(notes, fresh(), { now: NOW, config: short }).close).toHaveLength(1)
+  expect(planHygiene(notes, fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW }).close).toHaveLength(1)
+  const longer = resolveConfig({ crashQuietDays: 5 })
+  expect(planHygiene(notes, fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW, config: longer }).close).toHaveLength(0)
 })
 
 test('the same cause recurring supersedes the older note instead of leaving both', () => {
   const notes = [crash('old', '2026-09-10T10:00:00Z'), crash('new', '2026-09-20T10:00:00Z')]
-  const plan = planHygiene(notes, fresh(), { now: NOW })
+  const plan = planHygiene(notes, fresh(), { recentStarts: [NOW - 1000], now: NOW })
   expect(plan.close).toEqual([{ id: 'old', status: 'dropped', reason: expect.stringContaining('superseded by note new') }])
 })
 
@@ -75,16 +75,68 @@ test('an unreadable crash timestamp is proposed, never closed', () => {
   const plan = planHygiene(notes, fresh(), { now: NOW })
   expect(plan.close).toEqual([])
   expect(plan.propose.map(p => p.id)).toEqual(['c1'])
+  const said = { ...fresh(), proposed: { c1: new Date(NOW).toISOString() } }
+  expect(planHygiene(notes, said, { now: NOW }).propose).toEqual([])
 })
 
 test('a reopened crash loop is never auto-closed again', () => {
   const n = { ...crash('c1', '2026-08-01T10:00:00Z'), reopenedAt: '2026-09-01T00:00:00Z' }
-  expect(planHygiene([n], fresh(), { now: NOW }).close).toEqual([])
+  expect(planHygiene([n], fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW }).close).toEqual([])
 })
 
 test('non-crash loops are untouched by the crash rule', () => {
   const plan = planHygiene([loop('a', 'send the signed contract')], fresh(), { now: NOW })
   expect(plan.close).toEqual([])
+})
+
+test('system revert loops close at 24h clear, silently', () => {
+  const n = crash('c1', new Date(NOW - DAY).toISOString(), 'boom', 'revert')
+  n.source = 'system:crashloop:incident'
+  expect(planHygiene([n], fresh(), { now: NOW - 1, recentStarts: [NOW - DAY] }).close).toEqual([])
+  const plan = planHygiene([n], fresh(), { now: NOW, recentStarts: [NOW - DAY] })
+  expect(plan).toEqual({ close: [{ id: 'c1', status: 'done', reason: expect.stringContaining('clear for 24h') }], propose: [], avoidance: [] })
+  expect(formatHygieneEvent(plan)).toBeNull()
+})
+
+test('any recent unplanned restart keeps old system and legacy loops open', () => {
+  const n = crash('c1', new Date(NOW - 10 * DAY).toISOString())
+  for (const source of [undefined, 'system:crashloop:incident']) {
+    n.source = source
+    expect(planHygiene([n], fresh(), { now: NOW, recentStarts: [NOW - 1000] }).close).toEqual([])
+  }
+})
+
+test('legacy crash text closes only after 48h and with restart evidence', () => {
+  const n = crash('c1', new Date(NOW - 2 * DAY).toISOString())
+  expect(planHygiene([n], fresh(), { now: NOW - 1, recentStarts: [NOW - 3 * DAY] }).close).toEqual([])
+  expect(planHygiene([n], fresh(), { now: NOW, recentStarts: [NOW - 3 * DAY] }).close).toHaveLength(1)
+  for (const recentStarts of [undefined, [], [NaN]]) {
+    expect(planHygiene([n], fresh(), { now: NOW, recentStarts }).close).toEqual([])
+  }
+})
+
+test('user-filed loops and reopened system loops are untouched', () => {
+  const notes = [
+    loop('user', 'fix the build', { source: 'telegram', createdAt: new Date(NOW - 3 * DAY).toISOString() }),
+    { ...crash('text', new Date(NOW - 3 * DAY).toISOString()), source: 'telegram' },
+    { ...crash('reopened', new Date(NOW - 3 * DAY).toISOString()), source: 'system:crashloop:incident', reopenedAt: new Date(NOW - DAY).toISOString() },
+  ]
+  expect(planHygiene(notes, fresh(), { now: NOW, recentStarts: [NOW - 3 * DAY] })).toEqual({ close: [], propose: [], avoidance: [] })
+})
+
+test('a tagged filed bug at 24h needs its regression test gone before closing', () => {
+  const n = crash('bug', new Date(NOW - DAY).toISOString(), 'TypeError: boom', 'bug')
+  n.source = 'system:crashloop:incident'
+  for (const exists of [true, undefined]) {
+    const opts = { now: NOW, recentStarts: [NOW - DAY], regressionExists: () => exists }
+    const plan = planHygiene([n], fresh(), opts)
+    expect(plan.close).toEqual([])
+    expect(plan.propose).toMatchObject([{ id: n.id, reason: expect.stringContaining('quiet is not evidence it is fixed') }])
+    expect(planHygiene([n], { ...fresh(), proposed: { [n.id]: new Date(NOW).toISOString() } }, opts).propose).toEqual([])
+  }
+  const fixed = planHygiene([n], fresh(), { now: NOW, recentStarts: [NOW - DAY], regressionExists: () => false })
+  expect(fixed.close).toMatchObject([{ id: n.id, status: 'done', reason: expect.stringContaining('regression test no longer exists') }])
+  expect(fixed.propose).toEqual([])
 })
 
 // ---- duplicates and proposals ----------------------------------------------
@@ -155,7 +207,7 @@ test('avoidance is named at the threshold, and never again', () => {
 
 test('a loop being closed is not also named as avoided', () => {
   const n = { ...crash('c1', '2026-08-01T10:00:00Z'), deferrals: ['a', 'b', 'c'] }
-  const plan = planHygiene([n], fresh(), { now: NOW })
+  const plan = planHygiene([n], fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW })
   expect(plan.close).toHaveLength(1)
   expect(plan.avoidance).toEqual([])
 })
@@ -166,17 +218,18 @@ function setup(name: string, notes: Note[]) {
   const notesFile = join(tmp, `${name}-notes.json`)
   const stateFile = join(tmp, `${name}-hygiene.json`)
   saveNotes(notesFile, notes)
-  return { notesFile, stateFile }
+  return { notesFile, stateFile, recentStarts: [NOW - 3 * DAY] }
 }
 
 test('the nightly pass closes, records why, and can be undone', () => {
   const f = setup('run', [crash('c1', '2026-08-20T10:00:00Z')])
   const r = runHygiene({ ...f, now: NOW })
   expect(r.closed).toBe(1)
+  expect(runHygiene({ ...f, now: NOW }).closed).toBe(0)
   let n = loadNotes(f.notesFile)[0]
   expect(n).toMatchObject({ status: 'done', closedBy: 'hygiene', closedAt: new Date(NOW).toISOString() })
   expect(n.closedReason).toContain('no crash recorded')
-  expect(formatNote(n)).toContain('closed: no crash recorded')
+  expect(formatNote(n)).toContain('closed: clear for 24h')
   expect(recentClosures(loadNotes(f.notesFile), NOW - DAY)).toHaveLength(1)
 
   // Undo: reopen through the ordinary path. The evidence is cleared, the loop
@@ -287,34 +340,34 @@ test('real duplicates are still found in other scripts, accents intact', () => {
 
 test('a filed-bug crash loop is proposed once when quiet, never closed on silence alone', () => {
   const notes = [crash('c1', '2026-08-01T10:00:00Z', 'TypeError: boom', 'bug')]
-  const plan = planHygiene(notes, fresh(), { now: NOW })
+  const plan = planHygiene(notes, fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW })
   expect(plan.close).toEqual([])
   expect(plan.propose).toHaveLength(1)
   expect(plan.propose[0].reason).toContain('failing regression test')
   const said = { ...fresh(), proposed: { c1: '2026-09-01T00:00:00Z' } }
-  expect(planHygiene(notes, said, { now: NOW })).toEqual({ close: [], propose: [], avoidance: [] })
+  expect(planHygiene(notes, said, { recentStarts: [NOW - 3 * DAY], now: NOW })).toEqual({ close: [], propose: [], avoidance: [] })
 })
 
 test('a filed-bug crash loop closes once its regression test is gone, and only then', () => {
   const notes = [crash('c1', '2026-08-01T10:00:00Z', 'TypeError: boom', 'bug')]
-  const gone = planHygiene(notes, fresh(), { now: NOW, regressionExists: () => false })
+  const gone = planHygiene(notes, fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW, regressionExists: () => false })
   expect(gone.close).toHaveLength(1)
   expect(gone.close[0].reason).toContain('regression test no longer exists')
   for (const answer of [true, undefined]) {
-    const plan = planHygiene(notes, fresh(), { now: NOW, regressionExists: () => answer })
+    const plan = planHygiene(notes, fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW, regressionExists: () => answer })
     expect(plan.close).toEqual([])
     expect(plan.propose).toHaveLength(1)
   }
   // The checker is asked about the same path selftriage writes.
   const asked: string[] = []
-  planHygiene(notes, fresh(), { now: NOW, regressionExists: sig => { asked.push(sig); return true } })
+  planHygiene(notes, fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW, regressionExists: sig => { asked.push(sig); return true } })
   expect(asked).toEqual(['TypeError: boom'])
   expect(regressionPath('TypeError: boom')).toBe('otto/tests/regressions/typeerror-boom.test.ts')
 })
 
 test('an unknown-cause filed bug has no test to check and is proposed, not closed', () => {
   const notes = [crash('c1', '2026-08-01T10:00:00Z', 'unknown', 'bug')]
-  const plan = planHygiene(notes, fresh(), { now: NOW, regressionExists: () => false })
+  const plan = planHygiene(notes, fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW, regressionExists: () => false })
   expect(plan.close).toEqual([])
   expect(plan.propose).toHaveLength(1)
 })
@@ -324,9 +377,9 @@ test('unrelated crashes with an unknown cause do not supersede each other', () =
     crash('old', '2026-09-10T10:00:00Z', 'unknown'),
     crash('new', '2026-09-20T10:00:00Z', 'unknown'),
   ]
-  expect(planHygiene(notes, fresh(), { now: NOW }).close).toEqual([])
+  expect(planHygiene(notes, fresh(), { recentStarts: [NOW - 1000], now: NOW }).close).toEqual([])
   // Once quiet, each closes on its own evidence — not as "superseded".
-  const later = planHygiene(notes, fresh(), { now: NOW + 30 * DAY })
+  const later = planHygiene(notes, fresh(), { recentStarts: [NOW - 3 * DAY], now: NOW + 30 * DAY })
   expect(later.close.map(c => c.id).sort()).toEqual(['new', 'old'])
   expect(later.close.every(c => !c.reason.includes('superseded'))).toBe(true)
 })
@@ -335,6 +388,8 @@ test('bugNote text round-trips into the right kind', () => {
   const base = { loop: { restarts: 3, firstAt: Date.parse('2026-08-01T10:00:00Z'), windowMs: 600_000 } }
   const revert = bugNote({ ...base, blamed: { id: 'x1', what: 'A recipe' }, action: 'revert' } as never)
   const bug = bugNote({ ...base, crash: { kind: 'E', message: 'm', signature: 'E: m', frames: [] }, action: 'file-bug' } as never)
+  expect(revert.source).toStartWith('system:crashloop:')
+  expect(bug.source).toStartWith('system:crashloop:')
   expect((parseCrashNote(loop('r', revert.text)) as { kind: string }).kind).toBe('revert')
   expect((parseCrashNote(loop('b', bug.text)) as { kind: string }).kind).toBe('bug')
 })

@@ -1,3 +1,4 @@
+import { Overnight } from './overnight.ts'
 /**
  * One read-only answer to "is every moving part actually up?"
  *
@@ -12,21 +13,26 @@
  * scan: up, last ran 09:02Z" cannot be mistaken for "I checked at 09:02Z".
  * Times are UTC, always marked, because the reader may be in any zone.
  *
- * Nothing here writes, repairs or restarts. Probing is a connect or a GET on
+ * Only the local token-offset cache is written; nothing repairs or restarts.
+ * Probing is a connect or a GET on
  * 127.0.0.1 and, for gog, the same one-thread read the watchdog already runs.
  * Secrets are never read: the webhook token is only tested for being non-empty.
  */
 
+import { Pips } from './pips.ts'
 import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { readHeartbeat, STALE_MS } from './heartbeat.ts'
 import { omittedSections, OMITTED_REBUILDS, type BriefRebuild, type ProbeName, type ProbeResult } from './watchdog.ts'
 import { readEnvKey } from './deadman.ts'
+import { loadPrMerges, PR_MERGES_MS } from './prmerges.ts'
 import { depwatchStatus, type DepwatchState } from './depwatch.ts'
+import { updatesStatus, type UpdatesState } from './updates.ts'
 import { domainStatus, peekDomains } from './domains.ts'
 import { diskStatus, peekDiskState } from './disk.ts'
 import { loadStatus, peekLoadState } from './runaway.ts'
+import { collectUsage, formatTokens } from './usage.ts'
 import { planSummary, type PlanUsage } from './spend.ts'
 import { loadInputs, inputsStatus } from './inputwatch.ts'
 import { appHealthStatus, peekAppHealth, tokenNames } from './apphealth.ts'
@@ -51,6 +57,7 @@ export type StatusDeps = {
   run: (argv: string[]) => Promise<boolean>
   pidAlive: (pid: number) => boolean
   account?: string
+  usageHome?: string
 }
 
 const FRESH_MS = 2 * 60_000
@@ -87,6 +94,7 @@ type Access = {
   webhook?: { port?: number; token?: string; host?: string }
   voice?: { enabled?: boolean }
   domains?: string[]
+  nightlyReset?: boolean
 }
 
 type EmailState = { lastScan?: string; lastError?: { at: string; message: string } }
@@ -94,8 +102,19 @@ type EmailState = { lastScan?: string; lastError?: { at: string; message: string
 export async function collectStatus(d: StatusDeps): Promise<StatusRow[]> {
   const { now, stateDir } = d
   const rows: StatusRow[] = []
+  const pips = new Pips({ stateDir, config: () => ({}) })
+  const pipCosts = pips.listPips().map(p => {
+    const d = pips.detail(p.id), last = d.lastWake
+    return `${p.name}: last wake ${last?.tokens ?? 0} tokens${last?.costUsd === undefined ? '' : ` ($${last.costUsd.toFixed(4)})`}; total ${d.usage.tokens} tokens ($${d.usage.costUsd.toFixed(4)})`
+  })
+  rows.push({ id: 'pips', label: 'Pip wake costs', verdict: pipCosts.length ? 'up' : 'off', detail: pipCosts.join('; ') || 'no pips' })
   const access = readJson<Access>(join(stateDir, 'access.json')) ?? {}
   const hb = readHeartbeat(join(stateDir, 'heartbeat.json'))
+
+  const githubCalls = readJson<{ calls: number[] }>(join(stateDir, 'github-calls.json'))
+  const calls = (githubCalls?.calls ?? []).filter(at => Number.isFinite(at) && at > now - 3_600_000 && at <= now)
+  rows.push({ id: 'github-calls', label: 'GitHub calls', verdict: githubCalls ? 'up' : 'unknown',
+    at: calls.at(-1), detail: githubCalls ? `${calls.length} in the past hour (cap 300 / 10 min)` : 'No call counter yet' })
 
   // --- MCP server ---------------------------------------------------------
   if (!hb) {
@@ -167,6 +186,13 @@ export async function collectStatus(d: StatusDeps): Promise<StatusRow[]> {
       verdict: 'status' in r ? 'up' : 'down',
       detail: 'status' in r ? `answering on port ${port}` : `nothing answering on port ${port} (${r.error})`,
     })
+  }
+
+  const voiceHealth = readJson<{ checkedAt: string; problem?: string; since?: string }>(join(stateDir, 'voice-health.json'))
+  if (access.voice?.enabled !== false && voiceHealth) {
+    const since = voiceHealth.since ? new Date(voiceHealth.since).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }) : ''
+    rows.push({ id: 'voice', label: 'Voice', verdict: voiceHealth.problem ? 'down' : 'up', at: Date.parse(voiceHealth.checkedAt),
+      detail: voiceHealth.problem ? `${voiceHealth.problem} since ${since}` : 'configured voice loaded' })
   }
 
   // --- Voice daemon -------------------------------------------------------
@@ -242,6 +268,14 @@ export async function collectStatus(d: StatusDeps): Promise<StatusRow[]> {
       })
     }
   }
+  // --- Nightly reset (nightreset.ts) ---------------------------------------
+  const nr = readJson<{ nightlyReset?: { at: string; reset: boolean; reason: string } }>(join(stateDir, 'runtime.json'))?.nightlyReset
+  rows.push(access.nightlyReset === false
+    ? { id: 'nightly-reset', label: 'Nightly reset', verdict: 'off', detail: 'disabled (nightlyReset is false in access.json)' }
+    : !nr
+      ? { id: 'nightly-reset', label: 'Nightly reset', verdict: 'unknown', detail: 'has not run yet (after the 04:00 memory run)' }
+      : { id: 'nightly-reset', label: 'Nightly reset', verdict: 'up', at: Date.parse(nr.at),
+          detail: nr.reset ? `last cleared ${ago(now - Date.parse(nr.at))} ago` : `skipped ${ago(now - Date.parse(nr.at))} ago: ${nr.reason}` })
   // --- Domain and TLS expiry ----------------------------------------------
   // The only place a failed lookup is ever shown: it is retried tomorrow and
   // never messaged.
@@ -252,11 +286,28 @@ export async function collectStatus(d: StatusDeps): Promise<StatusRow[]> {
   )
   rows.push({ id: 'domains', label: 'Domain expiry', verdict: dom.verdict, ...(dom.at ? { at: dom.at } : {}), detail: dom.detail })
 
+
   // --- Dependency advisories ----------------------------------------------
   // A failed OSV lookup is shown here and retried tomorrow; only malicious and high/critical
   // findings are ever messaged, once per installed version.
   const dw = depwatchStatus(readJson<DepwatchState>(join(stateDir, 'depwatch.json')), now)
   rows.push({ id: 'depwatch', label: 'Dependency advisories', verdict: dw.verdict, ...(dw.at ? { at: dw.at } : {}), detail: dw.detail })
+
+  // --- Tool updates (updates.ts) --------------------------------------------
+  const up = updatesStatus(!!access.updates && typeof access.updates === 'object', readJson<UpdatesState>(join(stateDir, 'updates.json')), now)
+  rows.push({ id: 'updates', label: 'Tool updates', verdict: up.verdict, ...(up.at ? { at: up.at } : {}), detail: up.detail })
+
+  // --- Merged pull requests ------------------------------------------------
+  const pm = loadPrMerges(join(stateDir, 'prmerges.json'), true)
+  const checked = Date.parse(pm.lastCheck ?? '')
+  rows.push({
+    id: 'prmerges', label: 'PR merges',
+    verdict: pm.lastError ? 'degraded' : !Number.isFinite(checked) ? 'unknown'
+      : now - checked > 3 * PR_MERGES_MS + quietSpanMs(access.quietHours) ? 'down' : 'up',
+    ...(Number.isFinite(checked) ? { at: checked } : {}),
+    detail: `last check ${pm.lastCheck ?? 'never'}; last delivered ${pm.lastDelivered ?? 'never'}; `
+      + (pm.lastError ? `last error ${pm.lastError.at}: ${pm.lastError.message}` : 'no error recorded'),
+  })
   // --- Disk space ----------------------------------------------------------
   const disk = diskStatus(peekDiskState(join(stateDir, 'disk.json')), now)
   rows.push({ id: 'disk', label: 'Disk space', verdict: disk.verdict, ...(disk.at ? { at: disk.at } : {}), detail: disk.detail })
@@ -266,16 +317,20 @@ export async function collectStatus(d: StatusDeps): Promise<StatusRow[]> {
 
   // --- Claude plan usage (posted by the Claude Code status line) ----------
   const plan = readJson<PlanUsage>(join(stateDir, 'plan-usage.json'))
+  const monthTokens = collectUsage({ home: d.usageHome, cacheFile: join(stateDir, 'usage-cache.json'), now }).claude.month
+  const monthDetail = `${formatTokens(monthTokens)} tokens this month (local logs, including cache)`
   const summary = planSummary(plan, now)
   rows.push(summary
-    ? { id: 'plan-usage', label: 'Claude plan usage', verdict: 'up', at: plan!.at, detail: summary }
+    ? { id: 'plan-usage', label: 'Claude plan usage', verdict: 'up', at: plan!.at, detail: `${summary} · ${monthDetail}` }
     : { id: 'plan-usage', label: 'Claude plan usage', verdict: 'unknown', ...(plan ? { at: plan.at } : {}),
-        detail: plan ? `last reading ${ago(now - plan.at)} ago; it updates only while a Claude Code session is running` : 'no reading yet: the status line posts one after the first response of a session' })
+        detail: monthDetail + ' · ' + (plan ? `last reading ${ago(now - plan.at)} ago; it updates only while a Claude Code session is running` : 'no reading yet: the status line posts one after the first response of a session') })
 
   // --- Inputs that went quiet (inputwatch.ts) ---------------------------------
   const inp = inputsStatus(loadInputs(join(stateDir, 'inputs.json'), true), now)
   rows.push({ id: 'inputs', label: 'Inputs', verdict: inp.verdict, ...(inp.at ? { at: inp.at } : {}), detail: inp.detail })
 
+  const overnight = new Overnight(stateDir, () => now).status()
+  rows.push({ id: 'overnight', label: 'Overnight', verdict: overnight.active ? 'up' : 'off', detail: `${overnight.active ? `active until ${overnight.until}` : 'inactive'}; ${overnight.actions} actions so far; ${overnight.held} held for reserve` })
   // --- The phone ------------------------------------------------------------
   // Reported by the iOS app itself (POST /app/health); no row until a device has reported.
   rows.push(...appHealthStatus(peekAppHealth(join(stateDir, 'app-health.json')), tokenNames(stateDir), now, ago))

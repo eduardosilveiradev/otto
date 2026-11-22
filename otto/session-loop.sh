@@ -6,13 +6,17 @@
 # a kill, an OOM) relaunches with --continue, which picks the conversation back
 # up from its transcript in this cwd. Five crashes inside five minutes stop the
 # loop, so a session that dies on boot doesn't spin forever.
-# Every start resumes too, unless OTTO_FRESH=1 asks for a new conversation.
+# Every start resumes too, unless OTTO_FRESH=1 asks for a new conversation, or
+# this cwd has no transcript yet: --continue then exits "No conversation found"
+# and a first install would crash-loop before it ever answered.
 err=$1 code=$2 claude=$3
 shift 3
 resume=(--continue)
 [ "${OTTO_FRESH:-}" = 1 ] && resume=()
 crashes=()
+has_transcript() { compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(pwd | sed 's/[^a-zA-Z0-9]/-/g')/*.jsonl" > /dev/null; }
 while :; do
+  has_transcript || resume=()
   # --channels is variadic and must stay last, so --continue goes first.
   "$claude" "${resume[@]}" "$@" 2>> "$err"
   rc=$?

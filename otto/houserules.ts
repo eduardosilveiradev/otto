@@ -21,6 +21,8 @@
  */
 
 import { tokenize, loadMemories, writeMemory, type Memory } from './memory.ts'
+import { isExpired } from './store.ts'
+import { dirname } from 'path'
 
 export const HOUSE_RULES_NAME = 'house-rules'
 /** First line of the generated body. A memory without it was not written by this pass. */
@@ -85,7 +87,7 @@ export type CompileOpts = { maxRules?: number; maxChars?: number; similarity?: n
 export function compileHouseRules(memories: Memory[], opts: CompileOpts = {}): Compiled {
   const { maxRules = 25, maxChars = 1500, similarity = 0.6 } = opts
   const feedback = memories
-    .filter(m => m.type === 'feedback' && m.scope === 'global' && m.name !== HOUSE_RULES_NAME)
+    .filter(m => m.type === 'feedback' && m.scope === 'global' && m.name !== HOUSE_RULES_NAME && !isExpired(m))
     // Newest first; name breaks ties so the output is stable across runs.
     .sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
 
@@ -143,4 +145,44 @@ export function writeHouseRules(
     ...(opts.dir ? { dir: opts.dir } : {}),
   })
   return { result: 'written', compiled }
+}
+
+/** Claude Code's project slug for `cwd` and every folder above it: a project's own rules hold inside it. */
+export function projectScopes(cwd: string): Set<string> {
+  const out = new Set<string>()
+  for (let d = cwd; d && d !== dirname(d); d = dirname(d)) out.add(d.replace(/[^A-Za-z0-9]/g, '-'))
+  return out
+}
+
+/**
+ * Every rule for a session in `cwd`, re-injected after a compaction or /clear
+ * (hooks/rules-reload.ts): the nightly house-rules block only fits a handful,
+ * and a summary drops the rest. That project's corrections first, then global
+ * ones, newest first, duplicates folded, kept under Claude Code's 10k-character
+ * cap on hook context.
+ */
+export function sessionRules(memories: Memory[], cwd: string, maxChars = 9000): string {
+  const scopes = projectScopes(cwd)
+  const feedback = memories
+    .filter(m => m.type === 'feedback' && m.name !== HOUSE_RULES_NAME && !isExpired(m) && (m.scope === 'global' || scopes.has(m.scope)))
+    .sort((a, b) => Number(a.scope === 'global') - Number(b.scope === 'global') || b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
+  const header = "The user's standing rules, their own corrections. They still apply after this compaction or /clear:"
+  const lines: string[] = []
+  const seen: Set<string>[] = []
+  let len = header.length
+  let left = 0
+  for (const m of feedback) {
+    const core = extractRule(m)?.core
+    if (!core) continue
+    const tokens = new Set(tokenize(core))
+    if (seen.some(s => similar(s, tokens, 0.6))) continue
+    seen.push(tokens)
+    const line = `- ${core}`
+    if (len + line.length + 1 > maxChars) { left++; continue }
+    lines.push(line)
+    len += line.length + 1
+  }
+  if (!lines.length) return ''
+  if (left) lines.push(`(${left} older rules didn't fit; the rulebook tool lists all of them.)`)
+  return [header, ...lines].join('\n')
 }

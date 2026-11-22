@@ -215,3 +215,4 @@ export function formatReport(r: PreflightReport): string {
   for (const w of r.warnings) lines.push(`check — ${w.message}`)
   return lines.join('\n')
 }
+

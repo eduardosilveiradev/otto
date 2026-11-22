@@ -43,3 +43,24 @@ export function headlessMcpConfig(opts: { otto: boolean }, dir: string = import.
 export function headlessMcpArgs(opts: { otto: boolean }, dir?: string): string[] {
   return ['--strict-mcp-config', '--mcp-config', JSON.stringify(headlessMcpConfig(opts, dir))]
 }
+
+/**
+ * The only env names a headless child keeps; every secret the server loaded from the state .env
+ * stays behind. The child's own otto server re-reads that .env itself, so it needs only
+ * OTTO_STATE_DIR to find it. Claude Code needs the login session vars (keychain auth) and, when
+ * set, its own config/auth/proxy vars; Codex needs CODEX_HOME. A var dropped here fails at night
+ * with no one watching: add one only after reading that the child reads it.
+ */
+const CHILD_ENV = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TERM', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', '__CF_USER_TEXT_ENCODING',
+  'XDG_CONFIG_HOME', 'XDG_RUNTIME_DIR', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'TEMP', 'TMP', 'ComSpec', 'PATHEXT',
+  'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'CODEX_HOME',
+  'OTTO_STATE_DIR', 'OTTO_JOBS_FILE']
+
+/** A child's env, built from the allowlist above: never the channel host, never the supervised session, no secrets. */
+export function headlessEnv(base: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
+  return Object.fromEntries(CHILD_ENV.filter(k => base[k] !== undefined).map(k => [k, base[k]]))
+}
+
+/** argv for a bounded question with no tools at all: no built-ins, no MCP servers. */
+export const noToolArgs = (prompt: string, model: string): string[] =>
+  ['-p', prompt, '--model', model, '--permission-mode', 'auto', '--tools', '', ...headlessMcpArgs({ otto: false })]

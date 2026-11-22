@@ -7,9 +7,11 @@ import {
   addDays, addMonths, coverageOf, deliveryOf, matchShipment, aboveMin, returnsConfig,
   purchases, closingSoon, formatReturnsLine, findPurchases, formatCoverage,
   loadRatesLoose, jurisdictionOf, type ShipmentLike,
+  claimReturnPrompts, settleReturnTap,
 } from '../returns.ts'
 import { recordPackage, loadPackages } from '../packages.ts'
 import { formatBrief, sectionLabels, type BriefParts } from '../brief.ts'
+import { startTwin, phone, waitFor } from './apptwin.ts'
 
 const tmp = mkdtempSync(join(tmpdir(), 'otto-returns-'))
 afterAll(() => { try { rmSync(tmp, { recursive: true }) } catch {} })
@@ -143,7 +145,7 @@ test('a matched parcel still in transit gives its ETA as an estimate', () => {
 test('delivery day is read in the zone given', () => {
   const r = buy({ source: 'email:tz' })
   const ships: ShipmentLike[] = [{ sources: ['email:tz'], deliveredAt: '2026-10-05T01:30:00Z' }]
-  expect(deliveryOf(r, ships, 'America/Sao_Paulo').date).toBe('2026-10-04')
+  expect(deliveryOf(r, ships, 'America/Argentina/Buenos_Aires').date).toBe('2026-10-04')
 })
 
 test('a real packages.json record supplies the delivery date and order link', () => {
@@ -290,3 +292,105 @@ test('purchase facts survive a save and load', () => {
   expect(purchases(back, { config: cfg }).length).toBe(3)
   expect(readdirSync(tmp).some(f => f.endsWith('.tmp'))).toBe(false)
 })
+
+test('asks at two days, not three, once across a restart', () => {
+  const file = join(tmp, 'prompt-money.json')
+  const r = buy({ source: 'email:order-message' })
+  saveMoney(file, [r])
+  const opts = { config: cfg }
+  expect(claimReturnPrompts(file, '2026-10-15', opts)).toEqual([])
+  const prompts = claimReturnPrompts(file, '2026-10-16', opts)
+  expect(prompts).toEqual([{
+    text: 'Keeping the headphones? Window closes Sunday.',
+    buttons: [
+      { label: 'keep', data: `return keep ${r.id}` },
+      { label: 'send back', data: `return back ${r.id}` },
+    ],
+  }])
+  expect(prompts[0]!.buttons.every(b => Buffer.byteLength(`btn:${b.data}`) <= 64)).toBe(true)
+  expect(loadMoney(file)[0]!.purchase!.returnAskedOn).toBe('2026-10-16')
+  // The next call reloads from disk, just as a fresh channel does.
+  expect(claimReturnPrompts(file, '2026-10-16', opts)).toEqual([])
+  expect(claimReturnPrompts(file, '2026-10-17', opts)).toEqual([])
+})
+
+test('a window first seen tomorrow or today gets its one question', () => {
+  for (const today of ['2026-10-17', '2026-10-18']) {
+    const file = join(tmp, `late-${today}.json`)
+    saveMoney(file, [buy({})])
+    expect(claimReturnPrompts(file, today, { config: cfg })).toHaveLength(1)
+    expect(claimReturnPrompts(file, today, { config: cfg })).toEqual([])
+  }
+})
+
+test('keep persists and suppresses prompts and the brief even if delivery changes', () => {
+  const file = join(tmp, 'kept-money.json')
+  const r = buy({ source: 'email:kept-order' })
+  saveMoney(file, [r])
+  claimReturnPrompts(file, '2026-10-16', { config: cfg })
+  expect(settleReturnTap(file, `return keep ${r.id}`)?.choice).toBe('keep')
+  const opts = { config: cfg, shipments: [{ sources: [r.source!], deliveredAt: '2026-10-15T12:00:00Z' }] }
+  expect(loadMoney(file)[0]!.purchase!.returnChoice).toBe('keep')
+  expect(claimReturnPrompts(file, '2026-10-27', opts)).toEqual([])
+  expect(formatReturnsLine(purchases(loadMoney(file), opts), '2026-10-27', '09:00 UTC')).toBeUndefined()
+  expect(settleReturnTap(file, `return back ${r.id}`)?.choice).toBe('keep')
+})
+
+test('unknown deadlines and closed windows never send or spend the budget', () => {
+  const file = join(tmp, 'no-prompts.json')
+  saveMoney(file, [buy({}), buy({ currency: 'USD' }), buy({ purchase: { item: 'kettle', channel: 'store' } })])
+  expect(claimReturnPrompts(file, '2026-10-19', { config: cfg })).toEqual([])
+  expect(loadMoney(file).every(r => !r.purchase!.returnAskedOn)).toBe(true)
+})
+
+test('send back persists the choice and supplies item and order email without session memory', () => {
+  const file = join(tmp, 'back-money.json')
+  const item = '非常に長い商品名 '.repeat(30)
+  const r = buy({ source: 'email:order-message-id', purchase: { item } })
+  saveMoney(file, [r])
+  const button = claimReturnPrompts(file, '2026-10-16', { config: cfg })[0]!.buttons[1]!
+  expect(Buffer.byteLength(`btn:${button.data}`)).toBeLessThanOrEqual(64)
+  const tap = settleReturnTap(file, button.data)!
+  expect(tap.choice).toBe('back')
+  expect(tap.instruction).toContain(r.id)
+  expect(tap.instruction).toContain(item.trim())
+  expect(tap.instruction).toContain('order email message id "order-message-id"')
+  expect(loadMoney(file)[0]!.purchase!.returnChoice).toBe('back')
+  expect(formatReturnsLine(purchases(loadMoney(file), { config: cfg }), '2026-10-16', '09:00 UTC')).toBeUndefined()
+})
+
+test('channel handles keep without a session wake and delivers self-contained send back after restart', async () => {
+  let twin = await startTwin()
+  let device: Awaited<ReturnType<typeof phone>> | undefined
+  try {
+    const file = join(twin.state, 'money.json')
+    const today = new Date().toLocaleDateString('sv-SE')
+    const date = addDays(today, -15)
+    const kept = buy({ date, source: 'email:keep-order' })
+    const back = buy({ date, source: 'email:return-order', purchase: { item: 'desk lamp' } })
+    saveMoney(file, [kept, back])
+    const prompts = claimReturnPrompts(file, today, { config: cfg })
+    twin = await twin.restart()
+    expect(claimReturnPrompts(file, today, { config: cfg })).toEqual([])
+    let brief = ''
+    for (let i = 0; i < 100 && !brief.includes('headphones'); i++) {
+      brief = JSON.stringify(await twin.call('brief', {}))
+      if (!brief.includes('headphones')) await Bun.sleep(50)
+    }
+    expect(brief).toContain('headphones')
+    device = await phone(twin)
+    device.send({ type: 'tap', op: 'keep-choice', label: 'keep', data: prompts.find(p => p.buttons[0]!.data.endsWith(kept.id))!.buttons[0]!.data })
+    expect(await device.until(f => f.type === 'ack' && f.id === 'keep-choice')).toBeDefined()
+    expect(loadMoney(file).find(r => r.id === kept.id)!.purchase!.returnChoice).toBe('keep')
+    expect(twin.delivered).toHaveLength(0)
+    expect(JSON.stringify(await twin.call('brief', {}))).not.toContain('headphones')
+    device.send({ type: 'tap', op: 'back-choice', label: 'send back', data: prompts.find(p => p.buttons[1]!.data.endsWith(back.id))!.buttons[1]!.data })
+    const event = await waitFor(() => twin.delivered.find(e => e.meta.event === 'button'))
+    expect(event?.content).toContain('desk lamp')
+    expect(event?.content).toContain('order email message id "return-order"')
+    expect(loadMoney(file).find(r => r.id === back.id)!.purchase!.returnChoice).toBe('back')
+  } finally {
+    device?.close()
+    await twin.stop()
+  }
+}, 30000)
