@@ -118,10 +118,6 @@ export function lastUsed(caps: Capability[], signals: UsageSignal[]): Map<string
   return out
 }
 
-export function neverUsed(caps: Capability[], usage: Map<string, number>): Capability[] {
-  return caps.filter(c => !usage.has(c.id))
-}
-
 /** Which capabilities this message is about. Two hits means neither is obvious. */
 export function matchLine(caps: Capability[], text: string): Capability[] {
   const toks = new Set(tokenize(text))

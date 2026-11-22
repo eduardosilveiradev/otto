@@ -3,12 +3,12 @@
  * replaced.
  *
  * A fact note used to be a sentence and a timestamp. That is fine for "the
- * dentist is Dr Rossi" and wrong for "lives in Lisbon": the second one quietly
+ * dentist is Dr Rossi" and wrong for "lives in Berlin": the second one quietly
  * goes false the day they move, and the store had no way to notice. Worse, the
  * move gets remembered too, and recall hands back both cities with equal
  * confidence.
  *
- * Three things fix that, all applied at write time or read time with no pass in
+ * Four things fix that, all applied at write time or read time with no pass in
  * between:
  *
  *   Provenance. `source` says who said it — telegram, app, terminal,
@@ -20,18 +20,22 @@
  *   than `staleness.days` comes back from recall with its age attached. Facts
  *   written before this existed have no confirmedAt and count from createdAt.
  *
+ *   Expiry. `expires` marks a fact true only until a date ("away until
+ *   Sunday"). After it the fact is hidden like a superseded one, still on disk.
+ *   A fact with an expiry only supersedes others that have one.
+ *
  *   Contradiction on write. A new fact with the same `key`, or the same subject
  *   phrase, as an open fact with a different value supersedes it. The old one
  *   stays on disk with `supersededBy` — history is evidence — but recall stops
  *   returning it. The same value said again only bumps confirmedAt.
  *
- * Subject matching is deliberately literal. "Home city: Lisbon" and "home city
+ * Subject matching is deliberately literal. "Home city: Berlin" and "home city
  * is Porto" share a subject; "moved to Porto" does not share one with anything,
- * because guessing that it contradicts "lives in Lisbon" is how a store starts
+ * because guessing that it contradicts "lives in Berlin" is how a store starts
  * deleting true things. A key is the reliable path; the phrase is a net.
  */
 
-import { upsertNote, type Note } from './store.ts'
+import { upsertNote, isExpired, type Note } from './store.ts'
 
 export const DEFAULT_STALE_DAYS = 180
 
@@ -107,7 +111,7 @@ export type FactWrite = {
  */
 export function rememberFact(
   notes: Note[],
-  input: { text: string; key?: string; tags?: string[]; source?: string },
+  input: { text: string; key?: string; tags?: string[]; source?: string; expires?: string },
   now = new Date().toISOString(),
 ): FactWrite {
   const text = input.text.trim()
@@ -124,7 +128,9 @@ export function rememberFact(
   })
 
   const same = matches.find(n => splitFact(n.text).value === mine.value)
-  const others = matches.filter(n => n !== same)
+  // Something true only for a while never buries a standing truth: when it
+  // expired, both would be gone.
+  const others = matches.filter(n => n !== same && (!input.expires || n.expires))
 
   let note: Note
   let action: FactWrite['action']
@@ -132,6 +138,9 @@ export function rememberFact(
     same.confirmedAt = now
     same.updatedAt = now
     if (key && !same.key) same.key = key
+    // Said again: it holds until the new date, or for good once the old one passed.
+    if (input.expires) same.expires = input.expires
+    else if (isExpired(same, Date.parse(now))) delete same.expires
     note = same
     action = 'confirmed'
   } else {
@@ -144,6 +153,7 @@ export function rememberFact(
       ...(input.tags ? { tags: input.tags } : {}),
       ...(input.source ? { source: input.source } : {}),
       ...(inherited ? { key: inherited } : {}),
+      ...(input.expires ? { expires: input.expires } : {}),
       confirmedAt: now,
     }).note
     note.createdAt = now

@@ -31,7 +31,8 @@
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { homedir } from 'os'
 import { join, basename } from 'path'
-import { claudeBin, headlessMcpArgs } from './headless.ts'
+import { claudeBin, headlessMcpArgs, headlessEnv } from './headless.ts'
+import { jobToolArgs } from './jobs.ts'
 import { loadBurned, burnedMatcher } from './burn.ts'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
@@ -89,9 +90,10 @@ const META_MARKERS = [
   'consolidating yesterday',                              // this job
   'distilling DURABLE memories',                          // mnemosyne's distiller
   'Generate a title that will help the user recognize',   // thread title generation
+  'reviewing the durable memory corpus',                  // memreview.ts, the second half of this job
 ]
-/** cwd of a spawned run, and therefore its transcript's project slug. */
-const SELF_SLUG = 'channels-otto-digests'
+/** cwd of a spawned run (state/digests, state/memreview), and therefore its transcript's project slug. */
+const SELF_SLUG = /(channels-otto-digests|-otto-state-(digests|memreview))$/
 
 function isMachineSession(turns: Turn[]): boolean {
   const firstUser = turns.find(t => t.role === 'user')
@@ -101,7 +103,7 @@ function isMachineSession(turns: Turn[]): boolean {
 }
 
 export function digestTranscript(path: string, project: string, isBurned: (text: string) => boolean = () => false): Digest | null {
-  if (project.includes(SELF_SLUG)) return null
+  if (SELF_SLUG.test(project)) return null
   let raw: string
   try { raw = readFileSync(path, 'utf8') } catch { return null }
 
@@ -239,7 +241,7 @@ export function prepare(since: number, digestRoot: string, maxSessions = 40, bur
   return { digestDir: digestRoot, files, sessions: files.length, since }
 }
 
-const ALLOWED_TOOLS = [
+export const ALLOWED_TOOLS = [
   'Read', 'Grep', 'Glob',
   'mcp__plugin_otto_otto__recall',
   'mcp__plugin_otto_otto__remember',
@@ -258,25 +260,33 @@ const ALLOWED_TOOLS = [
  * the child loads them all, and the Discord one kills the live gateway on start.
  */
 export async function spawnConsolidation(plan: ConsolidationPlan, timeoutMs = 20 * 60_000): Promise<{ ok: boolean; output: string }> {
+  const prompt = `${CONSOLIDATION_PROMPT}\n\nDigest directory: ${plan.digestDir}\nSessions to review: ${plan.sessions}`
+  const res = await spawnHeadless(prompt, { cwd: plan.digestDir, tools: ALLOWED_TOOLS, timeoutMs })
+  return { ok: res.ok, output: res.output.slice(-2000) }
+}
+
+/** One headless `claude -p` run: allowlisted env (headless.ts), built-ins cut to the list with `--tools`, otto writes not named refused. */
+export const headlessArgs = (prompt: string, o: { tools: string; mode?: string; args?: string[] }): string[] =>
+  ['-p', prompt, '--permission-mode', o.mode ?? 'auto', ...jobToolArgs(o.tools.split(',')), ...(o.args ?? []), ...headlessMcpArgs({ otto: true })]
+
+/** The whole of stdout comes back. */
+export async function spawnHeadless(prompt: string, o: { cwd: string; tools: string; timeoutMs: number; mode?: string; args?: string[] }): Promise<{ ok: boolean; output: string }> {
   const claude = claudeBin()
   if (!existsSync(claude)) return { ok: false, output: 'claude CLI not found' }
 
-  const env = { ...process.env }
-  delete env.OTTO_CHANNEL_HOST
-
-  const prompt = `${CONSOLIDATION_PROMPT}\n\nDigest directory: ${plan.digestDir}\nSessions to review: ${plan.sessions}`
+  const env = headlessEnv()
 
   try {
-    const proc = Bun.spawn([claude, '-p', prompt, '--permission-mode', 'auto', '--allowedTools', ALLOWED_TOOLS, ...headlessMcpArgs({ otto: true })], {
+    const proc = Bun.spawn([claude, ...headlessArgs(prompt, o)], {
       env,
-      cwd: plan.digestDir,
+      cwd: o.cwd,
       stdout: 'pipe',
       stderr: 'pipe',
     })
-    const timer = setTimeout(() => { try { proc.kill() } catch {} }, timeoutMs)
+    const timer = setTimeout(() => { try { proc.kill() } catch {} }, o.timeoutMs)
     const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
     clearTimeout(timer)
-    return { ok: code === 0, output: out.trim().slice(-2000) }
+    return { ok: code === 0, output: out.trim() }
   } catch (err) {
     return { ok: false, output: String(err) }
   }

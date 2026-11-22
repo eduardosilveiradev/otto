@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, statSync, 
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { parseMemory } from '../memory.ts'
-import { collect, readNotes, scopeLabel, summaryPrompt, buildHtml, viewerData, searchMemory, searchPid, stopSearch, explicitEdges, centre, neighbours, similarEdges, kmeans, chooseClusters, clusterKey, memberKey, embedPlan, embedKey, embedText, reuseLabel, clusterTerms, rankQuery, type Item } from '../memviewer.ts'
+import { collect, readNotes, scopeLabel, summaryPrompt, buildHtml, viewerData, searchMemory, searchPid, stopSearch, explicitEdges, centre, neighbours, similarEdges, kmeans, chooseClusters, clusterKey, embedPlan, embedKey, embedText, reuseLabel, clusterTerms, rankQuery, startRebuild, nightlyRebuild, type Item } from '../memviewer.ts'
 import { emptyStats } from '../recallstats.ts'
 
 const tmp = mkdtempSync(join(tmpdir(), 'otto-memviewer-'))
@@ -131,7 +131,6 @@ test('cluster and embedding caches are keyed by content, not order', () => {
   expect(clusterKey(['a', 'b', 'c'])).toBe(clusterKey(['c', 'a', 'b']))
   expect(clusterKey(['a', 'b'])).not.toBe(clusterKey(['a', 'b', 'c']))
   expect(clusterKey(['a', 'b'], [8])).not.toBe(clusterKey(['a', 'b'], [9]))
-  expect(memberKey(['x', 'y'])).toBe(memberKey(['y', 'x']))
 
   const texts = [embedText(item('one', 'body')), embedText(item('two', 'body'))]
   expect(texts[0]).toBe('one\n\nbody'.replace(/\s+/g, ' '))
@@ -245,4 +244,18 @@ test('search by meaning: an error without an embedder, ranked results with one, 
     for (let n = 0; n < 20 && alive; n++) { try { process.kill(pid, 0); await Bun.sleep(50) } catch { alive = false } }
     expect(alive).toBe(false)
   } finally { stopSearch(); delete process.env.OTTO_EMBED_PYTHON }
+})
+
+test('nightlyRebuild: starts one rebuild, skips while it runs, never throws', async () => {
+  let started = 0, finish = () => {}
+  const spawn = () => { started++; return { exited: new Promise<void>(r => { finish = r }) } }
+  expect(nightlyRebuild('/state', spawn)).toBe('memory viewer rebuild started')
+  expect(nightlyRebuild('/state', spawn)).toMatch(/skipped/)
+  expect(startRebuild('/state', spawn)).toBe(false)   // the dashboard's button shares the guard
+  expect(started).toBe(1)
+  finish(); await Bun.sleep(0)
+  expect(nightlyRebuild('/state', () => { throw new Error('ENOENT') })).toMatch(/failed — Error: ENOENT/)
+  expect(nightlyRebuild('/state', spawn)).toBe('memory viewer rebuild started')
+  finish(); await Bun.sleep(0)
+  expect(started).toBe(2)
 })

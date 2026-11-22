@@ -30,9 +30,7 @@
  *   gap is the threshold; anything absolute would flag the whole address book at
  *   once.
  *
- * The message-shaped inputs below (`ingestMessage`, the Date-header and
- * signature parsing it leans on) predate that decision and are no longer wired
- * to the mail scan. `ingestAttendees` still runs, on the calendar snapshot the
+ * The one observed input is `ingestAttendees`, run on the calendar snapshot the
  * server already holds — a meeting the user sat in is contact they chose.
  *
  * Nothing here decides to send anything. It answers "who is this and is
@@ -45,8 +43,6 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { parseBirthday, describeBirthday, localDate } from './birthdays.ts'
 
-export type Direction = 'in' | 'out'
-
 /** Something the user said about a person, kept in their words and dated. */
 export type Note = { at: string; text: string }
 
@@ -56,13 +52,13 @@ export type Person = {
   name?: string
   /** Lowercased. The first is the primary. */
   addresses: string[]
-  /** Display names seen on the wire — "Jony", "Jonathan R.", "J. Rossi". */
+  /** Names seen for them — calendar display names and what the user called them: "Jony", "J. Rossi". */
   aliases: string[]
   /** Digits, `+` kept when it was given. */
   phones?: string[]
   /** Telegram/iMessage handles, lowercased, no leading @. */
   handles?: string[]
-  /** From a signature block if one gave it, else the mail domain. Never invented. */
+  /** Where they work, as the user said it. Never invented. */
   org?: string
   city?: string
   /** IANA zone, only when something actually said so. */
@@ -75,7 +71,11 @@ export type Person = {
   cadenceDays?: number
   /** ISO — the last time the user said they spoke to them. Never read off mail. */
   lastTouch?: string
-  /** Recent UTC offsets in minutes, newest last. Sampled, not averaged. */
+  /**
+   * Read-only history: UTC offsets and mail counts collected by a mail ingest that
+   * no longer runs. Records on disk still carry them, so they are still shown; nothing
+   * adds to them.
+   */
   offsetSamples: number[]
   inbound: { first?: string; last?: string; count: number }
   outbound: { first?: string; last?: string; count: number }
@@ -91,27 +91,15 @@ export type Person = {
 /** Enough history to see a rhythm; short enough that a rhythm that changed a
  * year ago does not outvote this month. */
 const MAX_CONTACTS = 60
-const MAX_OFFSET_SAMPLES = 12
 /** Long enough to hold everything said about someone the user talks about
  * weekly for a year, short enough that the record stays readable in one screen. */
 const MAX_NOTES = 40
 
 // ---------------------------------------------------------------------------
-// Address parsing
+// Addresses, phones and handles
 // ---------------------------------------------------------------------------
 
 export type ParsedAddress = { name?: string; email: string }
-
-/** "Marco Rossi <m@x.com>", "<m@x.com>", "m@x.com", `"Rossi, Marco" <m@x.com>`. */
-export function parseAddress(raw: string): ParsedAddress | undefined {
-  const s = raw.trim()
-  if (!s) return undefined
-  const angled = /^(.*?)<([^>]+)>\s*$/.exec(s)
-  const email = normalizeEmail(angled ? angled[2] : s)
-  if (!email) return undefined
-  const name = angled ? angled[1].trim().replace(/^["']|["']$/g, '').trim() : ''
-  return { ...(name ? { name } : {}), email }
-}
 
 /**
  * Lowercase, and drop the +tag.
@@ -146,92 +134,6 @@ export function normalizePhone(raw: string): string {
 /** `@Jony`, `Jony` and `jony` are one handle. */
 export function normalizeHandle(raw: string): string {
   return raw.trim().replace(/^@+/, '').toLowerCase()
-}
-
-const FREEMAIL = new Set([
-  'gmail.com', 'googlemail.com', 'hotmail.com', 'outlook.com', 'live.com', 'msn.com',
-  'yahoo.com', 'yahoo.it', 'yahoo.com.br', 'icloud.com', 'me.com', 'mac.com',
-  'proton.me', 'protonmail.com', 'aol.com', 'gmx.com', 'uol.com.br', 'bol.com.br',
-  'terra.com.br', 'libero.it', 'tiscali.it', 'virgilio.it',
-])
-
-/**
- * The mail domain, when it means something.
- *
- * A domain is a weaker fact than a signature block and is returned as the
- * domain, not as a guessed company name: "acme-consulting.it" is what is known,
- * and turning that into "Acme Consulting" is invention.
- */
-export function orgFromDomain(email: string): string | undefined {
-  const domain = email.split('@')[1]
-  if (!domain || FREEMAIL.has(domain)) return undefined
-  return domain
-}
-
-const LEGAL_SUFFIX = /\b(S\.?p\.?A\.?|S\.?r\.?l\.?|S\.?A\.?S\.?|Ltda\.?|LLC|L\.L\.C\.|Inc\.?|GmbH|AG|Ltd\.?|B\.?V\.?|Oy|AB|PLC|Pty|LDA)\b/
-const TITLE_LINE = /^\s*(?:[A-Z][\w.]*\s+){0,3}(?:CEO|CTO|CFO|COO|Founder|Co-?founder|Director|Manager|Engineer|Designer|Partner|Head|Lead|President|Advogad[oa]|Avvocato)\b[^,|·]*[,|·]\s*(.+?)\s*$/i
-
-/**
- * Org out of a signature block.
- *
- * Only the tail of the message is considered — a company name in the body is
- * usually someone else's employer. Two shapes are recognised and nothing is
- * inferred beyond them: a legal suffix (the strongest possible signal that a
- * line names a company) and "Title, Company", which is how almost every
- * signature that lacks a suffix is written.
- */
-export function orgFromSignature(body: string): string | undefined {
-  const lines = body.split('\n').map(l => l.trim()).filter(Boolean)
-  const sigStart = lines.findIndex(l => /^--\s*$/.test(l))
-  const tail = sigStart >= 0 ? lines.slice(sigStart + 1) : lines.slice(-10)
-
-  for (const line of tail) {
-    if (line.length > 80 || /@|https?:\/\/|\+\d|\bwww\./i.test(line)) continue
-    // A signature line is a label, not a sentence. Six words is comfortably
-    // above the longest real company line and well below prose — without it,
-    // "We are pitching to Globex Inc next week" becomes the user’s employer.
-    if (line.split(/\s+/).length > 6) continue
-    if (LEGAL_SUFFIX.test(line)) return line.replace(/[|·].*$/, '').trim()
-  }
-  for (const line of tail) {
-    const m = TITLE_LINE.exec(line)
-    if (m && m[1].length <= 60 && !/@|https?:\/\//.test(m[1])) return m[1].trim()
-  }
-  return undefined
-}
-
-// ---------------------------------------------------------------------------
-// Date headers
-// ---------------------------------------------------------------------------
-
-const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
-
-/**
- * An RFC 5322 Date header, kept in two pieces.
- *
- * `Date.parse` gets the instant right and throws the offset away, and the
- * offset is the interesting half: it says what the clock on the sender's wall
- * read. "-0300" is a person in Brazil regardless of what UTC thought.
- */
-export function parseDateHeader(raw: string): { at: string; offsetMinutes?: number } | undefined {
-  const s = raw.trim()
-  if (!s) return undefined
-  const at = Date.parse(s)
-  if (Number.isNaN(at)) return undefined
-
-  const num = /([+-])(\d{2})(\d{2})\s*(?:\([A-Z]+\))?\s*$/.exec(s)
-  if (num) {
-    const sign = num[1] === '-' ? -1 : 1
-    return { at: new Date(at).toISOString(), offsetMinutes: sign * (Number(num[2]) * 60 + Number(num[3])) }
-  }
-  const iso = /([+-])(\d{2}):(\d{2})$/.exec(s)
-  if (iso) {
-    const sign = iso[1] === '-' ? -1 : 1
-    return { at: new Date(at).toISOString(), offsetMinutes: sign * (Number(iso[2]) * 60 + Number(iso[3])) }
-  }
-  // Trailing Z, "GMT", or no zone at all: an instant with no wall clock behind
-  // it. Better to have no offset than a wrong one.
-  return { at: new Date(at).toISOString() }
 }
 
 export function formatOffset(minutes: number): string {
@@ -274,10 +176,10 @@ export function slugName(name: string): string {
 /**
  * Whether two names are the same person said at two lengths.
  *
- * The user says "Marco Rossi" once and "Marco" for the next year, so an exact
+ * The user says "Alex Taylor" once and "Alex" for the next year, so an exact
  * match alone files them as two people. A shorter name matches a longer one only
- * at a word boundary: "Marco" is "Marco Rossi", "Marc" is not, and "Marco Rossi"
- * is not "Marco Bianchi".
+ * at a word boundary: "Alex" is "Alex Taylor", "Marc" is not, and "Alex Taylor"
+ * is not "Alex Brown".
  */
 function namesAgree(a: string, b: string): boolean {
   const x = a.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -292,7 +194,7 @@ function namesAgree(a: string, b: string): boolean {
  * Everyone the key could mean, exact matches first.
  *
  * An address is unambiguous and returns at most one. A name can return several,
- * and the caller has to decide what to do about that — guessing which Marco was
+ * and the caller has to decide what to do about that — guessing which Alex was
  * meant is how a graph quietly attributes one person's facts to another.
  */
 export function matchPeople(people: Person[], key: string): Person[] {
@@ -348,70 +250,6 @@ function noteAlias(p: Person, name?: string): void {
   if (!p.name || clean.length > p.name.length) p.name = clean
 }
 
-export type MessageObservation = {
-  direction: Direction
-  /** Raw From header. */
-  from: string
-  /** Raw To/Cc headers, one entry per address. */
-  to?: string[]
-  cc?: string[]
-  /** Raw Date header, RFC 5322 or ISO. */
-  date: string
-  /** Body, for the signature block. Only read on inbound mail. */
-  body?: string
-}
-
-/**
- * Fold one message into the graph.
- *
- * The direction decides whose timezone the Date header describes, and getting
- * this backwards would put every one of their contacts in the user’s own zone: on
- * outbound mail the header is HIS clock, so recipients learn nothing about
- * where they are, only that they were contacted.
- */
-export function ingestMessage(people: Person[], msg: MessageObservation): Person[] {
-  const parsed = parseDateHeader(msg.date)
-  if (!parsed) return people
-  const { at, offsetMinutes } = parsed
-
-  const from = parseAddress(msg.from)
-  const recipients = [...(msg.to ?? []), ...(msg.cc ?? [])]
-    .map(parseAddress)
-    .filter((a): a is ParsedAddress => Boolean(a))
-
-  if (msg.direction === 'in') {
-    if (!from) return people
-    const p = upsertPerson(people, from)
-    p.inbound.first ??= at
-    p.inbound.last = at
-    p.inbound.count++
-    if (offsetMinutes !== undefined) {
-      p.offsetSamples.push(offsetMinutes)
-      if (p.offsetSamples.length > MAX_OFFSET_SAMPLES) p.offsetSamples.shift()
-    }
-    if (!p.org && msg.body) p.org = orgFromSignature(msg.body) ?? orgFromDomain(from.email)
-    pushContact(p, at)
-    p.updatedAt = new Date().toISOString()
-    // Everyone else on an inbound thread is a real address the user is in contact
-    // with, but nothing about their own clock is knowable from it.
-    for (const r of recipients) {
-      const other = upsertPerson(people, r)
-      if (other !== p) { pushContact(other, at); other.updatedAt = new Date().toISOString() }
-    }
-    return people
-  }
-
-  for (const r of recipients) {
-    const p = upsertPerson(people, r)
-    p.outbound.first ??= at
-    p.outbound.last = at
-    p.outbound.count++
-    pushContact(p, at)
-    p.updatedAt = new Date().toISOString()
-  }
-  return people
-}
-
 function upsertPerson(people: Person[], addr: ParsedAddress): Person {
   let p = people.find(x => x.addresses.includes(addr.email))
   if (!p && addr.name) {
@@ -465,7 +303,7 @@ export function ingestAttendees(people: Person[], attendees: AttendeeObservation
  * A name the user said out loud, with no address attached.
  *
  * Kept because the useful question is usually asked before the first email:
- * "who is Marco" should not come back empty just because the only record of the user
+ * "who is Alex" should not come back empty just because the only record of the user
  * is that the user has been mentioned nine times in three weeks.
  */
 export function mentionPerson(people: Person[], name: string, at = new Date().toISOString()): Person {
@@ -487,7 +325,7 @@ export function mentionPerson(people: Person[], name: string, at = new Date().to
  * Facts about a person as the user stated them.
  *
  * Every field is optional and none is derived from anything: this is the path
- * for "Marco is my lawyer in Munich, he's the one handling the visa". At least
+ * for "Alex is my lawyer in Munich, he's the one handling the visa". At least
  * one identifying field — name, email, phone or handle — has to be present, or
  * there is nobody to attach the rest to.
  */
@@ -581,7 +419,7 @@ export function recordPerson(people: Person[], f: StatedFacts): Person {
   if (!p && name) {
     const hits = matchPeople(people, name)
     // Two people answer to this name, so there is no safe merge and no safe new
-    // record either — a third Marco would just make it worse. Say so and let the
+    // record either — a third Alex would just make it worse. Say so and let the
     // session ask which one, the way an assistant who knew them both would.
     if (hits.length > 1) {
       throw new Error(`more than one ${name}: ${hits.map(displayName).join(', ')} — say which`)
@@ -802,7 +640,7 @@ export function formatPerson(p: Person, now = Date.now()): string {
  * Everything known about one person.
  *
  * The notes are the point and they come last, newest first, because the useful
- * answer to "who is Marco" is usually the most recent thing the user said about him
+ * answer to "who is Alex" is usually the most recent thing the user said about him
  * rather than his address. An empty record still prints its headline, so
  * "mentioned three times, nothing else known" is a visible answer instead of an
  * error.

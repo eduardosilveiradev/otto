@@ -32,7 +32,7 @@ import { loadMemories, type Memory } from './memory.ts'
 import type { Note } from './store.ts'
 import { loadStats, auditMemories, memoryKey, type RecallStats } from './recallstats.ts'
 import { HOUSE_RULES_NAME } from './houserules.ts'
-import { claudeBin, headlessMcpArgs } from './headless.ts'
+import { claudeBin, headlessMcpArgs, headlessEnv } from './headless.ts'
 import { displayName, lastContactAt, type Person } from './people.ts'
 
 const STATE_DIR = process.env.OTTO_STATE_DIR ?? join(homedir(), '.otto', 'state')
@@ -43,8 +43,8 @@ const SUMMARY_FILE = join(STATE_DIR, 'memory-summary.json')
 export const SUMMARY_MODEL = 'claude-sonnet-5-5'
 const EMBED_NAME = 'memory-embeddings.json'
 const EMBED_FILE = join(STATE_DIR, EMBED_NAME)
-export const EMBED_MODEL = 'intfloat/multilingual-e5-small'
 const OPENER = process.platform === 'darwin' ? 'open' : 'xdg-open'
+export const EMBED_MODEL = 'intfloat/multilingual-e5-small'
 
 export type Item = {
   id: string
@@ -176,8 +176,7 @@ function readSummary(): Summary | null {
 async function askModel(prompt: string, hash: string, system?: string): Promise<Summary> {
   const claude = claudeBin()
   if (!existsSync(claude)) throw new Error('claude CLI not found')
-  const env = { ...process.env } as Record<string, string | undefined>
-  delete env.OTTO_CHANNEL_HOST   // same reason consolidate.ts scrubs it
+  const env = headlessEnv()
   const started = Date.now()
   const proc = Bun.spawn(
     [claude, '-p', '--model', SUMMARY_MODEL, '--tools', '', '--no-session-persistence', '--output-format', 'json', ...(system ? ['--system-prompt', system] : []), ...headlessMcpArgs({ otto: false })],
@@ -336,8 +335,6 @@ export function chooseClusters(unit: Float32Array[], ks = CLUSTER_KS): { k: numb
 
 /** One key for the whole clustering: the same set of embedded texts, in any order, under the same parameters. */
 export const clusterKey = (keys: string[], ks = CLUSTER_KS) => createHash('sha256').update(EMBED_MODEL + '\n' + ks.join(',') + '\n' + [...keys].sort().join('\n')).digest('hex').slice(0, 16)
-/** A cluster's label is cached by exactly who is in it. */
-export const memberKey = (keys: string[]) => createHash('sha256').update([...keys].sort().join('\n')).digest('hex').slice(0, 16)
 
 const STOP = new Set('that this with from have when what they their them into only never always does will should after before than then your about over also just each every because which where there been were more most other some such like make made need needs uses used using it’s isn’t don’t della delle sono come para pela pelo como uma mais user users otto'.split(' '))
 export const terms = (it: Pick<Item, 'name' | 'description'>) => new Set(((it.name.replace(/[-_]/g, ' ') + ' ' + it.description).toLowerCase().match(/[\p{L}\d]{4,}/gu) ?? []).filter(w => !STOP.has(w)))
@@ -402,7 +399,7 @@ const fromB64 = (s: string) => { const b = Buffer.from(s, 'base64'); return new 
 
 /** The first interpreter that exists; memembed.py itself reports a missing torch or transformers. */
 export function embedPython(dir = STATE_DIR): string | null {
-  const c = [process.env.OTTO_EMBED_PYTHON, join(dir, 'embed', '.venv', 'bin', 'python')]
+  const c = [process.env.OTTO_EMBED_PYTHON, join(dir, 'embed', '.venv', 'bin', 'python'), join(dir, 'voice', '.venv', 'bin', 'python')]
   return c.find(p => p && existsSync(p)) ?? null
 }
 
@@ -658,7 +655,7 @@ export function buildHtml(data: string): string {
  * model in memory. Results index into memory-viewer.json's items.
  */
 export const SEARCH_IDLE_MS = 5 * 60_000
-let searchIndex: { stamp: string; unit: (Float32Array | null)[]; mean: Float32Array } | null = null
+let searchIndex: { stamp: string; generatedAt?: string; unit: (Float32Array | null)[]; mean: Float32Array } | null = null
 let searchChild: ReturnType<typeof embedder> = null
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -671,17 +668,17 @@ export function stopSearch(): void {
 /** The running embedder's pid, if one is up. */
 export const searchPid = () => searchChild?.pid
 
-export async function searchMemory(q: string, opts: { dir?: string; idleMs?: number } = {}): Promise<{ results: [number, number][] } | { error: string }> {
+export async function searchMemory(q: string, opts: { dir?: string; idleMs?: number } = {}): Promise<{ results: [number, number][]; generatedAt?: string } | { error: string }> {
   const dir = opts.dir ?? STATE_DIR
   const files = [join(dir, VIEWER_JSON), join(dir, EMBED_NAME)]
   let stamp: string
   try { stamp = files.map(f => statSync(f).mtimeMs).join(',') } catch { return { error: 'no embeddings: build the memory viewer first' } }
   if (searchIndex?.stamp !== stamp) {
     try {
-      const { items } = JSON.parse(readFileSync(files[0], 'utf8')) as { items: Item[] }
+      const { items, generatedAt } = JSON.parse(readFileSync(files[0], 'utf8')) as { items: Item[]; generatedAt?: string }
       const cache = JSON.parse(readFileSync(files[1], 'utf8')) as EmbedCache
       const { keys } = embedPlan(items.map(embedText), cache)
-      searchIndex = { stamp, ...centre(keys.map(k => (cache.vectors[k] ? fromB64(cache.vectors[k]) : null))) }
+      searchIndex = { stamp, generatedAt, ...centre(keys.map(k => (cache.vectors[k] ? fromB64(cache.vectors[k]) : null))) }
     } catch (err) { return { error: `unreadable index: ${String(err).slice(0, 160)}` } }
   }
   if (!searchIndex.unit.some(Boolean)) return { error: 'no embeddings' }
@@ -689,10 +686,11 @@ export async function searchMemory(q: string, opts: { dir?: string; idleMs?: num
   if (!q) return { results: [] }
   searchChild ??= embedder(dir)
   if (!searchChild) return { error: 'no embedder' }
-  const { unit, mean } = searchIndex
+  const { unit, mean, generatedAt } = searchIndex
   try {
     const r = await searchChild.embed([q])
-    return { results: rankQuery(r.vecs[0], mean, unit, 20) }
+    // The positions are into this index's items: the phone checks it against the list it's showing.
+    return { results: rankQuery(r.vecs[0], mean, unit, 20), ...(generatedAt ? { generatedAt } : {}) }
   } catch (err) {
     stopSearch()
     return { error: String(err).slice(0, 200) }
@@ -730,6 +728,27 @@ function serve(html: string, unit: (Float32Array | null)[], mean: Float32Array, 
 }
 
 // ---------------------------------------------------------------------------
+
+export type Rebuild = () => { exited: Promise<unknown> }
+let rebuilding = false
+
+/** A detached `bun memviewer.ts --refresh` into stateDir, unless one is already running (then false). */
+export function startRebuild(stateDir: string, spawn?: Rebuild): boolean {
+  if (rebuilding) return false
+  const proc = (spawn ?? (() => Bun.spawn(['bun', join(import.meta.dir, 'memviewer.ts'), '--refresh'], {
+    env: { ...headlessEnv(), OTTO_STATE_DIR: stateDir, ...(process.env.OTTO_EMBED_PYTHON ? { OTTO_EMBED_PYTHON: process.env.OTTO_EMBED_PYTHON } : {}) },
+    stdio: ['ignore', 'ignore', 'ignore'],
+  })))()
+  rebuilding = true
+  void proc.exited.catch(() => {}).finally(() => { rebuilding = false })
+  return true
+}
+
+/** After the nightly memory pass, so the dashboard's snapshot never goes stale. Never throws: the pass is already done. */
+export function nightlyRebuild(stateDir: string, spawn?: Rebuild): string {
+  try { return startRebuild(stateDir, spawn) ? 'memory viewer rebuild started' : 'memory viewer rebuild skipped — one is already running' }
+  catch (err) { return `memory viewer rebuild failed — ${err}` }
+}
 
 if (import.meta.main) {
   const argv = process.argv.slice(2)

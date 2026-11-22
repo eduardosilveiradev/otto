@@ -193,3 +193,33 @@ test('formatHit shows scope and type, and can return the full body', () => {
   expect(formatHit(h)).toContain('(project, global)')
   expect(formatHit(h, true)).toContain('iRacing')
 })
+
+// ---------------------------------------------------------------------------
+// Expiry
+// ---------------------------------------------------------------------------
+
+test('a knowledge memory with expires in its frontmatter drops out of search once it passes', () => {
+  const raw = '---\nname: card\ndescription: one-time card for the trip\nexpires: 2026-11-20\nmetadata:\n  type: reference\n---\nThe one-time card works for the trip booking.'
+  const m = parseMemory('/x/card.md', raw, 'global', 0)!
+  expect(m.expires).toBe('2026-11-20')
+  const before = new Date(2026, 10, 20, 23, 0).getTime()
+  const after = new Date(2026, 10, 21, 0, 0, 1).getTime()
+  expect(searchMemories([m], 'card trip', { now: before })).toHaveLength(1)
+  expect(searchMemories([m], 'card trip', { now: after })).toEqual([])
+  expect(searchMemories([m], 'card trip', { now: after, includeExpired: true })).toHaveLength(1)
+})
+
+test('formatHit marks a memory with an expiry', () => {
+  const m = mem({ name: 'away', description: 'away until Sunday', body: 'b', expires: '2099-11-15' })
+  expect(formatHit({ memory: m, score: 1 })).toContain('(until 15 Nov)')
+  expect(formatHit({ memory: { ...m, expires: '2000-11-15' }, score: 1 })).toContain('(expired 15 Nov)')
+})
+
+test('writeMemory puts expires in the frontmatter, and a rewrite without it clears it', () => {
+  writeMemory({ name: 'temp-thing', description: 'temporary', type: 'project', body: 'x', scope: 'global', dir: tmp, expires: '2026-11-20' })
+  const raw = readFileSync(join(tmp, 'temp-thing.md'), 'utf8')
+  expect(raw).toContain('\nexpires: 2026-11-20\n')
+  expect(parseMemory(join(tmp, 'temp-thing.md'), raw, 'global', 0)!.expires).toBe('2026-11-20')
+  writeMemory({ name: 'temp-thing', description: 'temporary', type: 'project', body: 'x', scope: 'global', dir: tmp })
+  expect(readFileSync(join(tmp, 'temp-thing.md'), 'utf8')).not.toContain('expires')
+})

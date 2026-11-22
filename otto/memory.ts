@@ -26,6 +26,7 @@
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, mkdirSync, rmSync } from 'fs'
 import { homedir } from 'os'
 import { join, basename } from 'path'
+import { isExpired, expiryLabel } from './store.ts'
 
 export type MemoryType = 'user' | 'feedback' | 'project' | 'reference'
 
@@ -41,6 +42,8 @@ export type Memory = {
   mtimeMs: number
   /** [[wikilinks]] to other memories. */
   links: string[]
+  /** `expires:` in the frontmatter: hidden from search once it passes. */
+  expires?: string
 }
 
 export const MEMORY_ROOT = join(homedir(), '.claude', 'memory')
@@ -72,8 +75,10 @@ export function parseMemory(path: string, raw: string, scope: string, mtimeMs: n
   // A file with no body and no description carries nothing worth returning.
   const description = field('description') ?? ''
   if (!body && !description) return null
+  const expires = field('expires')
 
   return {
+    ...(expires ? { expires } : {}),
     name,
     description,
     type,
@@ -207,13 +212,17 @@ export type SearchOpts = {
   limit?: number
   /** Boost memories in this scope without excluding the rest. */
   preferScope?: string
+  /** Keep memories whose `expires` has passed. */
+  includeExpired?: boolean
+  now?: number
 }
 
 export type SearchHit = { memory: Memory; score: number }
 
 export function searchMemories(memories: Memory[], query: string, opts: SearchOpts = {}): SearchHit[] {
-  const { scope, type, limit = 8, preferScope } = opts
+  const { scope, type, limit = 8, preferScope, includeExpired = false, now = Date.now() } = opts
   const pool = memories.filter(m => {
+    if (!includeExpired && isExpired(m, now)) return false
     if (scope && scope !== 'all' && m.scope !== scope) return false
     if (type && m.type !== type) return false
     return true
@@ -275,11 +284,12 @@ export function dirForScope(scope: string): string {
   return scope === 'global' ? GLOBAL_DIR : join(PROJECTS_DIR, scope, 'memory')
 }
 
-export function renderMemory(m: { name: string; description: string; type: MemoryType; body: string }): string {
+export function renderMemory(m: { name: string; description: string; type: MemoryType; body: string; expires?: string }): string {
   return [
     '---',
     `name: ${m.name}`,
     `description: ${m.description}`,
+    ...(m.expires ? [`expires: ${m.expires}`] : []),
     'metadata:',
     `  type: ${m.type}`,
     '  node_type: memory',
@@ -324,6 +334,7 @@ export function writeMemory(input: {
   type: MemoryType
   body: string
   scope: string
+  expires?: string
   /** Overrides the scope-derived location. Tests use it; nothing else should. */
   dir?: string
 }): Memory {
@@ -331,7 +342,7 @@ export function writeMemory(input: {
   const dir = input.dir ?? dirForScope(input.scope)
   mkdirSync(dir, { recursive: true })
   const path = join(dir, `${name}.md`)
-  writeFileSync(path, renderMemory({ name, description: input.description, type: input.type, body: input.body }))
+  writeFileSync(path, renderMemory({ name, description: input.description, type: input.type, body: input.body, ...(input.expires ? { expires: input.expires } : {}) }))
   updateIndex(dir, name, input.description)
   invalidateCache()
   return {
@@ -343,21 +354,23 @@ export function writeMemory(input: {
     path,
     mtimeMs: Date.now(),
     links: [...input.body.matchAll(/\[\[([^\]]+)\]\]/g)].map(x => x[1].trim()),
+    ...(input.expires ? { expires: input.expires } : {}),
   }
 }
 
 export function deleteMemory(memories: Memory[], name: string, scope?: string): Memory | null {
-  const target = memories.find(m => m.name === name && (!scope || m.scope === scope))
+  const target = memories.find(m => (m.name === name || basename(m.path, '.md') === name) && (!scope || m.scope === scope))
   if (!target) return null
   try { rmSync(target.path) } catch { return null }
-  removeFromIndex(dirForScope(target.scope), target.name)
+  // Index lines key on the file name, which can differ from the frontmatter name.
+  removeFromIndex(dirForScope(target.scope), basename(target.path, '.md'))
   invalidateCache()
   return target
 }
 
 export function formatHit(h: SearchHit, full = false): string {
   const scope = h.memory.scope === 'global' ? 'global' : h.memory.scope.split('-').slice(-2).join('-')
-  const head = `[${h.memory.name}] (${h.memory.type}, ${scope})`
+  const head = `[${h.memory.name}] (${h.memory.type}, ${scope})${expiryLabel(h.memory)}`
   const body = full ? h.memory.body : h.memory.description || h.memory.body.slice(0, 200)
   return `${head}\n  ${body.replace(/\n/g, '\n  ')}`
 }
@@ -407,7 +420,7 @@ export function seenFromLog(log: string, sess: number): Set<string> {
  */
 export function memHints(memories: Memory[], text: string, seen: Set<string>, now = Date.now(), minScore = HINT_MIN_SCORE): string {
   if (new Set(tokenize(text)).size < HINT_MIN_TERMS) return ''
-  const hits = searchMemories(memories, text, { limit: 8 })
+  const hits = searchMemories(memories, text, { limit: 8, now })
   if (!hits.length || hits[0].score < minScore) return ''
   const top = hits[0].score
   const out: string[] = []

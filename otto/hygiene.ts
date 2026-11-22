@@ -22,8 +22,8 @@
  *      is worth one plain sentence — after that the observation has been made,
  *      and repeating it would be nagging.
  *
- * Everything here is deterministic and reads only notes.json. The functions that
- * decide are pure (`planHygiene`); the ones that write take the file paths, so
+ * Everything here is deterministic over notes and restart evidence. Decisions
+ * are pure (`planHygiene`); the functions that write take file paths, so
  * the whole nightly pass runs against a temp directory in tests.
  */
 
@@ -41,7 +41,7 @@ export type HygieneConfig = {
   avoidanceThreshold: number
 }
 
-export const DEFAULT_CONFIG: HygieneConfig = { crashQuietDays: 14, staleLoopDays: 30, avoidanceThreshold: 3 }
+export const DEFAULT_CONFIG: HygieneConfig = { crashQuietDays: 1, staleLoopDays: 30, avoidanceThreshold: 3 }
 
 /** Config comes from a hand-edited JSON file: anything unusable falls back to the default. */
 export function resolveConfig(raw?: Partial<Record<keyof HygieneConfig, unknown>> | null): HygieneConfig {
@@ -132,7 +132,7 @@ export type Proposal = { id: string; text: string; reason: string }
 export type Avoidance = { id: string; text: string; deferrals: number; dues: string[] }
 export type HygienePlan = { close: Closure[]; propose: Proposal[]; avoidance: Avoidance[] }
 
-const isOpenLoop = (n: Note) => n.kind === 'loop' && (n.status ?? 'open') === 'open'
+const isOpenLoop = (n: Note) => !n.source?.startsWith('system:deadman:') && n.source !== 'deadman' && n.kind === 'loop' && (n.status ?? 'open') === 'open'
 
 /**
  * Lowercased, punctuation and whitespace collapsed — for "is this the same
@@ -152,6 +152,8 @@ export function planHygiene(
   opts: {
     now: number
     config?: HygieneConfig
+    /** Unplanned starts recorded by startup crash triage. Missing means unknown. */
+    recentStarts?: number[]
     /**
      * Does the failing regression test filed for this crash signature still
      * exist? `undefined` means "cannot tell", which is never treated as gone.
@@ -167,17 +169,22 @@ export function planHygiene(
 
   // -- crash loops ----------------------------------------------------------
   // Recurrence is judged against every crash-loop note, closed ones included:
-  // the newest is the last time anything crashed, whoever closed the note.
+  // the newest remains evidence, whoever closed the note. Explicit user sources
+  // are never treated as system incidents.
   const crashes = notes.flatMap(n => {
-    const c = parseCrashNote(n)
+    const c = !n.source || n.source.startsWith('system:crashloop:') ? parseCrashNote(n) : null
     return c && c !== 'undated' ? [c] : []
   })
-  const lastCrash = crashes.reduce((m, c) => Math.max(m, c.at), -Infinity)
+  const starts = opts.recentStarts
+  const lastCrash = starts?.length && starts.every(Number.isFinite)
+    ? Math.max(...starts, ...crashes.map(c => c.at))
+    : NaN
   const quietFor = now - lastCrash
   const windowMs = cfg.crashQuietDays * DAY
 
   for (const n of notes) {
     if (!isOpenLoop(n) || n.reopenedAt) continue
+    if (n.source && !n.source.startsWith('system:crashloop:')) continue
     const c = parseCrashNote(n)
     if (!c) continue
     if (c === 'undated') {
@@ -199,9 +206,10 @@ export function planHygiene(
       close({ id: n.id, status: 'dropped', reason: `same crash recurred ${newer.iso.slice(0, 10)}; superseded by note ${newer.id}` })
       continue
     }
-    if (quietFor >= windowMs) {
+    const age = now - Date.parse(n.createdAt)
+    if (quietFor >= windowMs && age >= (n.source ? windowMs : 2 * DAY)) {
       const days = Math.floor(quietFor / DAY)
-      const quiet = `no crash recorded for ${days} days (last ${day(lastCrash)}, window ${cfg.crashQuietDays}d)`
+      const quiet = `clear for 24h; no crash recorded for ${days} days (last ${day(lastCrash)}, window ${cfg.crashQuietDays}d)`
       if (c.kind === 'revert') {
         close({ id: n.id, status: 'done', reason: quiet })
       } else if (known && opts.regressionExists?.(known) === false) {
@@ -304,6 +312,7 @@ export function runHygiene(opts: {
   stateFile: string
   now?: number
   config?: HygieneConfig
+  recentStarts?: number[]
   regressionExists?: (signature: string) => boolean | undefined
   dryRun?: boolean
 }): HygieneResult {
@@ -312,6 +321,7 @@ export function runHygiene(opts: {
   const state = loadHygieneState(opts.stateFile)
   const plan = capAsks(planHygiene(notes, state, {
     now,
+    recentStarts: opts.recentStarts,
     ...(opts.config ? { config: opts.config } : {}),
     ...(opts.regressionExists ? { regressionExists: opts.regressionExists } : {}),
   }))
@@ -417,4 +427,26 @@ export function hygieneDue(o: {
   if (o.lastHygieneDay === o.today) return false
   if (o.consolidationInFlight) return false
   return o.lastConsolidationDay === o.today || o.hour >= HYGIENE_FALLBACK_HOUR
+}
+
+// `bun otto/hygiene.ts`: what tonight's pass would do to the real notes. Writes nothing.
+if (import.meta.main) {
+  const { existsSync } = await import('fs')
+  const { homedir } = await import('os')
+  const { join } = await import('path')
+  const { regressionPath } = await import('./selftriage.ts')
+  const dir = process.env.OTTO_STATE_DIR ?? join(homedir(), '.otto', 'state')
+  let access: { hygiene?: Partial<Record<keyof HygieneConfig, unknown>> } = {}
+  try { access = JSON.parse(readFileSync(join(dir, 'access.json'), 'utf8')) } catch {}
+  let recentStarts: number[] | undefined
+  try { recentStarts = JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8')).recentStarts } catch {}
+  const { plan } = runHygiene({
+    notesFile: join(dir, 'notes.json'),
+    stateFile: join(dir, 'hygiene.json'),
+    config: resolveConfig(access.hygiene),
+    recentStarts,
+    regressionExists: sig => existsSync(join(import.meta.dir, '..', regressionPath(sig))),
+    dryRun: true,
+  })
+  console.log(formatPlan(plan))
 }

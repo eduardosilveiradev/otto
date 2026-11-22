@@ -2,10 +2,11 @@
  * Keep-in-touch nudges.
  *
  * The cadence is something the user states, never something inferred. The
- * rhythm people.ts measures (`cadenceDrift`) needs a history of contacts, and in
- * practice that history is empty for everyone: the graph holds only what they
- * told Otto. So the only person who can be nudged is one they said they want to
- * stay in touch with, and how often. Nobody else is ever raised.
+ * rhythm people.ts measures (`cadenceDrift`) needs a history of contacts, and
+ * the only contacts the graph collects are meetings from their calendar:
+ * everything else in it is what they told Otto. So the only person who can be
+ * nudged is one they said they want to stay in touch with, and how often.
+ * Nobody else is ever raised.
  *
  * Two budgets keep it from becoming the nag it exists to prevent. Each person
  * gets one nudge per cadence period (the clock restarts at the nudge, so an
