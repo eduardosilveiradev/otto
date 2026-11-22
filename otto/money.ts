@@ -42,7 +42,7 @@ export type MoneyRecord = {
   currency: string
   /** YYYY-MM-DD, the date on the receipt — not the date it was read. */
   date: string
-  category?: string
+  category?: string | null
   /** "email:<messageId>", "telegram:<messageId>", "manual". The audit trail. */
   source?: string
   /** Card, account, "pix", "cash" — free text, whatever the receipt said. */
@@ -56,9 +56,9 @@ export type MoneyRecord = {
 
 /**
  * The facts about a retail purchase that decide its return window and its
- * warranty. Only what the receipt said: the deadlines themselves are worked out
- * on read (returns.ts), because the delivery date they run from often arrives
- * days after the receipt does.
+ * warranty, plus the channel's return question and decision state. Deadlines
+ * are worked out on read (returns.ts), because the delivery date they run from
+ * often arrives days after the receipt does.
  */
 export type PurchaseFacts = {
   /** What was bought, in words they would ask about: "headphones", "kettle". */
@@ -75,6 +75,9 @@ export type PurchaseFacts = {
   returnBy?: string
   /** A warranty end the receipt states outright, YYYY-MM-DD. */
   warrantyUntil?: string
+  /** Channel-owned interruption budget and the user's decision, persisted with the purchase. */
+  returnAskedOn?: string
+  returnChoice?: 'keep' | 'back'
 }
 
 /** Currencies whose minor unit is not 1/100. Everything else is assumed 2. */
@@ -271,11 +274,22 @@ export function recordMoney(
   if (existing) {
     // The first scan logged the charge; a later pass that knows it was goods
     // from a retailer adds that rather than being turned away as a duplicate.
+    let updated = false
     if (input.purchase && !existing.purchase) {
       existing.purchase = cleanPurchase(input.purchase)
-      return { records, record: existing, created: false, updated: true }
+      updated = true
     }
-    return { records, record: existing, created: false }
+    // Same source with a note or category is the answer to "what was it?".
+    const category = input.category?.trim().toLowerCase()
+    if (input.source && input.note && input.note !== existing.note) {
+      existing.note = input.note
+      updated = true
+    }
+    if (input.source && category && category !== existing.category) {
+      existing.category = category
+      updated = true
+    }
+    return { records, record: existing, created: false, ...(updated ? { updated } : {}) }
   }
 
   const record: MoneyRecord = {
@@ -315,7 +329,7 @@ export function queryMoney(records: MoneyRecord[], q: MoneyQuery = {}): MoneyRec
     if (from && r.date < from) return false
     if (to && r.date > to) return false
     if (q.currency && r.currency !== q.currency.toUpperCase()) return false
-    if (q.category && (r.category ?? '') !== q.category.toLowerCase()) return false
+    if (q.category && (r.category ?? 'uncategorised') !== q.category.toLowerCase()) return false
     if (merchant && !r.merchant.toLowerCase().includes(merchant)) return false
     return true
   })

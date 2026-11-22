@@ -7,7 +7,9 @@
  * approximate home-currency figure next to it — "R$ 120,00 (≈ €19.40, ECB 10 Oct)"
  * — so a number in a currency they think less in still means something at a
  * glance. The figure is a label, never an input: nothing here is summed, and a
- * converted amount is never added to another one.
+ * converted amount is never added to another one, with one exception: the
+ * yearly renewal total in subscriptions.ts, which converts each currency's own
+ * sum once and says it is approximate.
  *
  * The source is the ECB's daily reference rates: free, keyless, EUR-based, one
  * update per working day. They are cached in the state dir with the date the

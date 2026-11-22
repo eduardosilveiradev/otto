@@ -19,15 +19,15 @@
  * are marked unverified until someone has checked them against the live page.
  * Statutory rows are the floor; a retailer row only ever extends it.
  *
- * Nothing here sends anything. The brief carries a line for windows closing in
- * the next few days, and the `warranty` tool answers when asked.
+ * The channel asks once when a window has two days left. The brief carries
+ * unsettled windows, and the `warranty` tool answers when asked.
  */
 
 import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { PackageRecord } from './packages.ts'
-import { minorDigits, formatMoney, type MoneyRecord, type PurchaseFacts } from './money.ts'
+import { loadMoney, saveMoney, minorDigits, formatMoney, type MoneyRecord, type PurchaseFacts } from './money.ts'
 
 export type Jurisdiction = 'EU' | 'BR'
 
@@ -313,8 +313,44 @@ export function purchases(records: MoneyRecord[], o: CoverageOpts): Coverage[] {
 export function closingSoon(covs: Coverage[], today: string, days = CLOSING_DAYS): Coverage[] {
   const horizon = addDays(today, days)
   return covs
-    .filter(c => c.returnBy && c.returnBy.until >= today && c.returnBy.until <= horizon)
+    .filter(c => !c.record.purchase?.returnChoice && c.returnBy && c.returnBy.until >= today && c.returnBy.until <= horizon)
     .sort((a, b) => a.returnBy!.until.localeCompare(b.returnBy!.until))
+}
+
+/** Reserve the one interruption before delivery, so a restart cannot send it twice. */
+export function claimReturnPrompts(file: string, today: string, opts: CoverageOpts) {
+  const records = loadMoney(file)
+  const due = closingSoon(purchases(records, opts), today, 2).filter(c => !c.record.purchase!.returnAskedOn)
+  const prompts = due.map(c => {
+    c.record.purchase!.returnAskedOn = today
+    const weekday = new Intl.DateTimeFormat('en', { weekday: 'long', timeZone: 'UTC' }).format(new Date(`${c.returnBy!.until}T00:00:00Z`))
+    return {
+      text: `Keeping the ${c.item}? Window closes ${weekday}.`,
+      buttons: [
+        { label: 'keep', data: `return keep ${c.record.id}` },
+        { label: 'send back', data: `return back ${c.record.id}` },
+      ],
+    }
+  })
+  if (due.length) saveMoney(file, records)
+  return prompts
+}
+
+/** Compact transport buttons become self-contained instructions before session delivery. */
+export function settleReturnTap(file: string, data: string): { choice: 'keep' | 'back'; instruction: string } | undefined {
+  const m = /^return (keep|back) ([a-f0-9]{8})$/.exec(data)
+  if (!m) return undefined
+  const records = loadMoney(file)
+  const r = records.find(r => r.id === m[2])
+  if (!r?.purchase) throw new Error('That purchase is no longer recorded.')
+  const choice = r.purchase.returnChoice ?? (m[1] as 'keep' | 'back')
+  r.purchase.returnChoice = choice
+  saveMoney(file, records)
+  const email = r.source?.startsWith('email:') ? r.source.slice(6) : undefined
+  return {
+    choice,
+    instruction: `Send back purchase ${r.id}: ${JSON.stringify(r.purchase.item ?? r.merchant)} from ${JSON.stringify(r.merchant)}. ${email ? `Read order email message id ${JSON.stringify(email)} for the return label and steps.` : 'No order email is recorded; ask for the receipt or return instructions.'}`,
+  }
 }
 
 function inDays(today: string, until: string): string {

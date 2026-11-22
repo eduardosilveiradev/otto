@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { formatBrief, briefData, busyUntil, gistOf, whenLabel, BRIEF_MAX_CHARS, type CalEvent, type BriefParts } from '../brief.ts'
+import { formatBrief, briefData, briefHasMail, busyUntil, gistOf, whenLabel, BRIEF_MAX_CHARS, type CalEvent, type BriefParts } from '../brief.ts'
 
 const NOW = new Date('2026-08-11T20:00:00Z')
 
@@ -28,7 +28,7 @@ test('the brief states its own boundary', () => {
 test('bulk mail is counted, not listed', () => {
   const text = formatBrief(parts({
     mail: [
-      { from: 'Marco <marco@example.com>', subject: 'contract' },
+      { from: 'Alex <alex@example.com>', subject: 'contract' },
       { from: 'Deals <noreply@shop.com>', subject: 'SALE', labels: ['CATEGORY_PROMOTIONS'] },
       { from: 'newsletter@thing.io', subject: 'weekly' },
     ],
@@ -42,7 +42,7 @@ test('primary mail outranks updates for the limited slots', () => {
   const many = Array.from({ length: 6 }, (_, i) => ({
     from: `Bank ${i} <b${i}@bank.com>`, subject: `statement ${i}`, labels: ['CATEGORY_UPDATES'],
   }))
-  const text = formatBrief(parts({ mail: [...many, { from: 'Marco <m@x.com>', subject: 'the contract' }] }))
+  const text = formatBrief(parts({ mail: [...many, { from: 'Alex <m@x.com>', subject: 'the contract' }] }))
   expect(text).toContain('the contract')
 })
 
@@ -186,7 +186,7 @@ test('an hour or more of clear air reads as free-until', () => {
 })
 
 test('under an hour reads as minutes remaining, not free-until', () => {
-  const out = lookAhead([at('2026-08-12T10:25:00Z', 'call with Marco')], NOW_A, 'UTC')
+  const out = lookAhead([at('2026-08-12T10:25:00Z', 'call with Alex')], NOW_A, 'UTC')
   expect(out).toContain('25m until 10:25')
   expect(out).not.toContain('free until')
 })
@@ -244,4 +244,69 @@ test('the quiet line renders after Desk and is not a section', () => {
   expect(text).toContain(quiet)
   expect(text.indexOf(quiet)).toBeGreaterThan(text.indexOf('Desk: at desk 5m'))
   expect(sectionLabels(text)).not.toContain('Quiet')
+})
+
+function goal(id: string, due?: string): BriefParts['facts'][number] {
+  return { id, kind: 'fact', key: `goal.${id}`, text: id, tags: [], createdAt: '', ...(due ? { due } : {}) }
+}
+
+test('goals count local calendar days and sort nearest first, ahead of the day', () => {
+  const text = formatBrief(parts({
+    now: new Date('2026-08-12T01:00:00Z'), tz: 'America/Los_Angeles',
+    goals: [goal('exam', '2026-08-20'), goal('ship', '2026-08-12'), goal('learn')],
+  }))
+  expect(text).toContain('ship (1 day remaining); exam (9 days remaining); learn')
+  expect(text.indexOf('Goals')).toBeLessThan(text.indexOf('Today'))
+  expect(formatBrief(parts({ now: new Date('2026-08-12T01:00:00Z'), tz: 'Asia/Tokyo',
+    goals: [goal('exam', '2026-08-20')],
+  }))).toContain('exam (8 days remaining)')
+})
+
+test('goal datetimes use the brief timezone and calendar days across DST', () => {
+  const text = formatBrief(parts({
+    now: new Date('2026-03-07T17:00:00Z'), tz: 'America/New_York',
+    goals: [goal('ship', '2026-03-09T03:30:00Z')],
+  }))
+  expect(text).toContain('ship (1 day remaining)')
+})
+
+test('goals omit superseded and closed facts without duplicating standing facts', () => {
+  const facts = [
+    { ...goal('old'), supersededBy: 'new' },
+    { ...goal('done'), status: 'done' as const },
+    { ...goal('dropped'), status: 'dropped' as const },
+    goal('active'),
+  ]
+  const text = formatBrief(parts({ facts }))
+  expect(text).toContain('Goals (as of 20:00): active')
+  expect(text).not.toContain('old')
+  expect(text).not.toContain('done')
+  expect(text).not.toContain('dropped')
+  expect(text).not.toContain('Standing facts')
+})
+
+test('goals past their expiry drop out of the brief', () => {
+  const text = formatBrief(parts({ goals: [{ ...goal('gone'), expires: '2026-08-10T00:00:00Z' }, { ...goal('kept'), expires: '2026-08-30' }] }))
+  expect(text).toContain('Goals (as of 20:00): kept')
+  expect(text).not.toContain('gone')
+})
+
+test('no active goals leaves the brief unchanged', () => {
+  expect(formatBrief(parts({ goals: [] }))).toBe(formatBrief(parts()))
+  expect(formatBrief(parts({ goals: [{ ...goal('done'), status: 'done' }] })))
+    .toBe(formatBrief(parts()))
+})
+
+test('goals keep overdue and undated targets, without an invalid countdown', () => {
+  const text = formatBrief(parts({ goals: [goal('past', '2026-08-10'), goal('today', '2026-08-11'), goal('undated'), goal('invalid', 'unknown')] }))
+  expect(text).toContain('past (1 day overdue); today (today); undated; invalid')
+  expect(text).not.toContain('NaN')
+})
+
+
+test('only mail content in a brief taints its reader', () => {
+  expect(briefHasMail(parts())).toBe(false)
+  expect(briefHasMail(parts({ events: [{ summary: 'Meeting', start: { dateTime: NOW.toISOString() } }] }))).toBe(false)
+  expect(briefHasMail(parts({ mail: [{ from: 'you@example.com', subject: 'Please reply' }] }))).toBe(true)
+  expect(briefHasMail(parts({ debts: [{ from: 'you@example.com', snippet: 'Please reply', threadId: 't1', askedAt: NOW.toISOString(), daysWaiting: 3 }] }))).toBe(true)
 })

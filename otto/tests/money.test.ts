@@ -91,6 +91,19 @@ test('the same email recorded twice is one record', () => {
   expect(rs).toHaveLength(1)
 })
 
+// A vague Wallet merchant gets asked about; the answer lands on the same record.
+test('the same source with a note or category updates that record', () => {
+  const rs: MoneyRecord[] = []
+  const pay = { merchant: 'Acme Ltd', amount: 3.15, currency: 'EUR', date: '2026-07-01', source: 'wallet:42' }
+  recordMoney(rs, pay)
+  expect(recordMoney(rs, pay).updated).toBeUndefined()
+  const r = recordMoney(rs, { ...pay, note: 'monster', category: 'Food' })
+  expect(r.created).toBe(false)
+  expect(r.updated).toBe(true)
+  expect(rs).toHaveLength(1)
+  expect(rs[0]).toMatchObject({ note: 'monster', category: 'food' })
+})
+
 test('two identical charges on the same day can still both be recorded', () => {
   const rs: MoneyRecord[] = []
   recordMoney(rs, { merchant: 'Bar', amount: 4, currency: 'EUR', date: '2026-07-01' })
@@ -190,4 +203,11 @@ test('records round-trip through disk', () => {
   saveMoney(file, rs)
   expect(loadMoney(file)).toEqual(rs)
   expect(loadMoney(join(tmp, 'nope.json'))).toEqual([])
+})
+
+test('uncategorised charges can be filtered by the name the totals give them', () => {
+  const rs = seed()
+  recordMoney(rs, { merchant: 'Kiosk', amount: 3, currency: 'EUR', date: '2026-08-03' })
+  expect(queryMoney(rs, { category: 'uncategorised' }).map(r => r.merchant)).toEqual(['Kiosk'])
+  expect(queryMoney(rs, { category: 'food' }).length).toBe(2)
 })
