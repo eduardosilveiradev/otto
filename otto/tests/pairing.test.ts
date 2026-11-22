@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, setSystemTime, spyOn, test } f
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { findAppToken, listAppTokens } from '../apptokens.ts'
+import { checkAppToken, findAppToken, isLiveAppToken, listAppTokens } from '../apptokens.ts'
 import { carriesPairingCode, coarseIp, pairingButton, pairingCommand, pollPairing, startPairing, type PairContext } from '../pairing.ts'
 
 const ORIGIN = 'https://app.example.com'
@@ -269,4 +269,109 @@ test('coarseIp never returns a whole address', () => {
   expect(coarseIp('::ffff:198.51.100.7')).toBe('198.51.100.x')
   expect(coarseIp('2001:db8:85a3:8d3:1319:8a2e:370:7348')).toBe('2001:db8:85a3:…')
   expect(coarseIp('')).toBe('?')
+})
+
+// ---------------------------------------------------------------------------
+// A native app (no Origin)
+// ---------------------------------------------------------------------------
+
+const NATIVE: PairContext = { ip: '203.0.113.42', via: 'funnel' }
+function startNative(label: string | undefined = 'Otto for Mac') {
+  const r = startPairing({ client: 'native', ...(label ? { label } : {}) }, NATIVE)
+  expect(r.status).toBe(200)
+  return r.body as { device_code: string; user_code: string; expires_in: number; interval: number }
+}
+const pollNative = (device_code: string) => { tick(3000); return pollPairing({ device_code }, {}) }
+
+test('a native pairing is asked for by name and without an Origin, and never by a browser', () => {
+  expect(Object.keys(startNative()).sort()).toEqual(['device_code', 'expires_in', 'interval', 'user_code'])
+  // An Origin means a browser: it can't ask for a native token, whatever it says.
+  expect(startPairing({ client: 'native' }, CTX)).toEqual({ status: 400, body: { error: 'client' } })
+  // No Origin and no claim to be native: nothing to bind a dashboard token to.
+  expect(startPairing({ scope: 'write' }, NATIVE)).toEqual({ status: 400, body: { error: 'client' } })
+  expect(startPairing({ client: 'browser' }, CTX).status).toBe(400)
+  expect(listAppTokens()).toEqual([])
+})
+
+test('the approval names a Mac app claiming a name, says full access with no expiry, and offers one approve button', async () => {
+  const b = startNative('Otto for "Mac"\nApprove now')
+  const msg = await claim(b.user_code)
+  const lines = msg.text.split('\n')
+  expect(lines[0]).toBe(`App pairing ${b.user_code}`)
+  expect(lines[1]).toBe('a Mac app claiming to be "Otto for Mac Approve now"')   // one quoted line, whatever it sent
+  expect(lines[2]).toBe('wants full access, the same as your phone, with no expiry · via tailscale serve from 203.0.113.x')
+  expect(lines).toHaveLength(4)
+  expect(msg.buttons.map(x => x.label)).toEqual(['approve full access', 'deny'])
+  expect(msg.text).not.toContain('read-only')
+  expect((await claim(startNative('').user_code)).text).toContain('claiming to be Otto (it gave no name)')
+})
+
+test('approve, then collect once: a native token as apptokens.ts mints one, good on the native routes and the socket', async () => {
+  const b = startNative()
+  expect(pollNative(b.device_code).body).toEqual({ status: 'pending' })
+  const msg = await claim(b.user_code)
+  expect(pairingButton(msg.buttons[0].data)).toStartWith('paired ✓ "Otto for Mac" (full access)')
+  expect(listAppTokens()).toEqual([])   // nothing exists until the app that started it collects
+
+  const got = pollNative(b.device_code).body as any
+  expect(Object.keys(got).sort()).toEqual(['id', 'status', 'token'])
+  expect(got.status).toBe('approved')
+  const t = findAppToken(`Bearer ${got.token}`)!
+  expect(t).toMatchObject({ id: got.id, name: 'Otto for Mac' })
+  expect(t.scope).toBeUndefined()
+  expect(t.origin).toBeUndefined()
+  expect(t.expires).toBeUndefined()
+  expect(checkAppToken(`Bearer ${got.token}`)).toBe(got.id)
+  expect(isLiveAppToken(got.id)).toBe(true)
+
+  // Single use: the code, the device code and the button are all spent.
+  expect(pollNative(b.device_code).body).toEqual({ status: 'expired' })
+  expect(pairingButton(msg.buttons[0].data)).toContain('gone')
+  expect((await claim(b.user_code)).text).toBe('no pairing request with that code')
+  expect(listAppTokens()).toHaveLength(1)
+  for (const secret of [b.device_code, got.token, msg.buttons[0].data.split(' ')[2]]) expect(stderr.join('')).not.toContain(secret)
+})
+
+test('deny mints nothing; a tap that is not the approve nonce approves nothing', async () => {
+  const b = startNative()
+  const msg = await claim(b.user_code)
+  expect(pairingButton('pair ok ' + 'A'.repeat(22))).toContain('gone')
+  expect(pollNative(b.device_code).body).toEqual({ status: 'pending' })
+  expect(pairingButton(msg.buttons[1].data)).toBe(`denied ${b.user_code}`)
+  expect(pollNative(b.device_code).body).toEqual({ status: 'denied' })
+  expect(pollNative(b.device_code).body).toEqual({ status: 'expired' })
+  expect(listAppTokens()).toEqual([])
+})
+
+test('a native code expires after 300 s unclaimed, and an approval nobody collects leaves no token behind', async () => {
+  const b = startNative()
+  const msg = await claim(b.user_code)
+  tick(300_000)
+  expect(pairingButton(msg.buttons[0].data)).toContain('gone')
+  expect(pollPairing({ device_code: b.device_code }, {}).body).toEqual({ status: 'expired' })
+
+  const c = startNative()
+  pairingButton((await claim(c.user_code)).buttons[0].data)
+  tick(300_000)
+  expect(pollPairing({ device_code: c.device_code }, {}).body).toEqual({ status: 'expired' })
+  expect(listAppTokens()).toEqual([])
+})
+
+test('a native pairing is collected only without an Origin, and a browser one only with its own', async () => {
+  const n = startNative()
+  pairingButton((await claim(n.user_code)).buttons[0].data)
+  expect(poll(n.device_code).body).toEqual({ status: 'expired' })          // a page that got hold of the device code
+  expect(listAppTokens()).toEqual([])
+  expect((pollNative(n.device_code).body as any).status).toBe('approved')
+
+  const w = start()
+  pairingButton((await claim(w.user_code)).buttons[0].data)
+  expect(pollNative(w.device_code).body).toEqual({ status: 'expired' })    // no Origin can't collect a dashboard token
+  expect((poll(w.device_code).body as any).status).toBe('approved')
+})
+
+test('polling a native pairing too fast is slowed down like any other, and its code is kept from outgoing text', () => {
+  const b = startNative()
+  expect(pollPairing({ device_code: b.device_code }, {})).toEqual({ status: 429, body: { error: 'slow_down' } })
+  expect(carriesPairingCode(`type pair ${b.user_code.toLowerCase()} to re-verify`)).toBe(true)
 })

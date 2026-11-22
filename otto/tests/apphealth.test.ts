@@ -2,7 +2,7 @@ import { test, expect, afterAll } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { parseAppHealth, peekAppHealth, recordAppHealth, tokenNames, appHealthVerdict, appHealthStatus, type AppHealth } from '../apphealth.ts'
+import { recordUnreadAfterAnswer, staleAppDevices, parseAppHealth, peekAppHealth, recordAppHealth, tokenNames, appHealthVerdict, appHealthStatus, type AppHealth } from '../apphealth.ts'
 import { ago } from '../status.ts'
 
 const tmp = mkdtempSync(join(tmpdir(), 'otto-apphealth-'))
@@ -96,4 +96,43 @@ test('announce is kept and shown when the phone reports it', () => {
   expect(h.announce).toBe('enabled')
   expect(appHealthVerdict(h, NOW, () => '1m').detail).toContain('announce notifications enabled')
   expect(parseAppHealth(body({}), NOW)!.announce).toBeUndefined()
+})
+
+
+test('unread-after-answer snapshot persists without changing phone report time', () => {
+  const file = join(tmp, 'unread.json')
+  recordAppHealth(file, 'device-a', report())
+  recordAppHealth(file, 'device-b', report())
+  recordUnreadAfterAnswer(file, 3)
+  recordAppHealth(file, 'device-a', report())
+  const state = peekAppHealth(file)
+  expect(state['device-a'].unreadAfterAnswer).toBe(3)
+  expect(state['device-b'].at).toBe(iso(NOW))
+  expect(appHealthVerdict(state['device-a'], NOW, ago).detail).toContain('unread after answer 3')
+})
+
+test('stale native devices are offered, never automatically revoked', () => {
+  const old = iso(NOW - 15 * 86400_000), fresh = iso(NOW - h(1))
+  expect(staleAppDevices([
+    { id: 'stale', created: old, lastUsed: old },
+    { id: 'unused', created: old },
+    { id: 'fresh', created: old, lastUsed: fresh },
+    { id: 'browser', created: old, scope: 'read' },
+    { id: 'expired', created: old, expires: old },
+  ], NOW)).toEqual(['stale', 'unused'])
+})
+
+
+test('fresh phone reports clear omitted optional fields but retain the server counter', () => {
+  const file = join(tmp, 'optional-fields.json')
+  recordAppHealth(file, 'device', report({ announce: 'enabled', lastRefresh: iso(NOW), reason: 'refresh' }))
+  recordUnreadAfterAnswer(file, 2)
+  const fresh = report()
+  delete fresh.reason
+  recordAppHealth(file, 'device', fresh)
+  const saved = peekAppHealth(file).device
+  expect(saved.unreadAfterAnswer).toBe(2)
+  expect(saved.announce).toBeUndefined()
+  expect(saved.lastRefresh).toBeUndefined()
+  expect(saved.reason).toBeUndefined()
 })

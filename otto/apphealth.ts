@@ -13,6 +13,7 @@ import { loadState, saveState } from './statefile.ts'
 import type { StatusRow, Verdict } from './status.ts'
 
 export type AppHealth = {
+  unreadAfterAnswer?: number
   at: string                 // ISO, server clock, stamped by parseAppHealth
   reason?: string            // 'connect' | 'refresh'
   notifications: string      // 'authorized' | 'denied' | 'notDetermined' | 'provisional' | 'ephemeral' | 'unknown'
@@ -51,7 +52,9 @@ const valid = (x: unknown) => !!x && typeof x === 'object' && !Array.isArray(x)
 export const peekAppHealth = (file: string): AppHealthState => loadState<AppHealthState>(file, () => ({}), valid, { peek: true })
 
 export function recordAppHealth(file: string, tokenId: string, h: AppHealth): void {
-  saveState(file, { ...loadState<AppHealthState>(file, () => ({}), valid), [tokenId]: h })
+  const state = loadState<AppHealthState>(file, () => ({}), valid)
+  const unreadAfterAnswer = state[tokenId]?.unreadAfterAnswer
+  saveState(file, { ...state, [tokenId]: { ...(unreadAfterAnswer !== undefined ? { unreadAfterAnswer } : {}), ...h } })
 }
 
 /** Device names from app-tokens.json ({ tokens: [{ id, name, … }] }); {} on any failure. */
@@ -66,7 +69,7 @@ const SILENT_MS = 36 * 3600_000, REFRESH_STALE_MS = 48 * 3600_000
 
 export function appHealthVerdict(h: AppHealth, now: number, ago: (ms: number) => string): { verdict: Verdict; detail: string } {
   const at = Date.parse(h.at)
-  const summary = `iOS ${h.ios}, build ${h.build} (${h.version}), notifications ${h.notifications}, background refresh ${h.backgroundRefresh}, keep-awake ${h.keepAwake ? 'on' : 'off'}, share sheet ${h.shareConfigured ? 'set up' : 'missing'}${h.lastRefresh ? `, last background refresh ${ago(now - Date.parse(h.lastRefresh))} ago` : ''}${h.announce ? `, announce notifications ${h.announce}` : ''}`
+  const summary = `${h.unreadAfterAnswer !== undefined ? `unread after answer ${h.unreadAfterAnswer}, ` : ''}iOS ${h.ios}, build ${h.build} (${h.version}), notifications ${h.notifications}, background refresh ${h.backgroundRefresh}, keep-awake ${h.keepAwake ? 'on' : 'off'}, share sheet ${h.shareConfigured ? 'set up' : 'missing'}${h.lastRefresh ? `, last background refresh ${ago(now - Date.parse(h.lastRefresh))} ago` : ''}${h.announce ? `, announce notifications ${h.announce}` : ''}`
   // keep-awake off is a choice, never a verdict.
   let verdict: Verdict = 'degraded', first: string
   if (h.notifications === 'denied') { verdict = 'down'; first = 'notifications denied — replies cannot reach the lock screen; Settings > Otto > Notifications' }
@@ -84,4 +87,16 @@ export function appHealthStatus(state: AppHealthState, names: Record<string, str
   return Object.entries(state).filter(([id]) => id in names).map(([id, h]) => ({
     id: `phone:${id}`, label: `Phone${names[id] ? ` (${names[id]})` : ''}`, at: Date.parse(h.at), ...appHealthVerdict(h, now, ago),
   }))
+}
+
+/** Snapshot of messages still queued unread when an app answer went out. */
+export function recordUnreadAfterAnswer(file: string, count: number): void {
+  const state = loadState<AppHealthState>(file, () => ({}), valid)
+  for (const h of Object.values(state)) h.unreadAfterAnswer = count
+  saveState(file, state)
+}
+
+/** Offer only native devices; revocation always needs an explicit tap. */
+export function staleAppDevices(tokens: { id: string; scope?: string; created: string; lastUsed?: string; expires?: string }[], now: number): string[] {
+  return tokens.filter(t => !t.scope && (!t.expires || Date.parse(t.expires) > now) && now - Date.parse(t.lastUsed ?? t.created) >= 14 * 86400_000).map(t => t.id)
 }

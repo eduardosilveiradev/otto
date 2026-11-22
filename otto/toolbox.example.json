@@ -1,0 +1,35 @@
+[
+  {
+    "name": "domain-search",
+    "url": "https://mcp.instantdomainsearch.com/mcp",
+    "allowWrites": []
+  },
+  {
+    "name": "linear",
+    "url": "https://mcp.linear.app/mcp",
+    "headers": {
+      "Authorization": "Bearer REPLACE_WITH_LINEAR_API_KEY"
+    },
+    "allowWrites": []
+  },
+  {
+    "name": "engineering",
+    "command": "example-engineering-mcp",
+    "env": {
+      "API_TOKEN": "REPLACE_WITH_STATIC_TOKEN"
+    },
+    "allowWrites": []
+  },
+  {
+    "name": "vercel-requires-independent-mcp-auth",
+    "url": "https://mcp.vercel.com",
+    "headers": {
+      "Authorization": "Bearer REPLACE_WITH_VALID_MCP_TOKEN"
+    },
+    "tools": [
+      "search_vercel_documentation",
+      "get_runtime_errors"
+    ],
+    "allowWrites": []
+  }
+]

@@ -64,7 +64,7 @@ const checks: true[] = [
   same<D.CapRow, Omit<CapEntry, 'revert'>>(true),
   same<D.JobState, JobState>(true),
   // chatId is a chat identifier; a browser has no use for it.
-  same<D.JobRow, Omit<Job, 'scratchDir' | 'pid' | 'chatId'>>(true),
+  same<Omit<D.JobRow, 'activity' | 'slotWait' | 'spans'>, Omit<Job, 'scratchDir' | 'pid' | 'chatId'>>(true),
   same<D.ZonedTime, ZonedTime>(true),
   same<D.ChatMessage, Pick<ChatEntry, 'dir' | 'kind' | 'text' | 'ts'> & { id: string }>(true),
   same<D.FlightRow, Pick<FlightSegment, 'kind' | 'flight' | 'carrier' | 'from' | 'to' | 'depart' | 'arrive'>>(true),

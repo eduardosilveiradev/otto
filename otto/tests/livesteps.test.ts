@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { LiveSteps, findImage, todoItems, readTaskList } from '../livesteps.ts'
-import { mkdtempSync, writeFileSync } from 'fs'
+import { LiveSteps, shrinkScreenshot, findImage, todoItems, readTaskList, subagentOf } from '../livesteps.ts'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -125,4 +125,88 @@ describe('readTaskList', () => {
     expect(readTaskList(dir)).toEqual([{ text: 'Running the tests', status: 'in_progress' }, { text: 'Push', status: 'pending' }])
     expect(readTaskList(join(dir, 'missing'))).toEqual([])
   })
+})
+
+describe('subagent steps', () => {
+  // The shape Claude Code 2.1.318 sends: a subagent's tool call carries agent_id and agent_type,
+  // and the parent's description sits in <transcript>/subagents/agent-<id>.meta.json.
+  function session(metas: Record<string, object>) {
+    const dir = mkdtempSync(join(tmpdir(), 'otto-sub-'))
+    const transcript = join(dir, 'sess.jsonl')
+    mkdirSync(join(dir, 'sess', 'subagents'), { recursive: true })
+    for (const [id, m] of Object.entries(metas)) writeFileSync(join(dir, 'sess', 'subagents', `agent-${id}.meta.json`), JSON.stringify(m))
+    return transcript
+  }
+
+  test('a subagent hook payload yields marked steps; parallel ones stay apart; the parent stays unmarked', () => {
+    const transcript_path = session({
+      a1: { agentType: 'general-purpose', description: 'Count lines', toolUseId: 'toolu_1' },
+      a2: { agentType: 'general-purpose', description: '  Search   the docs for the hook payload shape, every field  ' },
+    })
+    const parent = { hook_event_name: 'PreToolUse', tool_name: 'Agent', transcript_path }
+    const sub1 = { hook_event_name: 'PreToolUse', tool_name: 'Bash', agent_id: 'a1', agent_type: 'general-purpose', transcript_path }
+    const sub2 = { ...sub1, agent_id: 'a2' }
+    const { live, sent, advance } = rig()
+    live.step('Starting a subagent', subagentOf(parent))
+    live.step('Running wc', subagentOf(sub1))
+    live.step('Running ls', subagentOf(sub2))
+    advance(0)
+    const steps = sent.at(-1).steps
+    expect(steps[0].subagent).toBeUndefined()
+    expect('subagent' in steps[0]).toBe(false)
+    expect(steps[1].subagent).toEqual({ id: 'a1', label: 'Count lines' })
+    expect(steps[2].subagent).toEqual({ id: 'a2', label: 'Search the docs for the hook payload sha' })
+  })
+
+  test('no meta file: the agent type stands in, and a bad id is ignored', () => {
+    const transcript_path = session({})
+    expect(subagentOf({ agent_id: 'b1', agent_type: 'Explore', transcript_path })).toEqual({ id: 'b1', label: 'Explore' })
+    expect(subagentOf({ agent_id: '../x', agent_type: 'Explore', transcript_path })).toBeUndefined()
+  })
+})
+
+test('take hands over the steps since the last take, once, and keeps its place when old steps fall off', () => {
+  const sent: string[] = []
+  const s = new LiveSteps(f => sent.push(f), () => 1_000, fn => fn(), 0)
+  expect(s.take()).toEqual([])
+  s.step('Reading mail'); s.step('Checking the calendar', { id: 'a1', label: 'Research' })
+  expect(s.take()).toEqual([{ label: 'Reading mail', ts: new Date(1_000).toISOString() }, { label: 'Checking the calendar', ts: new Date(1_000).toISOString(), subagent: { id: 'a1', label: 'Research' } }])
+  expect(s.take()).toEqual([])
+  s.step('Writing the draft')
+  expect(s.take().map(x => x.label)).toEqual(['Writing the draft'])
+  // The live frame still has all of them: taking changes nothing a watching app sees.
+  expect(JSON.parse(sent.at(-1)!).steps).toHaveLength(3)
+
+  // Past the 100 kept, the oldest fall off; what was already taken is not handed over again.
+  for (let i = 0; i < 150; i++) s.step(`step ${i}`)
+  const late = s.take()
+  expect(late).toHaveLength(100)
+  expect(late.at(-1)!.label).toBe('step 149')
+  s.step('one more')
+  expect(s.take().map(x => x.label)).toEqual(['one more'])
+
+  // A turn that ends without a reply keeps its steps: the next turn's reply doesn't inherit them.
+  s.step('left untaken')
+  s.finish()
+  expect(s.take()).toEqual([])
+  s.step('next turn')
+  expect(s.take().map(x => x.label)).toEqual(['next turn'])
+})
+
+test('shrinkScreenshot converts a real PNG to a bounded JPEG', async () => {
+  const png = readFileSync(new URL('./fixtures/screenshot.png', import.meta.url)).toString('base64')
+  for (const maxPx of [10, 64]) {
+    const shot = await shrinkScreenshot(png, maxPx)
+    expect(shot).not.toBeNull()
+    const jpeg = Buffer.from(shot!, 'base64')
+    expect(jpeg.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]))
+    // Decode the JPEG to PNG, whose header gives the decoded pixel dimensions.
+    const decoder = Bun.spawn(['ffmpeg', '-i', 'pipe:0', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1'], {
+      stdin: jpeg, stdout: 'pipe', stderr: 'ignore', timeout: 5000,
+    })
+    const decoded = Buffer.from(await new Response(decoder.stdout).arrayBuffer())
+    expect(await decoder.exited).toBe(0)
+    expect(decoded.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    expect(Math.max(decoded.readUInt32BE(16), decoded.readUInt32BE(20))).toBe(process.platform === 'darwin' ? maxPx : Math.min(32, maxPx))
+  }
 })

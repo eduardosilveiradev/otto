@@ -13,9 +13,12 @@ import { join } from 'path'
  *
  * `screenshot` rides only the first frame after it changes (and `snapshot()`, for a
  * socket that just connected); the app keeps the last one it got.
+ *
+ * The frames are live only, but the steps outlive them: each reply to the app takes the
+ * steps made since the one before it (`take`) and /app/history serves them on its row.
  */
 
-export type Step = { label: string; ts: string }
+export type Step = { label: string; ts: string; subagent?: Subagent }
 type Task = { taskId: string; steps: Step[]; screenshot?: string; done: boolean }
 
 const MAX_STEPS = 100
@@ -26,6 +29,8 @@ export class LiveSteps {
   private dirty = false
   private pending = false
   private lastSent = -Infinity
+  /** How many of the task's steps have already gone into history with a reply (take). */
+  private taken = 0
 
   constructor(
     private send: (frame: string) => void,
@@ -35,14 +40,15 @@ export class LiveSteps {
   ) {}
 
   /** A tool call. Starts a task when none is running. */
-  step(label: string): void {
+  step(label: string, subagent?: Subagent): void {
     if (!label) return
     if (!this.task || this.task.done) {
       this.task = { taskId: randomBytes(4).toString('hex'), steps: [], done: false }
       this.shotSent = true
+      this.taken = 0
     }
-    this.task.steps.push({ label, ts: new Date(this.now()).toISOString() })
-    if (this.task.steps.length > MAX_STEPS) this.task.steps.shift()
+    this.task.steps.push({ label, ts: new Date(this.now()).toISOString(), ...(subagent ? { subagent } : {}) })
+    if (this.task.steps.length > MAX_STEPS) { this.task.steps.shift(); if (this.taken) this.taken-- }
     this.changed()
   }
 
@@ -62,9 +68,21 @@ export class LiveSteps {
     this.changed()
   }
 
+  /**
+   * The steps since the last call (or the task's start): the ones that led to the reply now
+   * going out, which history keeps with it so a device that wasn't watching can still show them.
+   */
+  take(): Step[] {
+    if (!this.task) return []
+    const out = this.task.steps.slice(this.taken).map(s => ({ ...s }))
+    this.taken = this.task.steps.length
+    return out
+  }
+
   finish(): void {
     if (!this.task || this.task.done) return
     this.task.done = true
+    this.taken = this.task.steps.length   // a turn that ended without a reply keeps its steps to itself
     this.changed()
   }
 
@@ -95,15 +113,40 @@ export class LiveSteps {
   }
 }
 
+export type Subagent = { id: string; label: string }
+const subagents = new Map<string, Subagent>()
+
 /**
- * The first image in a PostToolUse hook's tool_response, as base64. MCP results carry
- * { type: "image", data } and API-shaped ones { type: "image", source: { data } };
- * which one the hook sees isn't documented, so either will do.
+ * Who made a tool call, when a subagent did: hook payloads from inside one carry its
+ * agent_id and agent_type. The parent's description for it isn't in the payload; Claude
+ * Code keeps it in `<transcript>/subagents/agent-<id>.meta.json`, written before the
+ * subagent's first tool call. Undocumented, so the agent_type stands in when it's missing.
+ */
+export function subagentOf(h: { agent_id?: string; agent_type?: string; transcript_path?: string }): Subagent | undefined {
+  const id = h.agent_id
+  if (!id || !/^[\w-]+$/.test(id)) return undefined
+  const known = subagents.get(id)
+  if (known) return known
+  let label = ''
+  try {
+    const meta = JSON.parse(readFileSync(`${String(h.transcript_path).replace(/\.jsonl$/, '')}/subagents/agent-${id}.meta.json`, 'utf8'))
+    label = String(meta.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 40)
+  } catch {}
+  if (!label) return { id, label: String(h.agent_type || 'Subagent').slice(0, 40) } // not cached: the file may turn up
+  if (subagents.size >= 50) subagents.clear()
+  subagents.set(id, { id, label })
+  return { id, label }
+}
+
+/**
+ * The last image in a PostToolUse hook's tool_response, as base64: in a batch, the latest
+ * screenshot. MCP results carry { type: "image", data } and API-shaped ones
+ * { type: "image", source: { data } }; which one the hook sees isn't documented, so either will do.
  */
 export function findImage(v: unknown, depth = 0): string | null {
   if (depth > 6 || v === null || typeof v !== 'object') return null
   if (Array.isArray(v)) {
-    for (const x of v) { const hit = findImage(x, depth + 1); if (hit) return hit }
+    for (const x of [...v].reverse()) { const hit = findImage(x, depth + 1); if (hit) return hit }
     return null
   }
   const o = v as Record<string, unknown>
@@ -117,16 +160,18 @@ export function findImage(v: unknown, depth = 0): string | null {
 }
 
 /**
- * A screenshot shrunk to a small JPEG (base64) with macOS `sips`, so it fits a
- * socket frame. Null when sips isn't there (Linux) or fails, and the step list
- * simply goes without the image. The temp files are gone on return.
+ * A screenshot shrunk to a small JPEG (base64) with macOS `sips` or `ffmpeg` elsewhere,
+ * so it fits a socket frame. Null when conversion fails. The temp files are gone on return.
  */
 export async function shrinkScreenshot(b64: string, maxPx = 480): Promise<string | null> {
   const base = join(tmpdir(), `otto-shot-${randomBytes(4).toString('hex')}`)
   const [src, out] = [`${base}.img`, `${base}.jpg`]
   try {
     writeFileSync(src, Buffer.from(b64, 'base64'))
-    const p = Bun.spawn(['sips', '-Z', String(maxPx), '-s', 'format', 'jpeg', '-s', 'formatOptions', '55', src, '--out', out], { stdout: 'ignore', stderr: 'ignore', timeout: 5000 })
+    const args = process.platform === 'darwin'
+      ? ['sips', '-Z', String(maxPx), '-s', 'format', 'jpeg', '-s', 'formatOptions', '55', src, '--out', out]
+      : ['ffmpeg', '-y', '-i', src, '-vf', `scale=w='min(iw,${maxPx})':h='min(ih,${maxPx})':force_original_aspect_ratio=decrease`, '-frames:v', '1', '-q:v', '8', out]
+    const p = Bun.spawn(args, { stdout: 'ignore', stderr: 'ignore', timeout: 5000 })
     return (await p.exited) === 0 ? readFileSync(out).toString('base64') : null
   } catch {
     return null
